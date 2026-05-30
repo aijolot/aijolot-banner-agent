@@ -14,6 +14,18 @@ Related: [[Frontend Functionality Map]]
 
 This proposal aligns the backend database with the current frontend prototype from `frontend/design-implementation`, the source technical design PDF, and the latest product decisions.
 
+Executable migration now exists at:
+
+```text
+../../supabase/migrations/20260528190000_initial_schema.sql
+```
+
+Local seed data exists at:
+
+```text
+../../supabase/seed.sql
+```
+
 ## Principles
 
 1. Use Supabase Auth as the identity source. Application tables reference `auth.users(id)`.
