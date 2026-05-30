@@ -1,0 +1,153 @@
+/* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, CAMPAIGN */
+// Aijolot Banner Agent — app shell (icon sidebar + topbar) and Campaigns landing.
+
+const NAV = [
+  { id: "studio", icon: "wand-sparkles", label: "Estudio de Banners" },
+  { id: "brand", icon: "palette", label: "Marca" },
+  { id: "dashboard", icon: "layout-dashboard", label: "Dashboard" },
+  { id: "orders", icon: "shopping-cart", label: "Pedidos" },
+  { id: "products", icon: "package", label: "Productos" },
+  { id: "analytics", icon: "bar-chart-3", label: "Analítica" },
+];
+
+function Sidebar({ active, onNav }) {
+  return (
+    <aside style={{
+      width: 64, flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center",
+      gap: 6, padding: "16px 0", background: "rgba(255,255,255,0.8)",
+      backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)",
+      borderRight: "1px solid rgba(226,232,240,0.8)", zIndex: 20,
+    }}>
+      <div title="Aijolot" style={{
+        width: 40, height: 40, borderRadius: 14, background: "linear-gradient(135deg,#22D3EE,#0891B2)",
+        color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 18, marginBottom: 14,
+        boxShadow: "0 8px 20px rgba(34,211,238,.35)",
+      }}>A</div>
+      {NAV.map((item) => {
+        const on = active === item.id;
+        return (
+          <button key={item.id} onClick={() => onNav(item.id)} title={item.label} style={{
+            width: 44, height: 44, borderRadius: 18, border: "none", cursor: "pointer",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: on ? "rgba(34,211,238,0.18)" : "transparent", color: on ? "#0891B2" : "#68737D",
+            animation: on ? "uikBreathe 2s ease-in-out infinite" : "none", transition: "background .15s, color .15s",
+          }}
+            onMouseEnter={(e) => { if (!on) e.currentTarget.style.background = "rgba(34,211,238,0.08)"; }}
+            onMouseLeave={(e) => { if (!on) e.currentTarget.style.background = "transparent"; }}>
+            <Icon name={item.icon} size={20} />
+          </button>
+        );
+      })}
+      <div style={{ flex: 1 }} />
+      <button title="Ajustes" style={{ width: 44, height: 44, borderRadius: 18, border: "none", cursor: "pointer", background: "transparent", color: "#68737D", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Icon name="settings" size={20} />
+      </button>
+    </aside>
+  );
+}
+
+function Topbar({ crumb, onHome }) {
+  return (
+    <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 14, padding: "0 28px", borderBottom: "1px solid rgba(226,232,240,0.7)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#68737D", fontFamily: "Inter", fontSize: 13 }}>
+        <button onClick={onHome} style={{ border: "none", background: "transparent", cursor: "pointer", color: crumb ? "#68737D" : "#002B57", fontFamily: "Inter", fontSize: 13, fontWeight: crumb ? 400 : 600, padding: 0 }}>Estudio de Banners</button>
+        {crumb && <><Icon name="chevron-right" size={14} color="#CBD5E1" /><span style={{ color: "#002B57", fontWeight: 600 }}>{crumb}</span></>}
+      </div>
+      <div style={{ flex: 1 }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 11px", borderRadius: 9999, background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)" }}>
+        <span style={{ width: 7, height: 7, borderRadius: 9999, background: "#22D3EE", animation: "pulseSoft 2s ease-in-out infinite" }} />
+        <span style={{ fontFamily: "Inter", fontSize: 11.5, fontWeight: 600, color: "#0891B2" }}>Agente CEOD activo</span>
+      </div>
+      <button style={{ position: "relative", border: "none", background: "transparent", cursor: "pointer", color: "#68737D" }}>
+        <Icon name="bell" size={19} />
+        <span style={{ position: "absolute", top: -2, right: -2, width: 8, height: 8, borderRadius: 9999, background: "#F72585", border: "2px solid #fff" }} />
+      </button>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ textAlign: "right", lineHeight: 1.2 }}>
+          <div style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>Mara Voss</div>
+          <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#68737D" }}>Gerente E-commerce</div>
+        </div>
+        <Avatar initials="MV" size={36} />
+      </div>
+    </header>
+  );
+}
+
+// ---- Campaigns landing ----
+const KPIS = [
+  { icon: "rocket", label: "Campañas activas", value: "3" },
+  { icon: "image", label: "Banners publicados", value: "47" },
+  { icon: "mouse-pointer-click", label: "CTR promedio", value: "4.6%" },
+  { icon: "feather", label: "Peso ahorrado", value: "−81%" },
+];
+
+const RECENT = [
+  { id: CAMPAIGN.id, title: CAMPAIGN.title, promo: CAMPAIGN.promo, window: CAMPAIGN.window, status: "draft", tone: "amber", statusLabel: "En revisión · 1/3", action: "Continuar" },
+  { id: "CMP-0188", title: "Calzado primavera", promo: "20% OFF", window: "12 — 19 may 2026", status: "live", tone: "green", statusLabel: "Publicado", action: "Ver performance" },
+  { id: "CMP-0185", title: "Skincare — Día Madre", promo: "2x1", window: "1 — 10 may 2026", status: "live", tone: "green", statusLabel: "Publicado", action: "Ver performance" },
+];
+
+function CampaignsView({ onNew, onResume, onPerf }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
+      <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <Kicker>Agente CEOD · Content E-commerce Optimizer</Kicker>
+          <h1 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 40, letterSpacing: "-0.02em", color: "#002B57", margin: 0, lineHeight: 1.04 }}>Estudio de Banners</h1>
+          <p style={{ fontFamily: "Inter", fontSize: 14.5, color: "#68737D", margin: 0, maxWidth: 560 }}>Del brief al código nativo de Shopify en segundos. Banners responsivos, optimizados para SEO y de carga ultrarrápida — sin salir de marca.</p>
+        </div>
+        <Button variant="shine" icon="wand-sparkles" onClick={onNew} style={{ padding: "12px 20px", fontSize: 14.5 }}>Nueva campaña</Button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
+        {KPIS.map((k) => (
+          <GlassCard key={k.label} style={{ padding: 18 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#68737D", fontFamily: "Inter", fontSize: 13 }}>
+              <Icon name={k.icon} size={16} color="#22D3EE" /> {k.label}
+            </div>
+            <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 28, color: "#002B57", marginTop: 12, fontVariantNumeric: "tabular-nums" }}>{k.value}</div>
+          </GlassCard>
+        ))}
+      </div>
+
+      <GlassCard style={{ padding: 22 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+          <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 18, color: "#002B57" }}>Campañas recientes</div>
+          <span style={{ fontFamily: "Inter", fontSize: 12.5, color: "#94A3B8" }}>Sincronizado con Shopify</span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {RECENT.map((r, i) => (
+            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 16, padding: "15px 0", borderTop: i ? "1px solid #F1F5F9" : "none" }}>
+              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(34,211,238,0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "#0891B2", flexShrink: 0 }}>
+                <Icon name="image" size={19} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "Inter", fontSize: 14, fontWeight: 600, color: "#002B57" }}>{r.title}</span>
+                  <Badge tone="cyan">{r.promo}</Badge>
+                </div>
+                <div style={{ fontFamily: "Space Grotesk", fontSize: 11.5, color: "#94A3B8", marginTop: 3 }}>{r.id} · {r.window}</div>
+              </div>
+              <Badge tone={r.tone}>{r.statusLabel}</Badge>
+              <Button variant={r.status === "draft" ? "default" : "secondary"} icon={r.status === "draft" ? "arrow-right" : "bar-chart-3"}
+                onClick={() => (r.status === "draft" ? onResume() : onPerf())}>{r.action}</Button>
+            </div>
+          ))}
+        </div>
+      </GlassCard>
+    </div>
+  );
+}
+
+function ModulePlaceholder({ label }) {
+  return (
+    <GlassCard radius={18} style={{ padding: 64, display: "flex", flexDirection: "column", alignItems: "center", gap: 14, color: "#94A3B8", textAlign: "center" }}>
+      <Icon name="layers" size={34} color="#CBD5E1" />
+      <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 17, color: "#475569" }}>{label}</div>
+      <div style={{ fontFamily: "Inter", fontSize: 13, maxWidth: 320 }}>Parte del ecosistema Aijolot Admin. Este prototipo se centra en el Estudio de Banners.</div>
+    </GlassCard>
+  );
+}
+
+Object.assign(window, { Sidebar, Topbar, CampaignsView, ModulePlaceholder, NAV });
