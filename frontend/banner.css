@@ -1,0 +1,171 @@
+/* Aijolot Banner Agent — the generated creative.
+   This is the literal HTML/CSS the agent compiles. Fluid via CSS container
+   queries (no device-specific code), palette driven by CSS custom properties
+   so a segment swap is just a variable change. */
+
+.hb-banner{
+  container-type:inline-size;
+  position:relative;
+  width:100%;
+  border-radius:var(--r,18px);
+  overflow:hidden;
+  isolation:isolate;
+  color:var(--ink);
+  font-family:'Inter',sans-serif;
+  --pad:clamp(20px,4.4cqw,52px);
+}
+.hb-banner *{box-sizing:border-box}
+
+/* background layers */
+.hb-bg{
+  position:absolute;inset:0;z-index:0;
+  background:linear-gradient(120deg,var(--bg-a) 0%,var(--bg-b) 100%);
+}
+.hb-bg::before{ /* ambient color wash */
+  content:"";position:absolute;inset:0;
+  background:radial-gradient(circle at 78% 30%, var(--glow), transparent 55%);
+}
+.hb-grain{
+  position:absolute;inset:0;z-index:1;pointer-events:none;opacity:.5;
+  background-image:radial-gradient(rgba(255,255,255,.05) 1px, transparent 1.2px);
+  background-size:4px 4px;
+  mix-blend-mode:overlay;
+}
+
+/* content */
+.hb-inner{
+  position:relative;z-index:2;
+  display:flex;align-items:center;justify-content:space-between;
+  gap:clamp(14px,3cqw,40px);
+  padding:var(--pad);
+  min-height:var(--minh,300px);
+}
+.hb-copy{display:flex;flex-direction:column;gap:clamp(8px,1.4cqw,16px);max-width:58%;}
+.hb-eyebrow{
+  font-family:'Inter';font-weight:600;letter-spacing:.26em;text-transform:uppercase;
+  font-size:clamp(9px,1.35cqw,13px);color:var(--accent);
+}
+.hb-headline{
+  font-family:var(--disp,'Space Grotesk'),sans-serif;font-weight:700;
+  font-size:clamp(28px,6.6cqw,62px);line-height:1.02;letter-spacing:-.02em;
+  white-space:pre-line;margin:0;color:var(--ink);text-wrap:balance;
+}
+.hb-sub{
+  font-size:clamp(12px,1.9cqw,18px);line-height:1.5;color:var(--sub);
+  max-width:30ch;margin:0;
+}
+.hb-cta{
+  align-self:flex-start;margin-top:clamp(4px,1cqw,10px);
+  display:inline-flex;align-items:center;gap:8px;cursor:pointer;
+  font-family:'Inter';font-weight:600;font-size:clamp(12px,1.7cqw,16px);
+  padding:clamp(9px,1.5cqw,15px) clamp(16px,2.6cqw,28px);
+  border-radius:9999px;text-decoration:none;
+  background:var(--accent);color:#06121f;border:1px solid transparent;
+  transition:transform .15s, box-shadow .15s, filter .15s;
+  box-shadow:0 12px 30px -8px var(--glow);
+}
+.hb-cta:hover{transform:translateY(-2px);filter:brightness(1.05)}
+.hb-cta svg{width:1em;height:1em}
+
+/* product */
+.hb-product{position:relative;flex:0 0 auto;display:flex;align-items:center;justify-content:center;}
+.hb-halo{
+  position:absolute;width:130%;aspect-ratio:1;border-radius:50%;
+  background:radial-gradient(circle,var(--glow),transparent 62%);
+  filter:blur(6px);z-index:-1;
+}
+.hb-bottle{position:relative;width:clamp(110px,22cqw,240px);aspect-ratio:.52;}
+.hb-discount{
+  position:absolute;top:-6px;right:-10px;z-index:3;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  width:clamp(48px,8.5cqw,74px);aspect-ratio:1;border-radius:50%;
+  background:var(--chip);color:#0b0b0d;
+  font-family:'Space Grotesk';font-weight:700;line-height:1;
+  box-shadow:0 8px 22px -6px rgba(0,0,0,.5);
+  transform:rotate(8deg);
+}
+.hb-discount b{font-size:clamp(15px,3cqw,26px)}
+.hb-discount span{font-size:clamp(7px,1.1cqw,10px);letter-spacing:.1em;margin-top:1px}
+
+/* image-slot styling when a real AI render is dropped */
+.hb-product image-slot{width:clamp(132px,27cqw,225px);height:clamp(190px,42cqw,300px);color:var(--ink);}
+.hb-product image-slot::part(frame){background:rgba(255,255,255,.05);border-radius:14px;}
+.hb-product image-slot::part(ring){border:1.5px dashed rgba(255,255,255,.45);border-radius:14px;}
+
+/* brand wordmark */
+.hb-logo{
+  position:absolute;z-index:2;left:var(--pad);bottom:clamp(12px,2.4cqw,22px);
+  font-family:'Space Grotesk';font-weight:700;letter-spacing:.34em;
+  font-size:clamp(10px,1.5cqw,15px);color:var(--ink);opacity:.92;
+}
+
+/* refinement-loop states (driven by the agent after feedback) */
+.hb-cta-contrast .hb-cta{background:var(--chip);color:#0b0b0d;border-color:transparent;box-shadow:0 12px 30px -8px rgba(0,0,0,.4);}
+.hb-brighter .hb-bg{filter:brightness(1.16) saturate(1.12);}
+.hb-brighter .hb-bg::before{opacity:.85;}
+
+/* ---- VARIANT B: split editorial ---- */
+.hb-B .hb-inner::after{
+  content:"";position:absolute;left:58%;top:18%;bottom:18%;width:1px;
+  background:linear-gradient(180deg,transparent,var(--sub),transparent);opacity:.4;
+}
+.hb-B .hb-cta{background:transparent;color:var(--ink);border:1px solid var(--ink);box-shadow:none;}
+.hb-B .hb-cta:hover{background:var(--ink);color:var(--bg-a);}
+.hb-B .hb-halo{opacity:.7}
+
+/* ---- VARIANT C: minimal floating ---- */
+.hb-C{--minh:280px}
+.hb-C .hb-bg::before{opacity:.55}
+.hb-C .hb-halo{opacity:.35}
+.hb-C .hb-bottle{animation:floaty 5s ease-in-out infinite}
+.hb-C .hb-product image-slot{animation:floaty 5s ease-in-out infinite}
+.hb-C .hb-cta{background:var(--chip);color:#0b0b0d}
+.hb-C .hb-eyebrow{letter-spacing:.34em}
+.hb-C .hb-copy{gap:clamp(10px,1.8cqw,20px)}
+
+/* ---- FLUID REFLOW: stack on narrow containers (mobile) ---- */
+@container (max-width: 540px){
+  .hb-inner{flex-direction:column;text-align:center;justify-content:center;gap:18px;padding-top:34px;padding-bottom:46px;}
+  .hb-copy{max-width:100%;align-items:center;}
+  .hb-sub{max-width:34ch}
+  .hb-cta{align-self:center}
+  .hb-headline{font-size:clamp(30px,10cqw,46px)}
+  .hb-sub{font-size:clamp(13px,4cqw,17px)}
+  .hb-eyebrow{font-size:clamp(10px,3cqw,13px)}
+  .hb-bottle{width:clamp(120px,40cqw,170px)}
+  .hb-B .hb-inner::after{display:none}
+  .hb-logo{left:0;right:0;text-align:center;}
+  .hb-product{order:-1}
+}
+
+/* ---- CSS-drawn bottle placeholder (until a real PNG is dropped) ---- */
+.cssbottle{position:relative;width:100%;height:100%;filter:drop-shadow(0 22px 26px rgba(0,0,0,.45));}
+.cssbottle .body{
+  position:absolute;left:8%;right:8%;top:22%;bottom:0;border-radius:14% 14% 11% 11%/8% 8% 6% 6%;
+  background:var(--bottle);
+  border:1px solid rgba(255,255,255,.16);
+  box-shadow:inset 0 0 30px rgba(0,0,0,.45), inset 14px 0 24px rgba(255,255,255,.08);
+  overflow:hidden;
+}
+.cssbottle .body::after{ /* glass highlight */
+  content:"";position:absolute;left:16%;top:8%;width:14%;height:74%;border-radius:9999px;
+  background:linear-gradient(180deg,rgba(255,255,255,.5),rgba(255,255,255,0));opacity:.5;
+}
+.cssbottle .shoulder{
+  position:absolute;left:30%;right:30%;top:13%;height:12%;
+  background:var(--bottle);border:1px solid rgba(255,255,255,.16);border-bottom:none;border-radius:30% 30% 0 0;
+}
+.cssbottle .cap{
+  position:absolute;left:33%;right:33%;top:0;height:15%;border-radius:4px 4px 2px 2px;
+  background:linear-gradient(180deg,var(--cap),rgba(0,0,0,.25));
+  box-shadow:0 4px 10px rgba(0,0,0,.4);
+}
+.cssbottle .label{
+  position:absolute;left:24%;right:24%;top:44%;height:30%;border-radius:3px;
+  background:linear-gradient(180deg,rgba(255,255,255,.9),rgba(255,255,255,.74));
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5%;
+  box-shadow:0 2px 8px rgba(0,0,0,.25);
+}
+.cssbottle .label b{font-family:'Space Grotesk';font-weight:700;color:#0b1622;font-size:clamp(7px,2.2cqw,12px);letter-spacing:.12em}
+.cssbottle .label i{display:block;width:48%;height:2px;background:var(--chip);border-radius:2px}
+.cssbottle .label em{font-style:normal;font-family:'Inter';color:#5b6470;font-size:clamp(5px,1.4cqw,8px);letter-spacing:.18em}
