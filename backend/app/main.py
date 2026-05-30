@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import brands, intake
+from app.api import brands, campaigns, intake
 
 app = FastAPI(title="Aijolot Banner Agent — Bridge", version="0.1.0")
 
@@ -32,6 +32,7 @@ app.add_middleware(
 
 app.include_router(brands.router)
 app.include_router(intake.router)
+app.include_router(campaigns.router)
 
 
 @app.get("/health", tags=["meta"])

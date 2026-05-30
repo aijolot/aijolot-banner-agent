@@ -156,6 +156,22 @@ def get_campaign(cid: str) -> Campaign | None:
     return _campaigns.get(cid)
 
 
+def apply_patch(cid: str, fields: dict) -> Campaign | None:
+    """Apply a partial brief update (GH-28). Returns None if campaign unknown."""
+    c = _campaigns.get(cid)
+    if not c:
+        return None
+    brief = c.structured_brief.model_dump()
+    for k in ("goal", "audience", "cta", "tone", "urgency", "placement", "deadline"):
+        if k in fields and fields[k] is not None:
+            brief[k] = fields[k]
+    c.structured_brief = StructuredBrief(**brief)
+    if fields.get("title"):
+        c.title = fields["title"]
+    _campaigns[c.id] = c
+    return c
+
+
 def intake(message: str, campaign_id: str | None) -> tuple[Campaign, str]:
     """Process one user turn. Returns (campaign, agent_reply_text)."""
     c = (_campaigns.get(campaign_id) if campaign_id else None) or create_campaign()
