@@ -224,8 +224,90 @@ const GRID_OPTS = [
   { id: 3, name: "3 en grid", icon: "grid-3x3" },
 ];
 
+// ---- Brand Context (GH-26) — seeds mirror brands/*.md, used as offline fallback ----
+const BRAND_SEEDS = [
+  {
+    id: "avocado_store", name: "Avocado Store",
+    palette: [
+      { name: "Forest", hex: "#1F4D2E" }, { name: "Avocado", hex: "#7CB342" },
+      { name: "Cream", hex: "#F4F1E8" }, { name: "Charcoal", hex: "#22281F" },
+      { name: "Coral pop", hex: "#FF6B5C" },
+    ],
+    typography: { display: "Space Grotesk", body: "Inter" },
+    voice: { tone: ["Fresh", "Friendly", "Confident"], prohibited_words: ["cheap", "guys", "crazy deal"], required_phrases: ["free shipping over $50"] },
+    logo_url: "https://cdn.avocadostore.example/logo.svg",
+    image_style_directives: ["Natural daylight, soft shadows", "Product centered, generous negative space", "Organic textures (wood, linen, stone)"],
+    shopify: { store_domain: "avocado-store.myshopify.com", theme_id: "128934771", default_placement: "hero" },
+    notes: "Sustainable home & kitchen goods. Warm, natural, a little playful.",
+  },
+  {
+    id: "demo_apparel", name: "Demo Apparel",
+    palette: [
+      { name: "Ink", hex: "#0E0E10" }, { name: "Bone", hex: "#EDE8E0" },
+      { name: "Electric", hex: "#3D5AFE" }, { name: "Slate", hex: "#2B2F36" },
+      { name: "Acid", hex: "#D4FF3F" },
+    ],
+    typography: { display: "Space Grotesk", body: "Inter" },
+    voice: { tone: ["Bold", "Minimal", "Street"], prohibited_words: ["elegant", "luxurious", "timeless"], required_phrases: [] },
+    logo_url: "https://cdn.demoapparel.example/wordmark.svg",
+    image_style_directives: ["High-contrast studio lighting", "Model-forward, dynamic poses", "Monochrome backdrops with one acid accent"],
+    shopify: { store_domain: "demo-apparel.myshopify.com", theme_id: "98233410", default_placement: "coll_top" },
+    notes: "Direct-to-consumer streetwear. Sharp and confident.",
+  },
+  {
+    id: "maison", name: "Maison",
+    palette: [
+      { name: "Noir base", hex: "#0B1622" }, { name: "Steel navy", hex: "#1E3A52" },
+      { name: "Boss gold", hex: "#C9A24B" }, { name: "Ivory", hex: "#F5F2EC" },
+      { name: "Rosé accent", hex: "#B23A6B" },
+    ],
+    typography: { display: "Space Grotesk", body: "Inter" },
+    voice: { tone: ["Premium", "Confident", "Direct"], prohibited_words: ["cheap", "discount blowout"], required_phrases: ["logo always uppercase"] },
+    logo_url: "https://cdn.maison.example/maison-mark.svg",
+    image_style_directives: ["At least one bottle visible", "No rainbow gradients", "CTA in AA+ contrast"],
+    shopify: { store_domain: "maison-store.myshopify.com", theme_id: "100200300", default_placement: "hero" },
+    notes: "Luxury fragrance retailer (prototype demo brand).",
+  },
+];
+
+// Bridge client (GH-17). Falls back to in-memory seeds when the bridge is down,
+// so BrandContext stays usable offline (per GH-17 fallback principle).
+const API_BASE = window.AIJOLOT_API_BASE || "http://localhost:8000";
+const _clone = (o) => JSON.parse(JSON.stringify(o));
+const _mem = _clone(BRAND_SEEDS);
+
+const BrandAPI = {
+  online: null, // null = unknown, true = bridge reachable, false = fallback
+  async _json(path, opts) {
+    const r = await fetch(API_BASE + path, opts);
+    if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; e.body = await r.text().catch(() => ""); throw e; }
+    return r.json();
+  },
+  async list() {
+    try { const d = await this._json("/brands"); this.online = true; return d; }
+    catch (e) { if (e.status) throw e; this.online = false; return _mem.map((b) => ({ id: b.id, name: b.name, palette: b.palette })); }
+  },
+  async get(id) {
+    try { const d = await this._json("/brands/" + id); this.online = true; return d; }
+    catch (e) { if (e.status) throw e; this.online = false; const b = _mem.find((x) => x.id === id); if (!b) throw new Error("not found: " + id); return _clone(b); }
+  },
+  async put(id, brand) {
+    try {
+      const d = await this._json("/brands/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(brand) });
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e; // real validation/server error — surface it
+      this.online = false;
+      const i = _mem.findIndex((x) => x.id === id);
+      if (i >= 0) _mem[i] = _clone(brand); else _mem.push(_clone(brand));
+      return _clone(brand);
+    }
+  },
+};
+
 Object.assign(window, {
   CAMPAIGN, CATALOG, BRAND, SEGMENTS, SEGMENT_ORDER, VARIANTS, PIPELINE, CODE_LINES,
   APPROVERS_SEED, COMMENTS_SEED, METRICS, SEG_PERF, CTR_TREND, MEMORY, STORE_PAGES,
   SCOPE_OPTS, BRANDS, COLLECTIONS, HERO_STYLES, MODELS, GRID_OPTS,
+  BRAND_SEEDS, BrandAPI, API_BASE,
 });

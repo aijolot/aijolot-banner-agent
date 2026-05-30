@@ -32,3 +32,6 @@ pnpm-debug.log*
 # Generated media
 storage/
 tmp/
+
+# Python packaging
+*.egg-info/
