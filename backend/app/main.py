@@ -1,7 +1,7 @@
-"""FastAPI bridge between the React UI and the ADK graph (GH-17, partial).
+"""FastAPI bridge between the React UI and the ADK graph.
 
-Currently exposes the brand endpoints needed by GH-26. Campaign / intake /
-draft routes are added in their own tickets.
+The app preserves root-level prototype routes for the current static frontend
+and also exposes canonical `/api/v1` routes for new backend/frontend work.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import brands, campaigns, intake
+from app.api.v1.router import router as api_v1_router
 
 app = FastAPI(title="Aijolot Banner Agent — Bridge", version="0.1.0")
 
@@ -33,6 +34,7 @@ app.add_middleware(
 app.include_router(brands.router)
 app.include_router(intake.router)
 app.include_router(campaigns.router)
+app.include_router(api_v1_router)
 
 
 @app.get("/health", tags=["meta"])

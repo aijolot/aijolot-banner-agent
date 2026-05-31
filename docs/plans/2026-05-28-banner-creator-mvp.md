@@ -344,6 +344,10 @@ pytest -v
 
 ### Task 2: Add `/api/v1` router while preserving current prototype routes
 
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added canonical `/api/v1` router modules that reuse existing brand/intake/campaign route logic, registered the v1 router in `app.main`, documented the current compatibility and v1 API contract, and added contract tests for root compatibility plus v1 brand/intake/campaign routes. Verified with `pytest tests/api/test_api_v1_contract.py -v` and full `pytest -v`.
+
 **Goal:** Create the stable canonical API namespace without breaking the static frontend prototype.
 
 **Expected result:** Existing root routes still work, and equivalent `/api/v1` routes are available for new integration work.

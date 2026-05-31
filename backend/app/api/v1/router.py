@@ -1,0 +1,15 @@
+"""Top-level router for the canonical /api/v1 namespace."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter
+
+from app.api.v1 import brands, campaigns, intake
+
+router = APIRouter(prefix="/api/v1")
+
+router.include_router(brands.router)
+router.include_router(intake.router)
+router.include_router(campaigns.router)
+
+__all__ = ["router"]
