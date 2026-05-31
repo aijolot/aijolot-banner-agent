@@ -595,6 +595,10 @@ pytest -v
 
 ### Task 7: Implement catalog snapshot APIs
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added catalog snapshot schemas, Supabase/in-memory catalog repositories, catalog snapshot service, and `/api/v1/campaigns/{campaign_id}/catalog-snapshot` POST/GET endpoints. Snapshots are sourced only from cached/seeded Shopify resources, include reproducible item context with safe metadata redaction and immutable store context, preserve deterministic ordering on create/get, and compensate cleanup on item-insert failure. Verified with Task 7 tests and full `pytest -v` (`90 passed, 2 skipped`).
+
 **Goal:** Freeze product/catalog context at campaign generation time.
 
 **Expected result:** A campaign can store and retrieve a catalog snapshot sourced from `shopify_resource_cache` or a future live Shopify sync.
