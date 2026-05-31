@@ -393,6 +393,10 @@ Manual:
 
 ### Task 3: Move brand context runtime storage to Supabase
 
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added Supabase repositories for `brand_contexts`/`brand_assets`, a brand service with Supabase-first runtime storage and Markdown fallback/import, safe Markdown importer, `POST /brands/import`, hyphenated brand slug support, repository payload filtering to actual schema columns, centralized brand team settings, deterministic fallback tests, and a skippable live Supabase integration test. Verified with targeted brand tests and full `pytest -v` (`42 passed, 1 skipped`). Auth for write endpoints remains a planned Task 19 concern.
+
 **Goal:** Replace Markdown file-backed runtime brand storage with Supabase-backed `brand_contexts`/`brand_assets`, while preserving Markdown files as seed/import sources.
 
 **Expected result:** Brand endpoints return Supabase data; Markdown import remains available for demo/versioned seed content.
@@ -1391,6 +1395,7 @@ No temporary gap is allowed unless it is listed here with an owner task.
 | Intake is deterministic/rule-based, not Gemini-backed | Current main / Task 4 | Task 9 | Keep deterministic fallback for tests. |
 | ADK graph, coordinator, tools, and skills are scaffolded but mostly `NotImplementedError` | Current main | Tasks 9-17 | Each task owns specific skill/tool replacement. |
 | `run_to_audit()` and `resume_after_hitl()` are not implemented | Current main / Task 10 | Tasks 14 and 17 | `run_to_audit` after render/audit; resume after schedule/publish. |
+| Brand write/import endpoints are unauthenticated | Task 3 | Task 19 | Local/dev MVP can proceed, but deployed backend must protect service-role-backed writes. |
 | Live Shopify resource sync missing | Task 5 | Task 17 or Task 21 | Seeded cache is enough only if demo uses seeded resources. |
 | Search-result placement validates but may not publish | Task 6 | Task 17 | Either implement or block with clear unsupported error. |
 | Custom model/persona is metadata-only | Task 8 | Task 21 or explicitly non-MVP | Do not imply real custom model generation exists. |

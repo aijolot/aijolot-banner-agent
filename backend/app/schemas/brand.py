@@ -47,7 +47,7 @@ class Shopify(BaseModel):
 class BrandContext(BaseModel):
     """Full brand context persisted per store."""
 
-    id: str = Field(..., pattern=r"^[a-z0-9_]+$")
+    id: str = Field(..., pattern=r"^[a-z0-9_-]+$")
     name: str = Field(..., min_length=1)
     palette: list[PaletteColor] = Field(..., min_length=1)
     typography: Typography = Field(default_factory=Typography)

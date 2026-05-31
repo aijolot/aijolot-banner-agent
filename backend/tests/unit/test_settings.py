@@ -12,6 +12,8 @@ ENV_NAMES = (
     "SUPABASE_DB_URL",
     "SUPABASE_ANON_KEY",
     "SUPABASE_SERVICE_ROLE_KEY",
+    "BRAND_CONTEXT_TEAM_ID",
+    "SUPABASE_TEAM_ID",
     "SUPABASE_STORAGE_BUCKET",
     "GOOGLE_API_KEY",
     "GOOGLE_CLOUD_PROJECT",
@@ -62,6 +64,8 @@ def test_settings_load_defaults_without_secrets(monkeypatch: pytest.MonkeyPatch)
     assert settings.supabase_db_url is None
     assert settings.supabase_anon_key is None
     assert settings.supabase_service_role_key is None
+    assert settings.brand_context_team_id is None
+    assert settings.supabase_team_id is None
     assert settings.google_cloud_project is None
 
 
@@ -72,6 +76,8 @@ def test_settings_loads_values_from_environment(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("SUPABASE_DB_URL", "postgresql://placeholder@localhost/postgres")
     monkeypatch.setenv("SUPABASE_ANON_KEY", "anon-placeholder")
     monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "service-placeholder")
+    monkeypatch.setenv("BRAND_CONTEXT_TEAM_ID", "00000000-0000-0000-0000-000000000001")
+    monkeypatch.setenv("SUPABASE_TEAM_ID", "00000000-0000-0000-0000-000000000002")
     monkeypatch.setenv("SUPABASE_STORAGE_BUCKET", "assets-test")
     monkeypatch.setenv("GOOGLE_API_KEY", "google-placeholder")
     monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "project-placeholder")
@@ -105,6 +111,8 @@ def test_settings_loads_values_from_environment(monkeypatch: pytest.MonkeyPatch)
         "https://example.supabase.co/",
         "service-placeholder",
     )
+    assert settings.brand_context_team_id == "00000000-0000-0000-0000-000000000001"
+    assert settings.supabase_team_id == "00000000-0000-0000-0000-000000000002"
     assert settings.supabase_storage_bucket == "assets-test"
     assert settings.require_google_api_key() == "google-placeholder"
     assert settings.require_google_cloud() == ("project-placeholder", "europe-west1")

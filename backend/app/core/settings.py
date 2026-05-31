@@ -39,6 +39,8 @@ class Settings(BaseModel):
         "supabase_db_url": "SUPABASE_DB_URL",
         "supabase_anon_key": "SUPABASE_ANON_KEY",
         "supabase_service_role_key": "SUPABASE_SERVICE_ROLE_KEY",
+        "brand_context_team_id": "BRAND_CONTEXT_TEAM_ID",
+        "supabase_team_id": "SUPABASE_TEAM_ID",
         "supabase_storage_bucket": "SUPABASE_STORAGE_BUCKET",
         "google_api_key": "GOOGLE_API_KEY",
         "google_cloud_project": "GOOGLE_CLOUD_PROJECT",
@@ -67,6 +69,8 @@ class Settings(BaseModel):
     supabase_db_url: str | None = None
     supabase_anon_key: SecretStr | None = None
     supabase_service_role_key: SecretStr | None = None
+    brand_context_team_id: str | None = None
+    supabase_team_id: str | None = None
     supabase_storage_bucket: str = "campaign-assets"
 
     google_api_key: SecretStr | None = None
@@ -94,6 +98,8 @@ class Settings(BaseModel):
         "supabase_db_url",
         "supabase_anon_key",
         "supabase_service_role_key",
+        "brand_context_team_id",
+        "supabase_team_id",
         "google_api_key",
         "google_cloud_project",
         "shopify_shop_domain",
