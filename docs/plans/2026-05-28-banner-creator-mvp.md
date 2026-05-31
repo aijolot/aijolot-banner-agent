@@ -507,6 +507,10 @@ Manual:
 
 ### Task 5: Implement store and Shopify resource cache APIs
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added frontend-safe store/resource schemas, Supabase repositories for `stores` and `shopify_resource_cache`, a cache-only `ShopifyResourceService` with seeded fallback, fail-closed Supabase team scoping, recursive metadata secret redaction, UUID store route validation, and `/api/v1/stores` endpoints for store list/detail and selectable cached/virtual Shopify resources. Verified with Task 5 tests and full `pytest -v` (`63 passed, 2 skipped`). Live Shopify sync remains intentionally deferred to Task 17/21.
+
 **Goal:** Provide store/catalog data required by placement and brief stages using seeded `stores` and `shopify_resource_cache` data first.
 
 **Expected result:** Frontend can list stores and selectable Shopify resources without live Shopify calls.

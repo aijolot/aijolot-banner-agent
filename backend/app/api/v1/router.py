@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import brands, campaigns, intake
+from app.api.v1 import brands, campaigns, intake, stores
 
 router = APIRouter(prefix="/api/v1")
 
 router.include_router(brands.router)
 router.include_router(intake.router)
 router.include_router(campaigns.router)
+router.include_router(stores.router)
 
 __all__ = ["router"]
