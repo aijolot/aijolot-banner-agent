@@ -775,6 +775,10 @@ pytest -v
 
 ### Task 11: Implement brand context, personalization, best-practices/KG, and concept draft skills
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Implemented deterministic, directly testable ADK skill functions for brand context loading, personalization variants, static best-practices/KG retrieval, concept drafting, and image prompt refinement. Added `kg_documents` repository adapter for the existing KG table with brand-id and vector validation. Brand loading supports Markdown/file fallback by `brand_id`; personalization always includes a default variant and caps total variants at four; KG retrieval is static/no-network and returns no irrelevant padding; concept drafting enforces prohibited words, required phrase preservation, palette token usage, and prompt-safe dynamic fragments; image prompt refinement produces a single 16:9, 60–120 word paragraph with sanitized dynamic inputs and no forbidden text/logo/UI/face-style terms. Verified with Task 11 tests and full `pytest -q` (`137 passed, 2 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
 **Goal:** Fill the first functional half of the scaffolded ADK graph.
 
 **Expected result:** Given campaign + brand + placement + catalog/art context, the workflow can produce a validated `Concept` and personalization variants.
