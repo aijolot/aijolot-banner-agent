@@ -264,6 +264,10 @@ Rules:
 
 ### Task 0: Local backend environment and baseline verification
 
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added explicit setuptools package discovery for `app*` and `adk_agents*` in `backend/pyproject.toml`, created backend `.venv` with Python 3.11.15, installed `pip install -e ".[dev]"`, and verified `pytest -v` passes with 12 tests.
+
 **Goal:** Make the current merged work runnable and testable locally before adding more code.
 
 **Expected result:** Backend dependencies are installed in a local virtual environment and current tests can run.

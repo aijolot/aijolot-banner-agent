@@ -28,6 +28,9 @@ dev = [
     "respx>=0.21",
 ]
 
+[tool.setuptools.packages.find]
+include = ["app*", "adk_agents*"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
