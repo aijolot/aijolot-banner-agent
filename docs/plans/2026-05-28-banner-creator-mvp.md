@@ -550,6 +550,10 @@ pytest -v
 
 ### Task 6: Implement placement registry and campaign placement APIs
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added placement schemas, seeded/Supabase placement type repositories, campaign placement repository, placement service, `/api/v1` placement endpoints, validation for existing-section and new-section modes, cached/virtual target validation, campaign placement save/read, UUID validation, non-resource target guardrails, and Task 19 auth/scoping TODOs. Verified with Task 6 tests and full `pytest -v` (`81 passed, 2 skipped`). Search-result placement validation is supported; actual publish support remains deferred to Task 17.
+
 **Goal:** Power the frontend placement stage using seeded placement types and persist selected placement details.
 
 **Expected result:** Campaign placement can be validated and saved, including existing-section mode and injected-section layout JSON.
