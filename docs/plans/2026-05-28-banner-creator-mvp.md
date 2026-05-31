@@ -633,6 +633,10 @@ pytest -v
 
 ### Task 8: Implement art direction APIs
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added art-direction schemas, Supabase/in-memory repository, service, and `/api/v1/campaigns/{campaign_id}/art-direction` PUT/GET endpoints. The API validates background mode, fold percentage, metadata dictionaries, UUID paths, campaign existence in configured Supabase mode, and one art-direction record per campaign via upsert. Custom model/persona data is persisted as metadata-only per the Task 21 carry-over. Campaign status is intentionally not mutated in Task 8 because the current Supabase status constraint does not include `art_direction_ready`; generation/status transitions remain owned by later generation tasks. Verified with Task 8 tests and full `pytest -q` (`106 passed, 2 skipped`).
+
 **Goal:** Persist art-direction decisions from the frontend Art stage.
 
 **Expected result:** Campaign has a validated art direction record before generation starts.
