@@ -724,6 +724,10 @@ adk web --agents_dir adk_agents
 
 ### Task 10: Implement generation run tracking and 5-step frontend progress facade
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added generation run/event schemas, Supabase/in-memory repositories, generation run service, `/api/v1` generation endpoints, and workflow helpers mapping the 12 ADK graph nodes into five frontend progress steps (`intake_context`, `concept`, `image`, `render_audit`, `review_publish`). Task 10 creates deterministic succeeded runs and ordered started/succeeded events for all graph nodes without executing real provider work or mutating campaign status. Supabase-mode compatibility includes explicit event timestamps for deterministic ordering, jsonb summary responses, UUID `started_by` validation, direct run/event campaign-team verification, parent-run same-campaign validation, and stable latest-run tie ordering. Verified with Task 10 tests and full `pytest -q` (`130 passed, 2 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
 **Goal:** Persist generation runs/events and map the scaffolded 12-node graph to frontend-visible progress.
 
 **Expected result:** Frontend can start/poll a generation run and see the 5 visible steps.
