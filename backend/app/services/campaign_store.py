@@ -8,12 +8,17 @@ contract and deterministic extraction seam.
 
 from __future__ import annotations
 
+import asyncio
+import importlib.util
 import os
 import re
+from pathlib import Path
+from typing import Any
 
 from app.core.settings import MissingSettingsError, Settings
 from app.schemas.campaign import Campaign, StructuredBrief
-from app.services.banners.campaign_service import CampaignService
+from app.services.banners.campaign_service import CampaignNotEditable, CampaignService
+from app.services.banners.status_machine import can_patch_brief
 from app.services.supabase.client import SupabaseClientFactory
 
 FIELD_LABELS_ES = {
@@ -145,6 +150,48 @@ def _agent_reply(brief: StructuredBrief) -> str:
 
 # ---- store/service facade ----
 _service: CampaignService | None = None
+_campaign_intake_skill: Any | None = None
+
+
+def _gemini_intake_enabled() -> bool:
+    return os.getenv("AIJOLOT_INTAKE_PROVIDER", "").strip().lower() == "gemini"
+
+
+def _load_campaign_intake_skill() -> Any:
+    """Load the hyphenated skill package implementation by path."""
+
+    global _campaign_intake_skill
+    if _campaign_intake_skill is not None:
+        return _campaign_intake_skill
+    path = Path(__file__).resolve().parents[1] / "agents" / "skills" / "campaign-intake" / "impl.py"
+    spec = importlib.util.spec_from_file_location("app.agents.skills.campaign_intake_impl", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("campaign-intake skill could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _campaign_intake_skill = module
+    return module
+
+
+def _run_campaign_intake_skill_sync(
+    *,
+    messages: list[dict[str, Any]],
+    current_brief: StructuredBrief,
+    brand_context: Any = None,
+) -> Any | None:
+    """Run the async intake skill only when this sync facade owns the loop.
+
+    Async callers should call the skill's async ``run`` function directly. This
+    sync facade returns ``None`` when a loop is already running so callers fall
+    back deterministically instead of attempting unsafe nested event loops.
+    """
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        module = _load_campaign_intake_skill()
+        return asyncio.run(module.run(messages, brand_context=brand_context, current_brief=current_brief))
+    return None
 
 
 def _configured_service() -> CampaignService:
@@ -212,7 +259,50 @@ def apply_patch(cid: str, fields: dict) -> Campaign | None:
 def intake(message: str, campaign_id: str | None) -> tuple[Campaign, str]:
     """Process one user turn. Returns (campaign, agent_reply_text)."""
 
-    return get_service().intake(
+    service = get_service()
+    if _gemini_intake_enabled():
+        existing = service.get_campaign(campaign_id) if campaign_id else None
+        if existing is not None and not can_patch_brief(existing.status):
+            # Let the service raise the canonical CampaignNotEditable exception.
+            return service.intake(
+                message,
+                campaign_id,
+                extractor=extract_into,
+                title_builder=_title,
+                reply_builder=_agent_reply,
+            )
+        transcript = [m.model_dump() for m in (existing.messages if existing else [])]
+        transcript.append({"author_type": "user", "body": message})
+        skill_brief: StructuredBrief | None = None
+        skill_question: str | None = None
+        try:
+            result = _run_campaign_intake_skill_sync(
+                messages=transcript,
+                current_brief=existing.structured_brief if existing else StructuredBrief(),
+            )
+            if result is not None:
+                skill_brief = result.structured_brief
+                skill_question = result.question
+        except CampaignNotEditable:
+            raise
+        except Exception:
+            pass
+        if skill_brief is not None:
+            def skill_extractor(_brief: StructuredBrief, _message: str) -> StructuredBrief:
+                return skill_brief
+
+            def skill_reply_builder(brief: StructuredBrief) -> str:
+                return skill_question or _agent_reply(brief)
+
+            return service.intake(
+                message,
+                campaign_id,
+                extractor=skill_extractor,
+                title_builder=_title,
+                reply_builder=skill_reply_builder,
+            )
+
+    return service.intake(
         message,
         campaign_id,
         extractor=extract_into,

@@ -674,6 +674,10 @@ pytest -v
 
 ### Task 9: Implement Gemini text client and connect intake skill without breaking deterministic fallback
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Implemented an import-safe Gemini text client, opt-in `campaign-intake` Gemini provider path via `AIJOLOT_INTAKE_PROVIDER=gemini`, structured Pydantic extraction/JSON fallback, deterministic fallback for tests/dev and provider failures, and synchronous `campaign_store.intake()` wiring that preserves the existing SSE/API contract. Added regression coverage for deterministic default behavior, mocked Gemini success, Gemini-unavailable fallback, stale transcript preservation, noncanonical urgency normalization, empty Gemini strings not erasing current brief fields, and API-level Gemini fallback. Manual live Gemini/ADK credential verification was not run because credentials were not provided. Verified with Task 9 tests and full `pytest -q` (`114 passed, 2 skipped`).
+
 **Goal:** Convert the current deterministic intake seam into a real Gemini/ADK-compatible structured extraction path while keeping deterministic tests stable.
 
 **Expected result:** `campaign-intake` skill can return structured campaign data through Gemini in real mode and deterministic output in tests/fallback mode.

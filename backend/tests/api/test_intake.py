@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -65,6 +66,51 @@ def test_intake_continues_same_campaign():
     assert done["campaign"]["id"] == cid
     assert done["complete"] is True
     assert done["campaign"]["structured_brief"]["cta"] == "Comprar ya"
+
+
+def test_intake_can_use_gemini_skill_provider_without_external_call(monkeypatch):
+    monkeypatch.setenv("AIJOLOT_INTAKE_PROVIDER", "gemini")
+
+    def fake_skill(**kwargs):
+        return SimpleNamespace(
+            structured_brief=StructuredBrief(
+                goal="Liquidar audífonos con 50% OFF",
+                audience="mujeres 25-40",
+                cta="Comprar ahora",
+                tone="Premium",
+                urgency="high",
+                placement="Home · Hero",
+            ),
+            question=None,
+        )
+
+    monkeypatch.setattr(campaign_store, "_run_campaign_intake_skill_sync", fake_skill)
+
+    with client.stream("POST", "/campaigns/intake", json={"message": "brief completo"}) as resp:
+        assert resp.status_code == 200
+        done = [e for e in _read_sse(resp) if e["type"] == "done"][0]
+
+    assert done["complete"] is True
+    assert done["campaign"]["structured_brief"]["cta"] == "Comprar ahora"
+    assert done["campaign"]["structured_brief"]["urgency"] == "high"
+
+
+def test_intake_falls_back_deterministically_when_gemini_skill_raises(monkeypatch):
+    monkeypatch.setenv("AIJOLOT_INTAKE_PROVIDER", "gemini")
+
+    def broken_skill(**kwargs):
+        raise RuntimeError("dynamic import failed")
+
+    monkeypatch.setattr(campaign_store, "_run_campaign_intake_skill_sync", broken_skill)
+
+    with client.stream("POST", "/campaigns/intake", json={"message": TEST_PROMPT}) as resp:
+        assert resp.status_code == 200
+        done = [e for e in _read_sse(resp) if e["type"] == "done"][0]
+
+    assert done["complete"] is False
+    assert done["campaign"]["structured_brief"]["urgency"] == "high"
+    assert "mujeres" in done["campaign"]["structured_brief"]["audience"].lower()
+    assert "cta" in done["missing"]
 
 
 def test_intake_rejects_non_editable_campaign():
