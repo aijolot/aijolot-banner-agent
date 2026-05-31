@@ -303,6 +303,10 @@ If Python 3.11 is not available locally, install it or document the Python versi
 
 ### Task 1: Add shared settings and dependency boundaries without duplicating existing app setup
 
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added `app.core.settings`, `app.core.dependencies`, and lazy Supabase client factory. Settings now cover Supabase/Gemini/Google/Shopify/app behavior env vars, use `SecretStr` for secrets, defer required-secret validation to `require_*` methods, ignore blank env vars safely, and provide FastAPI-overridable dependency boundaries. Verified with `pytest tests/unit/test_settings.py -v` and full `pytest -v`.
+
 **Goal:** Centralize env/settings and client dependencies while preserving existing `app.main`, routers, and tests.
 
 **Expected result:** Settings can be loaded for Supabase, Gemini, Shopify, and app behavior. External clients are created behind injectable boundaries, not at import time.
