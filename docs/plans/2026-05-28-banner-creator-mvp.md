@@ -440,6 +440,10 @@ supabase db reset
 
 ### Task 4: Move campaign/intake runtime storage from in-memory to Supabase
 
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added Supabase repositories for `campaigns` and `campaign_messages`, a `CampaignService` with Supabase-first persistence and local in-memory fallback only when Supabase is not configured, status transition helpers, `/api/v1/campaigns` create/list/get/patch semantics through the shared router, persisted intake messages, non-editable campaign protection, partial Supabase config fail-fast behavior, live Supabase integration opt-in via `RUN_LIVE_SUPABASE_TESTS=1`, and route-level Task 19 auth/scoping TODOs. Verified with targeted Task 4 tests and full `pytest -v` (`49 passed, 2 skipped`). Auth/request-scoped tenancy remains intentionally deferred to Task 19.
+
 **Goal:** Keep the team's campaign/intake behavior while persisting campaigns and messages in Supabase.
 
 **Expected result:** `POST /campaigns/intake`, `GET /campaigns/{id}`, and `PATCH /campaigns/{id}` survive process restarts and use `campaigns`/`campaign_messages` tables.

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.schemas.campaign import StructuredBrief
+from app.services import campaign_store
 from app.services.campaign_store import extract_into
 
 client = TestClient(app)
@@ -64,3 +65,13 @@ def test_intake_continues_same_campaign():
     assert done["campaign"]["id"] == cid
     assert done["complete"] is True
     assert done["campaign"]["structured_brief"]["cta"] == "Comprar ya"
+
+
+def test_intake_rejects_non_editable_campaign():
+    campaign = campaign_store.create_campaign(title="Approved", raw_brief="Locked")
+    campaign.status = "approved"
+
+    response = client.post("/campaigns/intake", json={"message": "CTA: Comprar", "campaign_id": campaign.id})
+
+    assert response.status_code == 409
+    assert "not editable" in response.json()["detail"]
