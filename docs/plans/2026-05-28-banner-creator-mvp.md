@@ -1043,6 +1043,10 @@ pytest -v
 
 ### Task 17: Implement scheduling and Shopify publishing
 
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added scheduling schemas/repositories/service and `/api/v1/campaigns/{campaign_id}/schedule` create/update/cancel endpoints; scheduling requires approved/scheduled campaigns, validates schedule windows, stores active date config, and is fail-closed behind `AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES=1` until Task 19 request-scoped auth. Added injectable Shopify client/theme/metafield/publisher services and `/api/v1/campaigns/{campaign_id}/publish` plus `/unpublish`; publish requires scheduled/published campaigns with a pending/active schedule, uses the scheduled revision, rejects search-result placement with a clear unsupported error, installs controlled Liquid files, merges/removes only the target campaign config in the shop metafield, records publish/unpublish jobs with sequential idempotency protection, and keeps live Shopify credentials fail-closed by default. Added internal skill/tool wiring and Task 17 unit/API tests. Verified with `pytest tests/unit/test_schedule_service.py -v`, `pytest tests/unit/test_shopify_publisher.py -v`, `pytest tests/api/test_schedules.py -v`, `pytest tests/api/test_publishing.py -v`, and full `pytest -q` (`217 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`). Review follow-ups: DB idempotency is sequential-safe but not atomic under concurrent duplicate requests; live Shopify publishing still needs request-scoped credential/decryption injection in Task 19/demo wiring; controlled Liquid reads the default `aijolot.banner_campaigns` metafield path.
+
 **Goal:** Schedule approved campaigns and publish campaign config to Shopify through a controlled Liquid section.
 
 **Expected result:** Approved campaigns can be scheduled, theme files can be idempotently installed, campaign config can be published/unpublished, and publish jobs are recorded.
