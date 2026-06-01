@@ -350,11 +350,11 @@ class PlacementService:
         )
 
 
-def configured_service() -> PlacementService:
+def _configured_service_for_team(team_id_override: str | None = None) -> PlacementService:
     settings = Settings.from_env()
     has_supabase_signal = any((settings.supabase_url, settings.supabase_service_role_key, settings.supabase_team_id))
     has_supabase = settings.supabase_url is not None and settings.supabase_service_role_key is not None
-    team_id = settings.supabase_team_id or settings.brand_context_team_id
+    team_id = team_id_override or settings.supabase_team_id or settings.brand_context_team_id
     if not has_supabase_signal:
         return PlacementService(team_id=team_id)
     if not has_supabase:
@@ -363,3 +363,11 @@ def configured_service() -> PlacementService:
         raise MissingSettingsError(("SUPABASE_TEAM_ID", "BRAND_CONTEXT_TEAM_ID"))
     client = SupabaseClientFactory(settings).service_role_client()
     return PlacementService.from_supabase_client(client, team_id=team_id)
+
+
+def configured_service() -> PlacementService:
+    return _configured_service_for_team()
+
+
+def configured_service_for_team(team_id: str) -> PlacementService:
+    return _configured_service_for_team(team_id)

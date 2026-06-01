@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from typing import Any
 
@@ -136,16 +135,22 @@ class ScheduleService:
             raise InvalidScheduleWindow("ends_at must be after starts_at")
 
 
-def configured_service() -> ScheduleService:
+def _configured_service_for_team(team_id_override: str | None = None) -> ScheduleService:
     settings = Settings.from_env()
-    team_id = settings.supabase_team_id or settings.brand_context_team_id
+    team_id = team_id_override or settings.supabase_team_id or settings.brand_context_team_id
     if not (settings.supabase_url or settings.supabase_service_role_key or team_id):
         raise ScheduleServiceUnavailable("schedule endpoints require Supabase service-role configuration")
     if not settings.supabase_url or not settings.supabase_service_role_key:
         raise MissingSettingsError(("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"))
     if not team_id:
         raise MissingSettingsError(("SUPABASE_TEAM_ID", "BRAND_CONTEXT_TEAM_ID"))
-    if os.getenv("AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES") != "1":
-        raise ScheduleServiceUnavailable("schedule endpoints require AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES=1 until Task 19 request-scoped auth is implemented")
     client = SupabaseClientFactory(settings).service_role_client()
     return ScheduleService.from_supabase_client(client, team_id=team_id)
+
+
+def configured_service() -> ScheduleService:
+    return _configured_service_for_team()
+
+
+def configured_service_for_team(team_id: str) -> ScheduleService:
+    return _configured_service_for_team(team_id)

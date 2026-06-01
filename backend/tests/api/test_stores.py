@@ -6,6 +6,7 @@ from app.main import app
 from app.schemas.stores import ShopifyResourceSummary, StoreSummary
 
 client = TestClient(app)
+AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "00000000-0000-0000-0000-000000000001", "X-Aijolot-Store-Id": "00000000-0000-0000-0000-000000000101"}
 STORE_ID = "00000000-0000-0000-0000-000000000101"
 
 
@@ -57,7 +58,7 @@ def test_list_stores(monkeypatch) -> None:
 
     monkeypatch.setattr(stores, "_default_service", lambda: FakeStoreService())
 
-    response = client.get("/api/v1/stores")
+    response = client.get("/api/v1/stores", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     assert response.json() == [
@@ -81,7 +82,7 @@ def test_get_store(monkeypatch) -> None:
 
     monkeypatch.setattr(stores, "_default_service", lambda: FakeStoreService())
 
-    response = client.get(f"/api/v1/stores/{STORE_ID}")
+    response = client.get(f"/api/v1/stores/{STORE_ID}", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     assert response.json()["id"] == STORE_ID
@@ -92,7 +93,7 @@ def test_get_store_404(monkeypatch) -> None:
 
     monkeypatch.setattr(stores, "_default_service", lambda: FakeStoreService())
 
-    response = client.get("/api/v1/stores/00000000-0000-0000-0000-000000000999")
+    response = client.get("/api/v1/stores/00000000-0000-0000-0000-000000000999", headers=AUTH_HEADERS)
 
     assert response.status_code == 404
 
@@ -102,7 +103,7 @@ def test_list_shopify_resources(monkeypatch) -> None:
 
     monkeypatch.setattr(stores, "_default_service", lambda: FakeStoreService())
 
-    response = client.get(f"/api/v1/stores/{STORE_ID}/shopify/resources?resource_type=product")
+    response = client.get(f"/api/v1/stores/{STORE_ID}/shopify/resources?resource_type=product", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     body = response.json()
@@ -115,7 +116,7 @@ def test_search_is_valid_resource_type(monkeypatch) -> None:
 
     monkeypatch.setattr(stores, "_default_service", lambda: FakeStoreService())
 
-    response = client.get(f"/api/v1/stores/{STORE_ID}/shopify/resources?resource_type=search")
+    response = client.get(f"/api/v1/stores/{STORE_ID}/shopify/resources?resource_type=search", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     assert response.json()[0]["resource_type"] == "search"
@@ -126,7 +127,7 @@ def test_invalid_resource_type_returns_422(monkeypatch) -> None:
 
     monkeypatch.setattr(stores, "_default_service", lambda: FakeStoreService())
 
-    response = client.get(f"/api/v1/stores/{STORE_ID}/shopify/resources?resource_type=blog")
+    response = client.get(f"/api/v1/stores/{STORE_ID}/shopify/resources?resource_type=blog", headers=AUTH_HEADERS)
 
     assert response.status_code == 422
 

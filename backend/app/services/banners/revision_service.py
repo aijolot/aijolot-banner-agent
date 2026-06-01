@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import html
-import os
 from datetime import datetime, timezone
 from typing import Any, Protocol, cast
 from uuid import uuid4
@@ -276,21 +275,27 @@ class RevisionService:
         )
 
 
-def configured_service() -> RevisionService:
+def _configured_service_for_team(team_id_override: str | None = None) -> RevisionService:
     settings = Settings.from_env()
     has_supabase_signal = any((settings.supabase_url, settings.supabase_service_role_key, settings.supabase_team_id))
     has_supabase = settings.supabase_url is not None and settings.supabase_service_role_key is not None
-    team_id = settings.supabase_team_id or settings.brand_context_team_id
+    team_id = team_id_override or settings.supabase_team_id or settings.brand_context_team_id
     if not has_supabase_signal:
         raise MissingSettingsError(("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "SUPABASE_TEAM_ID"))
     if not has_supabase:
         raise MissingSettingsError(("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"))
     if not team_id:
         raise MissingSettingsError(("SUPABASE_TEAM_ID", "BRAND_CONTEXT_TEAM_ID"))
-    if os.getenv("AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES") != "1":
-        raise MissingSettingsError(("AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES=1", "Task 19 request-scoped auth"))
     client = SupabaseClientFactory(settings).service_role_client()
     return RevisionService.from_supabase_client(client, team_id=team_id)
+
+
+def configured_service() -> RevisionService:
+    return _configured_service_for_team()
+
+
+def configured_service_for_team(team_id: str) -> RevisionService:
+    return _configured_service_for_team(team_id)
 
 
 def _run_request(*, parent_run_id: Any, started_by: str | None, prompt: str) -> Any:

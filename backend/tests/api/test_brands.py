@@ -9,6 +9,7 @@ from app.main import app
 from app.services.brands.brand_service import BrandService
 
 client = TestClient(app)
+AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "team-1"}
 
 
 def _clear_supabase_env(monkeypatch):
@@ -138,6 +139,7 @@ def test_list_and_get_can_use_supabase_backed_service(monkeypatch):
 
     service = BrandService(repository=FakeBrandRepository(), team_id="team-1")
     monkeypatch.setattr(store, "_default_service", lambda: service)
+    monkeypatch.setattr(store, "service_for_team", lambda team_id: service)
 
     listed = client.get("/brands")
     assert listed.status_code == 200
@@ -145,7 +147,7 @@ def test_list_and_get_can_use_supabase_backed_service(monkeypatch):
         {"id": "supabase_brand", "name": "Supabase Brand", "palette": [{"name": "Blue", "hex": "#0000FF"}]}
     ]
 
-    loaded = client.get("/api/v1/brands/supabase_brand")
+    loaded = client.get("/api/v1/brands/supabase_brand", headers=AUTH_HEADERS)
     assert loaded.status_code == 200
     assert loaded.json()["shopify"]["store_domain"] == "runtime.myshopify.com"
 

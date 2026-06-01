@@ -8,6 +8,7 @@ from app.schemas.catalog import CatalogSnapshotResponse
 client = TestClient(app)
 CAMPAIGN_ID = "00000000-0000-0000-0000-000000000301"
 STORE_ID = "00000000-0000-0000-0000-000000000101"
+AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "test-team", "X-Aijolot-Store-Id": "test-store"}
 
 
 class FakeCatalogSnapshotService:
@@ -64,9 +65,10 @@ def test_create_and_get_catalog_snapshot(monkeypatch) -> None:
 
     post = client.post(
         f"/api/v1/campaigns/{CAMPAIGN_ID}/catalog-snapshot",
+        headers=AUTH_HEADERS,
         json={"store_id": STORE_ID, "query_summary": "VIP products", "discount_rule": {"pct": 20}},
     )
-    get = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/catalog-snapshot")
+    get = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/catalog-snapshot", headers=AUTH_HEADERS)
 
     assert post.status_code == 200
     assert post.json()["campaign_id"] == CAMPAIGN_ID
@@ -84,6 +86,7 @@ def test_create_snapshot_unknown_campaign_returns_404(monkeypatch) -> None:
 
     response = client.post(
         "/api/v1/campaigns/00000000-0000-0000-0000-000000000999/catalog-snapshot",
+        headers=AUTH_HEADERS,
         json={"store_id": STORE_ID},
     )
 
@@ -95,7 +98,7 @@ def test_get_missing_snapshot_returns_404(monkeypatch) -> None:
 
     monkeypatch.setattr(catalog, "_default_service", lambda: FakeCatalogSnapshotService())
 
-    response = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/catalog-snapshot")
+    response = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/catalog-snapshot", headers=AUTH_HEADERS)
 
     assert response.status_code == 404
 

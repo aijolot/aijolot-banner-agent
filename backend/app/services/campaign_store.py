@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from app.core.auth import UserContext
 from app.core.settings import MissingSettingsError, Settings
 from app.schemas.campaign import Campaign, StructuredBrief
 from app.services.banners.campaign_service import CampaignNotEditable, CampaignService
@@ -150,6 +151,7 @@ def _agent_reply(brief: StructuredBrief) -> str:
 
 # ---- store/service facade ----
 _service: CampaignService | None = None
+_context_services: dict[tuple[str, str | None], CampaignService] = {}
 _campaign_intake_skill: Any | None = None
 
 
@@ -224,6 +226,34 @@ def _configured_service() -> CampaignService:
     return CampaignService.from_supabase_client(client, team_id=team_id, store_id=store_id)
 
 
+def _configured_service_for_context(context: UserContext) -> CampaignService:
+    settings = Settings.from_env()
+    has_supabase_signal = any(
+        (
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+            settings.supabase_team_id,
+            settings.supabase_store_id,
+        )
+    )
+    if not has_supabase_signal:
+        key = (context.team_id, context.store_id)
+        if key not in _context_services:
+            _context_services[key] = CampaignService(team_id=context.team_id, store_id=context.store_id)
+        return _context_services[key]
+    if settings.supabase_url is None or settings.supabase_service_role_key is None:
+        raise MissingSettingsError(("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"))
+    client = SupabaseClientFactory(settings).service_role_client()
+    store_id = context.store_id or settings.supabase_store_id or os.getenv("CAMPAIGN_STORE_ID")
+    if not store_id:
+        from app.db.repositories.campaigns import CampaignRepository
+
+        store_id = CampaignRepository(client).first_store_id(team_id=context.team_id)
+    if not store_id:
+        raise MissingSettingsError(("SUPABASE_STORE_ID",))
+    return CampaignService.from_supabase_client(client, team_id=context.team_id, store_id=store_id)
+
+
 def get_service() -> CampaignService:
     global _service
     if _service is None:
@@ -231,11 +261,16 @@ def get_service() -> CampaignService:
     return _service
 
 
+def get_service_for_context(context: UserContext) -> CampaignService:
+    return _configured_service_for_context(context)
+
+
 def set_service(service: CampaignService | None) -> None:
     """Override the runtime service in tests; pass None to rebuild from env."""
 
     global _service
     _service = service
+    _context_services.clear()
 
 
 def list_campaigns(limit: int = 100) -> list[Campaign]:
@@ -256,10 +291,9 @@ def apply_patch(cid: str, fields: dict) -> Campaign | None:
     return get_service().apply_patch(cid, fields)
 
 
-def intake(message: str, campaign_id: str | None) -> tuple[Campaign, str]:
-    """Process one user turn. Returns (campaign, agent_reply_text)."""
+def _intake_with_service(service: CampaignService, message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+    """Process one user turn using the supplied service."""
 
-    service = get_service()
     if _gemini_intake_enabled():
         existing = service.get_campaign(campaign_id) if campaign_id else None
         if existing is not None and not can_patch_brief(existing.status):
@@ -309,3 +343,15 @@ def intake(message: str, campaign_id: str | None) -> tuple[Campaign, str]:
         title_builder=_title,
         reply_builder=_agent_reply,
     )
+
+
+def intake(message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+    """Process one user turn. Returns (campaign, agent_reply_text)."""
+
+    return _intake_with_service(get_service(), message, campaign_id)
+
+
+def intake_for_context(context: UserContext, message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+    """Process one user turn with a request-scoped campaign service."""
+
+    return _intake_with_service(get_service_for_context(context), message, campaign_id)

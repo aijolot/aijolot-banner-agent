@@ -3,9 +3,9 @@
 POST /campaigns/intake — streams the agent reply token-by-token over SSE, then
 a final ``done`` event carrying the updated campaign and completeness state.
 
-TODO(Task 19): this MVP route currently uses configured-team service-role access.
-Add auth and request-scoped team/store/user context before exposing it outside
-the trusted demo backend.
+The root route preserves prototype unauthenticated behavior. When mounted under
+`/api/v1`, intake requires request user/team context and uses a request-scoped
+campaign service.
 
 SSE event shapes (each line is ``data: <json>\\n\\n``):
     {"type": "token", "text": "..."}                 # streamed reply chunk
@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.schemas.campaign import IntakeRequest
+from app.core.auth import require_user_context
+from app.core.settings import MissingSettingsError
 from app.services import campaign_store
 from app.services.banners.campaign_service import CampaignNotEditable
 
@@ -32,11 +34,17 @@ def _sse(payload: dict) -> str:
 
 
 @router.post("/intake")
-def intake(req: IntakeRequest) -> StreamingResponse:
+def intake(req: IntakeRequest, request: Request) -> StreamingResponse:
     try:
-        campaign, reply = campaign_store.intake(req.message, req.campaign_id)
+        if request.url.path.startswith("/api/v1/"):
+            context = require_user_context(request)
+            campaign, reply = campaign_store.intake_for_context(context, req.message, req.campaign_id)
+        else:
+            campaign, reply = campaign_store.intake(req.message, req.campaign_id)
     except CampaignNotEditable as exc:
         raise HTTPException(status_code=409, detail=f"campaign '{exc.args[0]}' is not editable")
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
     def stream():
         # stream the reply word-by-word so the UI can render it live

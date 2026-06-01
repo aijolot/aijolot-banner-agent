@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
+AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "test-team", "X-Aijolot-Store-Id": "test-store"}
 
 
 def _new_campaign() -> str:
@@ -42,16 +43,16 @@ def test_get_campaign_roundtrip():
 
 
 def test_v1_create_list_get_campaigns():
-    created = client.post("/api/v1/campaigns", json={"title": "Dashboard Draft", "raw_brief": "Home sale"})
+    created = client.post("/api/v1/campaigns", headers=AUTH_HEADERS, json={"title": "Dashboard Draft", "raw_brief": "Home sale"})
     assert created.status_code == 200
     cid = created.json()["id"]
     assert created.json()["title"] == "Dashboard Draft"
 
-    listed = client.get("/api/v1/campaigns")
+    listed = client.get("/api/v1/campaigns", headers=AUTH_HEADERS)
     assert listed.status_code == 200
     assert any(row["id"] == cid for row in listed.json())
 
-    loaded = client.get(f"/api/v1/campaigns/{cid}")
+    loaded = client.get(f"/api/v1/campaigns/{cid}", headers=AUTH_HEADERS)
     assert loaded.status_code == 200
     assert loaded.json()["raw_brief"] == "Home sale"
 

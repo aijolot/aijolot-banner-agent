@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
+AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "00000000-0000-0000-0000-000000000001", "X-Aijolot-Store-Id": "00000000-0000-0000-0000-000000000101"}
 
 
 def _read_sse(resp):
@@ -20,11 +21,9 @@ def _read_sse(resp):
 
 
 def _new_v1_campaign() -> str:
-    with client.stream("POST", "/api/v1/campaigns/intake", json={"message": "Promo en la home"}) as r:
-        assert r.status_code == 200
-        done = [e for e in _read_sse(r) if e["type"] == "done"]
-    assert len(done) == 1
-    return done[0]["campaign"]["id"]
+    response = client.post("/api/v1/campaigns", headers=AUTH_HEADERS, json={"title": "Promo", "raw_brief": "Promo en la home"})
+    assert response.status_code == 200
+    return response.json()["id"]
 
 
 def test_health_root_route_remains_available():
@@ -43,7 +42,7 @@ def test_root_intake_route_remains_available():
 
 
 def test_v1_intake_route_matches_root_contract():
-    with client.stream("POST", "/api/v1/campaigns/intake", json={"message": "Promo en la home"}) as r:
+    with client.stream("POST", "/api/v1/campaigns/intake", headers=AUTH_HEADERS, json={"message": "Promo en la home"}) as r:
         assert r.status_code == 200
         assert "text/event-stream" in r.headers["content-type"]
         events = _read_sse(r)
@@ -57,15 +56,15 @@ def test_v1_intake_route_matches_root_contract():
 def test_v1_brand_routes_match_root_contract(tmp_path, monkeypatch):
     import app.services.brand_store as store
 
-    brands = client.get("/api/v1/brands")
+    brands = client.get("/api/v1/brands", headers=AUTH_HEADERS)
     assert brands.status_code == 200
     assert {b["id"] for b in brands.json()} >= {"avocado_store", "demo_apparel", "maison"}
 
-    brand = client.get("/api/v1/brands/avocado_store")
+    brand = client.get("/api/v1/brands/avocado_store", headers=AUTH_HEADERS)
     assert brand.status_code == 200
     assert brand.json()["name"] == "Avocado Store"
 
-    assert client.get("/api/v1/brands/nope").status_code == 404
+    assert client.get("/api/v1/brands/nope", headers=AUTH_HEADERS).status_code == 404
 
     # Exercise v1 PUT without mutating checked-in seed files.
     source = store.get_brand("maison")
@@ -74,7 +73,7 @@ def test_v1_brand_routes_match_root_contract(tmp_path, monkeypatch):
     payload = source.model_dump()
     payload["voice"]["tone"] = ["Premium", "Editorial"]
 
-    saved = client.put("/api/v1/brands/maison", json=payload)
+    saved = client.put("/api/v1/brands/maison", headers=AUTH_HEADERS, json=payload)
     assert saved.status_code == 200
     assert saved.json()["voice"]["tone"] == ["Premium", "Editorial"]
 
@@ -82,12 +81,12 @@ def test_v1_brand_routes_match_root_contract(tmp_path, monkeypatch):
 def test_v1_campaign_get_and_patch_match_root_contract():
     cid = _new_v1_campaign()
 
-    patch = client.patch(f"/api/v1/campaigns/{cid}", json={"cta": "Comprar ahora", "audience": "VIP"})
+    patch = client.patch(f"/api/v1/campaigns/{cid}", headers=AUTH_HEADERS, json={"cta": "Comprar ahora", "audience": "VIP"})
     assert patch.status_code == 200
     assert patch.json()["structured_brief"]["cta"] == "Comprar ahora"
     assert patch.json()["structured_brief"]["audience"] == "VIP"
 
-    get = client.get(f"/api/v1/campaigns/{cid}")
+    get = client.get(f"/api/v1/campaigns/{cid}", headers=AUTH_HEADERS)
     assert get.status_code == 200
     assert get.json()["id"] == cid
     assert get.json()["structured_brief"]["cta"] == "Comprar ahora"

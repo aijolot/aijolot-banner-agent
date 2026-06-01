@@ -16,20 +16,32 @@ from app.services.brands.markdown_importer import BrandMarkdownImporter, dump_ma
 from app.services.supabase.client import SupabaseClientFactory
 
 BRANDS_DIR = Path(__file__).resolve().parents[3] / "brands"
+DEMO_TEAM_ID = "00000000-0000-0000-0000-000000000001"
 
 
-def _default_service() -> BrandService:
+def _default_service_for_team(team_id_override: str | None = None) -> BrandService:
     importer = BrandMarkdownImporter(base_dir=BRANDS_DIR)
     settings = Settings.from_env()
-    team_id = settings.brand_context_team_id or settings.supabase_team_id
+    team_id = team_id_override or settings.brand_context_team_id or settings.supabase_team_id
     has_supabase_credentials = settings.supabase_url is not None and settings.supabase_service_role_key is not None
     if has_supabase_credentials and not team_id:
         raise MissingSettingsError(("BRAND_CONTEXT_TEAM_ID", "SUPABASE_TEAM_ID"))
     try:
         client = SupabaseClientFactory(settings).service_role_client()
     except MissingSettingsError:
+        if team_id_override and team_id_override != DEMO_TEAM_ID:
+            team_dir = BRANDS_DIR / ".runtime" / team_id_override
+            return BrandService(markdown_importer=BrandMarkdownImporter(base_dir=team_dir), markdown_writes_dir=team_dir)
         return BrandService(markdown_importer=importer, markdown_writes_dir=BRANDS_DIR)
     return BrandService.from_supabase_client(client, team_id=team_id, markdown_importer=importer)
+
+
+def _default_service() -> BrandService:
+    return _default_service_for_team()
+
+
+def service_for_team(team_id: str) -> BrandService:
+    return _default_service_for_team(team_id)
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:

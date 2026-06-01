@@ -8,6 +8,7 @@ from app.schemas.placements import CampaignPlacementResponse, PlacementTargetMap
 client = TestClient(app)
 STORE_ID = "00000000-0000-0000-0000-000000000101"
 CAMPAIGN_ID = "00000000-0000-0000-0000-000000000301"
+AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "test-team", "X-Aijolot-Store-Id": "test-store"}
 
 
 class FakePlacementService:
@@ -83,7 +84,7 @@ def test_list_placement_types(monkeypatch) -> None:
 
     monkeypatch.setattr(placements, "_default_service", lambda: FakePlacementService())
 
-    response = client.get(f"/api/v1/stores/{STORE_ID}/placement-types")
+    response = client.get(f"/api/v1/stores/{STORE_ID}/placement-types", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     assert response.json()[0]["key"] == "hero_main"
@@ -94,7 +95,7 @@ def test_list_placement_targets(monkeypatch) -> None:
 
     monkeypatch.setattr(placements, "_default_service", lambda: FakePlacementService())
 
-    response = client.get(f"/api/v1/stores/{STORE_ID}/placement-types/hero_main/targets")
+    response = client.get(f"/api/v1/stores/{STORE_ID}/placement-types/hero_main/targets", headers=AUTH_HEADERS)
 
     assert response.status_code == 200
     assert "collection" in response.json()
@@ -107,6 +108,7 @@ def test_validate_placement(monkeypatch) -> None:
 
     response = client.post(
         "/api/v1/placements/validate",
+        headers=AUTH_HEADERS,
         json={
             "store_id": STORE_ID,
             "placement_type_key": "hero_main",
@@ -128,6 +130,7 @@ def test_validate_invalid_placement_returns_400(monkeypatch) -> None:
 
     response = client.post(
         "/api/v1/placements/validate",
+        headers=AUTH_HEADERS,
         json={"store_id": STORE_ID, "placement_type_key": "bad", "mode": "new_section", "target_type": "home"},
     )
 
@@ -151,8 +154,8 @@ def test_save_and_get_campaign_placement(monkeypatch) -> None:
         "existing_placement_size": "1440x420",
         "slot": "hero",
     }
-    post = client.post(f"/api/v1/campaigns/{CAMPAIGN_ID}/placement", json=payload)
-    get = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/placement")
+    post = client.post(f"/api/v1/campaigns/{CAMPAIGN_ID}/placement", headers=AUTH_HEADERS, json=payload)
+    get = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/placement", headers=AUTH_HEADERS)
 
     assert post.status_code == 200
     assert post.json()["campaign_id"] == CAMPAIGN_ID
@@ -166,7 +169,7 @@ def test_get_unknown_campaign_placement_returns_404(monkeypatch) -> None:
 
     monkeypatch.setattr(placements, "_default_service", lambda: FakePlacementService())
 
-    response = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/placement")
+    response = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/placement", headers=AUTH_HEADERS)
 
     assert response.status_code == 404
 
@@ -187,6 +190,7 @@ def test_invalid_body_store_id_returns_422(monkeypatch) -> None:
 
     response = client.post(
         "/api/v1/placements/validate",
+        headers=AUTH_HEADERS,
         json={"store_id": "not-a-uuid", "placement_type_key": "hero_main", "mode": "new_section", "target_type": "home"},
     )
 

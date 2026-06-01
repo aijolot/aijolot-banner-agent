@@ -8,6 +8,7 @@ from app.schemas.art_direction import ArtDirectionResponse
 client = TestClient(app)
 CAMPAIGN_ID = "00000000-0000-0000-0000-000000000301"
 UNKNOWN_CAMPAIGN_ID = "00000000-0000-0000-0000-000000000999"
+AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "test-team", "X-Aijolot-Store-Id": "test-store"}
 
 
 class FakeArtDirectionService:
@@ -48,8 +49,8 @@ def test_put_and_get_campaign_art_direction(monkeypatch) -> None:
         "fold_percentage": 60,
         "layout_hints": {"safe_zone": "left"},
     }
-    put = client.put(f"/api/v1/campaigns/{CAMPAIGN_ID}/art-direction", json=payload)
-    get = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/art-direction")
+    put = client.put(f"/api/v1/campaigns/{CAMPAIGN_ID}/art-direction", headers=AUTH_HEADERS, json=payload)
+    get = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/art-direction", headers=AUTH_HEADERS)
 
     assert put.status_code == 200
     assert put.json()["campaign_id"] == CAMPAIGN_ID
@@ -67,6 +68,7 @@ def test_put_unknown_campaign_returns_404(monkeypatch) -> None:
 
     response = client.put(
         f"/api/v1/campaigns/{UNKNOWN_CAMPAIGN_ID}/art-direction",
+        headers=AUTH_HEADERS,
         json={"background_mode": "usage"},
     )
 
@@ -79,7 +81,7 @@ def test_get_missing_art_direction_returns_404(monkeypatch) -> None:
 
     monkeypatch.setattr(art_direction, "_default_service", lambda: FakeArtDirectionService())
 
-    response = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/art-direction")
+    response = client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/art-direction", headers=AUTH_HEADERS)
 
     assert response.status_code == 404
     assert "art direction" in response.json()["detail"]

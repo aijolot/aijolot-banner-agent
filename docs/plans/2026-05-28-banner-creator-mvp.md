@@ -1173,6 +1173,10 @@ Manual:
 
 ### Task 19: Auth/team context and RLS alignment
 
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added MVP `UserContext` parsing for explicit demo headers and `Bearer demo:<user>:<team>[:store]` tokens, with fail-closed 401 handling and token-safe errors. Canonical `/api/v1` campaign CRUD, intake, brands, stores, art direction, catalog, placement, generation/revision, scheduling, and publishing routes now require request context when using default service-backed paths; root prototype routes remain compatible. Request team context is used to construct Supabase/service-role-backed services for campaign, brand, store/resource, art, catalog, placement, generation/revision, and schedule paths. No-Supabase local fallbacks are partitioned by request team for campaigns and generation runs/events; brand seed fallback is restricted to the demo team and non-demo teams use isolated empty runtime dirs. Publishing remains auth-required and fail-closed until a request-scoped Shopify publisher adapter is injected. Added auth boundary/unit tests for missing/malformed context, token non-leakage, cross-team campaign/run isolation, scoped default service construction, and v1 fail-closed behavior. Verified with focused auth/brand/store tests and full backend `pytest -q` (`243 passed, 3 skipped`, with two pre-existing Pydantic warnings), `git diff --check`, secret/unsafe-code greps, and final narrow review approval.
+
 **Goal:** Add enough user/team scoping for MVP without exposing service role secrets.
 
 **Expected result:** Backend can associate records to a user/team and enforce no cross-team leakage through API responses.
