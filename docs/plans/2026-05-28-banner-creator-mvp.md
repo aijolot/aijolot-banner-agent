@@ -817,6 +817,10 @@ pytest -v
 
 ### Task 12: Implement image provider, image-generation skill, and usage soft guard
 
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added a typed image provider boundary with deterministic fake PNG provider as the safe default and optional explicit Gemini provider. Updated `nano_banana_image` and `nano-banana-image-generate` to return raw in-memory image bytes plus provider, prompt, usage, and soft-guard metadata for Task 13. Added a generation usage repository adapter and a per-user 15-minute soft guard that warns at the 20th image generation, records in memory for every call, and persists to Supabase only when valid UUID user/team context is available for current schema/RLS. Updated the internal skill contract. Verified with `pytest tests/unit/test_image_provider.py -v`, `pytest tests/unit/test_usage_guard_service.py -v`, and full `pytest -q` (`152 passed, 2 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
 **Goal:** Generate image bytes through a provider boundary and track image usage/cost.
 
 **Expected result:** `nano-banana-image-generate` can call a real or fake provider, and usage warning metadata triggers after 20 image generations per user per 15 minutes.
