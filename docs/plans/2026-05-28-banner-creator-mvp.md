@@ -1247,6 +1247,10 @@ pytest -v
 
 ### Task 21: Demo hardening and carry-over gap closure
 
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added a constrained demo script, three demo scenarios, an idempotent local/Supabase-aware reset script, and an offline deterministic smoke script that exercises `/api/v1` with demo auth headers via FastAPI TestClient. The chosen demo path is explicitly locked to seeded resources and deterministic fallback unless real provider credentials are deliberately enabled. Demo constraints are now documented: PDF/Figma/brandbook partial/mock only, live Shopify resource sync seeded-locked unless explicitly run, custom model/persona non-MVP, AVIF audit-labeled skipped when unavailable, Lighthouse mock/manual only, A/B/C deterministic/demo-labeled variants, and static deterministic KG retrieval for smoke. Verified with `supabase db reset`, `pytest -v` (`257 passed, 3 skipped`), and `python3 scripts/smoke-demo-flow.py` twice.
+
 **Goal:** Remove or explicitly constrain every gap that could break the hackathon demo.
 
 **Expected result:** The chosen demo path can run twice after reset with real providers or deterministic fallback.
@@ -1464,12 +1468,12 @@ No temporary gap is allowed unless it is listed here with an owner task.
 | ADK graph, coordinator, tools, and skills are scaffolded but mostly `NotImplementedError` | Current main | Tasks 9-17 | Each task owns specific skill/tool replacement. |
 | `run_to_audit()` and `resume_after_hitl()` are not implemented | Current main / Task 10 | Tasks 14 and 17 | `run_to_audit` after render/audit; resume after schedule/publish. |
 | Brand write/import endpoints are unauthenticated | Task 3 | Task 19 | Local/dev MVP can proceed, but deployed backend must protect service-role-backed writes. |
-| Live Shopify resource sync missing | Task 5 | Task 17 or Task 21 | Seeded cache is enough only if demo uses seeded resources. |
+| Live Shopify resource sync missing | Task 5 | Closed/constrained in Task 21 | Demo path is locked to seeded resources unless an explicit real sync/import is run. |
 | Search-result placement validates but may not publish | Task 6 | Task 17 | Either implement or block with clear unsupported error. |
-| Custom model/persona is metadata-only | Task 8 | Task 21 or explicitly non-MVP | Do not imply real custom model generation exists. |
+| Custom model/persona is metadata-only | Task 8 | Closed/constrained in Task 21 | Explicitly non-MVP for hackathon demo; use seeded brand context/persona. |
 | Raw image bytes not optimized/stored | Task 12 | Task 13 | Closed in Task 13 with responsive WebP/JPG/optional AVIF uploads and `banner_assets` records. |
-| AVIF omitted or flaky | Task 13 | Task 21 | Task 13 reports `avif_skipped`/reason when encoder unavailable; Task 14/21 must surface that in audit. |
-| Lighthouse automation placeholder | Task 14 | Task 21 | Metrics must be honest: real, seeded, or mock/manual. |
+| AVIF omitted or flaky | Task 13 | Closed/constrained in Task 21 | Demo docs label AVIF as skipped/audit-labeled when unavailable; smoke does not require AVIF. |
+| Lighthouse automation placeholder | Task 14 | Closed/constrained in Task 21 | Demo docs label Lighthouse/performance metrics as mock/manual/non-live unless manually run. |
 | Refinement requests stored but not applied | Task 15 | Task 16 | Comments must not silently mutate final asset. |
 | No active pg_cron due-publish job | Task 17 | Task 17 only if demo requires auto due-publish | Theme-enforced dates are MVP default. |
 | Static frontend API adapters exist | Task 18 | Frontend migration, outside backend MVP | Not a backend bug if documented. |
