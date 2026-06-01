@@ -951,6 +951,10 @@ pytest -v
 
 ### Task 15: Implement review canvas comments, refinement requests, and approval workflow
 
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added approval/comment/refinement schemas, Supabase-aligned repositories, `ApprovalService`, `CommentService`, and approval API routes for approval requests/state, pinned comments, comment resolution, approvals, change requests, and refinement request capture. The MVP enforces `all_members` approval policy: every assigned reviewer must approve before the campaign transitions to `approved`; duplicate reviewers are rejected, explicit revisions must belong to the campaign, and closed threads reject late approve/change actions. Real endpoints fail closed with 503 until Task 19 request-scoped auth/client wiring; tests use injected fakes and no live Supabase. Refinement requests are stored as queued without regeneration, as planned for Task 16. Verified with `pytest tests/unit/test_approval_service.py -v`, `pytest tests/api/test_approvals.py -v`, and full `pytest -q` (`189 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
 **Goal:** Power the frontend review canvas and all-reviewers approval policy.
 
 **Expected result:** Reviewers can add pinned comments, request changes, resolve comments, and approve. All assigned approvals transition the campaign to `approved`.
