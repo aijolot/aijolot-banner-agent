@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, ModelBank, LayoutDiagram, layoutCells, FoldPreview,
-   SEGMENTS, HERO_STYLES, MODELS */
+   SEGMENTS, HERO_STYLES, MODELS, ArtDirectionApi */
 // Aijolot Banner Agent — Stage: Art direction (Concept→Product→Background→Assembly).
 const { useState: useStateAR } = React;
 
@@ -21,7 +21,7 @@ function LayerRow({ n, icon, title, sub, done, children }) {
   );
 }
 
-function ArtStage({ placement, onAssemble }) {
+function ArtStage({ campaign, placement, onNotice, onAssemble }) {
   const seg = SEGMENTS.masculino;
   const layout = (placement && placement.layout) || { cols: [{ rows: 1, w: 1 }] };
   const cells = layoutCells(layout);
@@ -35,6 +35,16 @@ function ArtStage({ placement, onAssemble }) {
     const nm = { ...m, id };
     setCreated((c) => [...c, nm]);
     set({ bg: "usage", model: id });
+  }
+
+  async function assemble() {
+    try {
+      const r = await ArtDirectionApi.save(campaign, art, placement);
+      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Dirección de arte guardada en backend" });
+    } catch (e) {
+      onNotice && onNotice({ tone: "amber", text: "No se pudo guardar arte en backend: " + (e.message || e.status || "error") });
+    }
+    onAssemble && onAssemble(art);
   }
 
   return (
@@ -117,7 +127,7 @@ function ArtStage({ placement, onAssemble }) {
             </div>
           </LayerRow>
 
-          <Button variant="shine" icon="wand-sparkles" onClick={() => onAssemble(art)} style={{ justifyContent: "center" }}>Ensamblar banner</Button>
+          <Button variant="shine" icon="wand-sparkles" onClick={assemble} style={{ justifyContent: "center" }}>Ensamblar banner</Button>
         </div>
       </div>
     </div>

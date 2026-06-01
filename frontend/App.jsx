@@ -1,6 +1,6 @@
 /* global React, useTweaks, TweaksPanel, TweakSection, TweakSelect, TweakRadio,
    Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, ArtStage, GenerateStage,
-   CanvasStage, PerformanceStage, Icon */
+   CanvasStage, PerformanceStage, Icon, Badge, PlacementApi */
 // Aijolot Banner Agent — app orchestrator.
 const { useState: useStateA } = React;
 
@@ -54,8 +54,20 @@ function App() {
   const [stage, setStage] = useStateA("campaigns");
   const [placement, setPlacement] = useStateA(() => ({ id: "hero", name: "Hero principal", size: "1440 × 420", page: "Inicio", layout: { cols: [{ rows: 1, w: 1 }] } }));
   const [art, setArt] = useStateA(() => ({ bg: "usage", heroStyle: "rocks", model: "m2", fold: 55 }));
+  const [campaign, setCampaign] = useStateA(null);
+  const [apiNotice, setApiNotice] = useStateA(null);
 
   function onNav(id) { setNav(id); }
+  async function onCampaignReady(c) {
+    setCampaign(c);
+    if (!placement) return;
+    try {
+      const r = await PlacementApi.save(c, placement);
+      setApiNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Ubicación guardada en backend" });
+    } catch (e) {
+      setApiNotice({ tone: "amber", text: "No se pudo guardar ubicación en backend: " + (e.message || e.status || "error") });
+    }
+  }
 
   let body;
   if (nav === "brand") {
@@ -67,13 +79,13 @@ function App() {
     body = <CampaignsView onNew={() => setStage("placement")} onResume={() => setStage("canvas")} onPerf={() => setStage("performance")} />;
   } else {
     let view;
-    if (stage === "placement") view = <PlacementStage onNext={(p) => { setPlacement(p); setStage("brief"); }} />;
-    else if (stage === "brief") view = <BriefStage onGenerate={() => setStage("art")} placement={placement} />;
-    else if (stage === "art") view = <ArtStage placement={placement} onAssemble={(a) => { setArt(a); setStage("generate"); }} />;
-    else if (stage === "generate") view = <GenerateStage onDone={() => setStage("canvas")} />;
-    else if (stage === "canvas") view = <CanvasStage tweaks={t} placement={placement} art={art} onPublish={() => setStage("performance")} />;
+    if (stage === "placement") view = <PlacementStage onNext={(p) => { setPlacement(p); setApiNotice(null); setStage("brief"); }} />;
+    else if (stage === "brief") view = <BriefStage onGenerate={(c) => { setCampaign(c); setStage("art"); }} onCampaignReady={onCampaignReady} placement={placement} />;
+    else if (stage === "art") view = <ArtStage campaign={campaign} placement={placement} onNotice={setApiNotice} onAssemble={(a) => { setArt(a); setStage("generate"); }} />;
+    else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} onNotice={setApiNotice} onDone={() => setStage("canvas")} />;
+    else if (stage === "canvas") view = <CanvasStage campaign={campaign} tweaks={t} placement={placement} art={art} onNotice={setApiNotice} onPublish={() => setStage("performance")} />;
     else view = <PerformanceStage tweaks={t} onBack={() => setStage("canvas")} />;
-    body = <><Stepper stage={stage} goTo={setStage} />{view}</>;
+    body = <><Stepper stage={stage} goTo={setStage} />{apiNotice ? <div style={{ marginBottom: 12 }}><Badge tone={apiNotice.tone || "slate"} icon={apiNotice.tone === "green" ? "wifi" : "wifi-off"}>{apiNotice.text}</Badge></div> : null}{view}</>;
   }
 
   return (

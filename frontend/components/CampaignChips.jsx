@@ -1,12 +1,10 @@
-/* global React, Icon, GlassCard, Button, Badge, API_BASE */
+/* global React, Icon, GlassCard, Button, Badge, CampaignApi */
 // Aijolot Banner Agent — editable Campaign objects (GH-28).
 // Renders the structured brief from GH-27 as inline-editable fields, validates
-// client-side, persists edits via PATCH /campaigns/{id}, and advances to Art.
+// client-side, persists edits via PATCH /api/v1/campaigns/{id}, and advances to Art.
 // Controlled component: the Campaign lives in BriefStage; this edits via onChange
 // so live chat updates and manual edits never clobber each other.
 const { useState: useStateCC } = React;
-
-const _BASE = (typeof API_BASE !== "undefined" && API_BASE) || window.API_BASE || "http://localhost:8000";
 
 const REQUIRED = ["goal", "audience", "cta", "urgency", "placement"];
 const URGENCIES = [["low", "Baja"], ["medium", "Media"], ["high", "Alta"]];
@@ -66,7 +64,7 @@ function CampaignChips({ campaign, onChange, onAdvance }) {
     if (!campaign.id || campaign.id === "local") return; // offline / no bridge
     try {
       setSaving(true);
-      await fetch(`${_BASE}/campaigns/${campaign.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ [k]: value }) });
+      await CampaignApi.patch(campaign.id, { [k]: value });
     } catch (_) { /* best-effort; local state stays authoritative */ }
     finally { setSaving(false); }
   }

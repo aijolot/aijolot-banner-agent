@@ -1,12 +1,12 @@
-/* global React, Icon, GlassCard, Button, Spinner, API_BASE */
+/* global React, Icon, GlassCard, Button, Spinner, AijolotApi */
 // Aijolot Banner Agent — intake Chatbox (GH-27).
 // Conversational capture of the campaign idea → ADK node 2 intake_campaign_idea.
-// Streams the agent reply over SSE from POST /campaigns/intake and surfaces the
+// Streams the agent reply over SSE from POST /api/v1/campaigns/intake and surfaces the
 // structured Campaign to the parent via onCampaign(). Falls back to a local
 // rule-based intake when the bridge is unreachable.
 const { useState: useStateCB, useRef: useRefCB, useEffect: useEffectCB } = React;
 
-const _BASE = (typeof API_BASE !== "undefined" && API_BASE) || window.API_BASE || "http://localhost:8000";
+const _BASE = window.API_BASE || "http://localhost:8000";
 
 const SUGGEST = [
   "Banner de Black Friday, 50% off audífonos, a mujeres 25-40, urgencia alta, en la home hero",
@@ -78,7 +78,7 @@ function Chatbox({ onCampaign }) {
   }
 
   async function streamFromBridge(text) {
-    const resp = await fetch(_BASE + "/campaigns/intake", {
+    const resp = await fetch(_BASE + (typeof AijolotApi !== "undefined" ? AijolotApi.v1("/campaigns/intake") : "/api/v1/campaigns/intake"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ message: text, campaign_id: campaignId.current }),
     });

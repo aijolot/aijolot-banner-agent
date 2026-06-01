@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi */
 // Aijolot Banner Agent — Stage 2: live generation pipeline (Modules 1–5).
 const { useState: useStateG, useEffect: useEffectG, useRef: useRefG } = React;
 
@@ -150,11 +150,24 @@ function Viewport({ phase, typed, shieldOn }) {
   );
 }
 
-function GenerateStage({ onDone }) {
+function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
   const [phase, setPhase] = useStateG(0);
   const [typed, setTyped] = useStateG(0);
   const [shieldOn, setShieldOn] = useStateG(false);
   const skipped = useRefG(false);
+
+  useEffectG(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await GenerationApi.start(campaign, { placement, art, source: "static-prototype" });
+        if (alive) onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Generación iniciada en backend" });
+      } catch (e) {
+        if (alive) onNotice && onNotice({ tone: "amber", text: "No se pudo iniciar generación backend: " + (e.message || e.status || "error") });
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
 
   // advance through phases
   useEffectG(() => {

@@ -7,10 +7,10 @@ const { useState: useStateB } = React;
 
 const REQUIRED = ["goal", "audience", "cta", "urgency", "placement"];
 
-function BriefStage({ onGenerate, placement }) {
+function BriefStage({ onGenerate, onCampaignReady, placement }) {
   const [campaign, setCampaign] = useStateB(null);
 
-  function onCampaign(c) { setCampaign(c); }
+  function onCampaign(c) { setCampaign(c); onCampaignReady && onCampaignReady(c); }
 
   const ready = !!campaign && REQUIRED.every((k) => (campaign.structured_brief[k] || "").toString().trim());
 

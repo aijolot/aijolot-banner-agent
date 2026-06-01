@@ -1115,6 +1115,10 @@ Manual with Shopify credentials:
 
 ### Task 18: Integrate current static frontend with backend APIs
 
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added a reusable static frontend API layer in `frontend/lib.jsx` using `window.AIJOLOT_API_BASE || "http://localhost:8000"` and canonical `/api/v1` adapters for campaign patching, placement, art direction, generation, review fallback, scheduling, and publishing. Updated static prototype stages to carry backend campaign state through intake, placement, art, generation, and canvas controls while preserving visible amber fallback notices when the local/no-Supabase backend returns non-UUID prototype campaign ids or when approval/revision context is not available. Brand APIs now use `/api/v1/brands`; placement mapping uses seeded backend store/placement keys/slots/handles and validates against backend placement contracts; schedule/publish backend rejections no longer advance local scheduled/published UI state. Created `docs/architecture/frontend-backend-contract.md` documenting API base, endpoints, adapters, fallback behavior, and manual demo steps. Verified with full backend `pytest -q` (`217 passed, 3 skipped`, with two pre-existing Pydantic warnings), `git diff --check`, JSX/frontend sanity checks, local backend/frontend HTTP smoke checks, browser smoke showing Brand page `BRIDGE CONECTADO`, `/api/v1/placements/validate` checks for representative mapped placements, and final narrow review approval.
+
 **Goal:** Connect the existing prototype to real backend endpoints without doing the full Next.js migration.
 
 **Expected result:** The static frontend can exercise the demo flow against FastAPI.

@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, Banner,
-   ApprovalPanel, CommentsPanel, SEGMENTS, SEGMENT_ORDER, VARIANTS, COMMENTS_SEED, APPROVERS_SEED */
+   ApprovalPanel, CommentsPanel, SEGMENTS, SEGMENT_ORDER, VARIANTS, COMMENTS_SEED, APPROVERS_SEED, ReviewApi */
 // Aijolot Banner Agent — Stage 3: collaborative canvas (Modules 4, 6, 7).
 const { useState: useStateCV, useRef: useRefCV } = React;
 
@@ -12,7 +12,7 @@ const DEVICES = [
 let CID = 100;
 const ACCENT_MAP = { cyan: "#28C7F0", gold: "#E7C76B", rose: "#F6B3CE" };
 
-function CanvasStage({ tweaks, placement, art, onPublish }) {
+function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) {
   const [variant, setVariant] = useStateCV("A");
   const [segId, setSegId] = useStateCV("masculino");
   const [device, setDevice] = useStateCV("desktop");
@@ -39,8 +39,14 @@ function CanvasStage({ tweaks, placement, art, onPublish }) {
   const layoutVariant = locked ? tweaks.lockLayout : variant;
   const bannerAccent = tweaks.bannerAccent && tweaks.bannerAccent !== "auto" ? ACCENT_MAP[tweaks.bannerAccent] : undefined;
 
-  function setApprover(id, status) {
+  async function setApprover(id, status) {
     setApprovers((arr) => arr.map((a) => a.id === id ? { ...a, status, note: status === "approved" ? "Aprobado." : "Solicita ajustes." } : a));
+    try {
+      const r = await ReviewApi.approveLocal(campaign, id, status);
+      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Aprobación guardada en backend" });
+    } catch (e) {
+      onNotice && onNotice({ tone: "amber", text: "No se pudo sincronizar aprobación: " + (e.message || e.status || "error") });
+    }
   }
   function resolveComment(id) { setComments((arr) => arr.map((c) => c.id === id ? { ...c, resolved: true } : c)); }
 
@@ -86,8 +92,28 @@ function CanvasStage({ tweaks, placement, art, onPublish }) {
     }, 1500);
   }
 
-  function publish() { setScheduled(false); setPublished(true); setTimeout(() => onPublish && onPublish(), 950); }
-  function schedule() { setScheduled(true); }
+  async function publish() {
+    let canAdvance = false;
+    try {
+      const r = await ReviewApi.publish(campaign);
+      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Publicación enviada al backend" });
+      canAdvance = true;
+    } catch (e) {
+      onNotice && onNotice({ tone: "amber", text: "Backend no publicó aún: " + (e.message || e.status || "error") });
+    }
+    if (canAdvance) { setScheduled(false); setPublished(true); setTimeout(() => onPublish && onPublish(), 950); }
+  }
+  async function schedule(s) {
+    let accepted = false;
+    try {
+      const r = await ReviewApi.schedule(campaign, s);
+      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Agenda guardada en backend" });
+      accepted = true;
+    } catch (e) {
+      onNotice && onNotice({ tone: "amber", text: "Backend no aceptó la agenda: " + (e.message || e.status || "error") });
+    }
+    if (accepted) setScheduled(true);
+  }
 
   const TabBtn = ({ active, onClick, children, title }) => (
     <button onClick={onClick} title={title} style={{
