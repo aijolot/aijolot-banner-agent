@@ -1,8 +1,8 @@
-"""ADK Tool: emit observability event to Supabase audit_log."""
-
 from __future__ import annotations
 
 from typing import Any
+
+_EVENTS: list[dict[str, Any]] = []
 
 
 async def emit(
@@ -17,4 +17,23 @@ async def emit(
     tokens: dict | None = None,
     payload: dict[str, Any] | None = None,
 ) -> None:
-    raise NotImplementedError("Lands in services/supabase/audit_log.py.")
+    """Emit a deterministic in-process audit event.
+
+    Persistence is handled by AuditEventRepository when a Supabase client is
+    available. This tool remains side-effect-light for unit tests and graph runs.
+    """
+    _EVENTS.append({
+        "trace_id": trace_id,
+        "session_id": session_id,
+        "brand_id": brand_id,
+        "node": node,
+        "event_type": event,
+        "duration_ms": duration_ms,
+        "cost_usd": cost_usd,
+        "tokens": tokens or {},
+        "payload": payload or {},
+    })
+
+
+def events() -> list[dict[str, Any]]:
+    return list(_EVENTS)

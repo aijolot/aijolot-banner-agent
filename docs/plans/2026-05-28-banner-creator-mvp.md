@@ -895,11 +895,13 @@ pytest tests/integration/test_storage_uploads.py -v
 - AVIF may be skipped only if the audit report explicitly says `avif_skipped` and the carry-over ledger is updated.
 - Fix/decision point: Task 21.
 
-**Completion note:** Implemented Pillow-based responsive optimization, Supabase Storage upload adapter, durable banner asset service, and thin `banner_assets`/`campaign_revisions` repositories. The image optimization report always includes `avif_skipped`; when local AVIF encoding is unavailable it also includes `avif_skip_reason` and continues with WebP/JPG. Unit tests use fakes only; the live storage integration test is skipped unless Supabase env and `RUN_SUPABASE_STORAGE_TESTS=1` are set. Task 14/21 must propagate the Task 13 `avif_skipped` optimization report into the audit output if AVIF is unavailable.
-
 ---
 
 ### Task 14: Implement HTML/Liquid rendering and audit skills
+
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added escaped standalone HTML preview rendering, controlled Shopify OS 2.0 Liquid payload generation, deterministic W3C/schema/mock-manual Lighthouse audit tools, audit report/event repositories, and `/api/v1/campaigns/{campaign_id}/preview` plus `/api/v1/campaigns/{campaign_id}/audit-report` endpoints. Preview/audit endpoints require bearer-token RLS context and do not use service-role reads; preview responses include restrictive CSP. Audit propagates Task 13 `avif_skipped`, maps runtime `warn` safely into current DB status constraints, enriches returned audit rows with findings/schema/human-review metadata, and `run_to_audit` now renders HTML/Liquid and stops at HITL. Full Lighthouse remains mock/manual and labeled accordingly. Verified with `pytest tests/unit/test_html_renderer.py -v`, `pytest tests/unit/test_liquid_payload_builder.py -v`, `pytest tests/unit/agents/test_audit_skill.py -v`, and full `pytest -q` (`173 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
 
 **Goal:** Produce preview HTML, Shopify Liquid/config payloads, and audit reports.
 

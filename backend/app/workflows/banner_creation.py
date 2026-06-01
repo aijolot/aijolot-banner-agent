@@ -8,12 +8,14 @@ Implementation lands as nodes ship (GH-5..GH-19).
 
 from __future__ import annotations
 
+import importlib.util
 import uuid
-
-from typing import cast
+from pathlib import Path
+from typing import Any, cast
 
 from app.agents.graph import NODES
 from app.agents.state import BannerSessionState
+from app.agents.tools import html_render, liquid_render
 
 FRONTEND_PROGRESS_STEPS: tuple[dict[str, object], ...] = (
     {
@@ -54,6 +56,16 @@ def frontend_step_for_node(node_key: str) -> str:
         raise ValueError(f"unknown banner graph node '{node_key}'") from exc
 
 
+def _load_runtime_skill(skill_id: str) -> Any:
+    path = Path(__file__).resolve().parents[1] / "agents" / "skills" / skill_id / "impl.py"
+    spec = importlib.util.spec_from_file_location(f"aijolot_{skill_id.replace('-', '_')}_impl", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"runtime skill not found: {skill_id}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 async def start_session(brand_id: str, session_id: str | None = None) -> BannerSessionState:
     return BannerSessionState(
         trace_id=str(uuid.uuid4()),
@@ -63,8 +75,30 @@ async def start_session(brand_id: str, session_id: str | None = None) -> BannerS
 
 
 async def run_to_audit(state: BannerSessionState) -> BannerSessionState:
-    """Run nodes 1-9 (intake -> audit). Halt at node 10 awaiting HITL."""
-    raise NotImplementedError("Wired in GH-5 + per-node tickets.")
+    """Run the implemented render/audit segment and halt before HITL.
+
+    Earlier nodes are implemented task-by-task. By Task 14, callers that have a
+    concept and assets can run through HTML/Liquid rendering and deterministic
+    audit, then stop with `audit_report.human_review_required=True`.
+    """
+    if state.concept is None:
+        raise ValueError("state.concept is required before run_to_audit")
+    if state.assets is None:
+        raise ValueError("state.assets is required before run_to_audit")
+
+    state.html_standalone = await html_render.render(state.concept, state.assets, brand=state.brand_context)
+    liquid_payload = await liquid_render.render(
+        state.concept,
+        state.variants,
+        brand=state.brand_context,
+        assets=state.assets,
+        placement=state.campaign.placement if state.campaign else None,
+    )
+    state.liquid_section = str(liquid_payload.get("section") or "")
+
+    audit_skill = _load_runtime_skill("performance-audit")
+    await audit_skill.run(state.html_standalone, state)
+    return state
 
 
 async def resume_after_hitl(state: BannerSessionState) -> BannerSessionState:
