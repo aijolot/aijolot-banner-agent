@@ -1001,6 +1001,10 @@ pytest -v
 
 ### Task 16: Implement regeneration/revision path
 
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added revision/regeneration service, banner layout/variant repositories, revision/variant selection/regeneration schemas, and API routes for selecting a variant, regenerating from a prompt or queued refinement request, and listing campaign revisions. Regeneration creates a new generation run and a new selected campaign revision, preserves old revisions, supersedes the previously selected revision, copies/falls back to deterministic A/B/C layout variants and banner variants, updates queued refinement requests to `succeeded`, and never calls Gemini/Shopify. Prompt text is normalized/length-limited and escaped before any HTML preview marker; new revisions do not reuse old preview storage paths. Revision service fails closed for service-role writes unless explicitly opted into with `AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES=1`; Task 19 still owns request-scoped auth. Verified with `pytest tests/unit/test_revision_service.py -v`, `pytest tests/api/test_regeneration.py -v`, and full `pytest -q` (`199 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
 **Goal:** Apply requested changes by creating new generation runs/revisions rather than mutating final assets silently.
 
 **Expected result:** A refinement request can trigger regeneration and preserve previous revisions.

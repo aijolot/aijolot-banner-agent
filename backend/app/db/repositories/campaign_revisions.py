@@ -52,6 +52,15 @@ class CampaignRevisionRepository:
             return dict(out[0]) if out else None
         return dict(out) if out else None
 
+    def list_by_campaign_id(self, *, campaign_id: str) -> list[dict[str, Any]]:
+        out = execute_data(
+            self.client.table(self.table_name)
+            .select(self.columns)
+            .eq("campaign_id", campaign_id)
+            .order("revision_number", desc=False)
+        )
+        return [dict(row) for row in (out or [])] if isinstance(out, list) else ([dict(out)] if out else [])
+
     def update(self, *, revision_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
         payload = {key: value for key, value in data.items() if key in self.writable_columns and value is not None}
         if not payload:

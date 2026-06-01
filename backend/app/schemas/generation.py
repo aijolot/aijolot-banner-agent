@@ -65,3 +65,68 @@ class GenerationEventResponse(BaseModel):
         if isinstance(value, dict):
             return value
         return {"value": value}
+
+
+class RegenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str | None = Field(default=None, min_length=1, max_length=8000)
+    refinement_request_id: str | None = Field(default=None, pattern=UUID_PATTERN)
+    source_revision_id: str | None = Field(default=None, pattern=UUID_PATTERN)
+    requested_by: str | None = Field(default=None, pattern=UUID_PATTERN)
+
+
+class RevisionVariantResponse(BaseModel):
+    id: str
+    revision_id: str = Field(..., pattern=UUID_PATTERN)
+    segment_key: str
+    segment_label: str
+    customer_tag: str | None = None
+    audience_rule: dict[str, Any] = Field(default_factory=dict)
+    product_snapshot_item_id: str | None = None
+    eyebrow: str | None = None
+    headline: str | None = None
+    subheadline: str | None = None
+    cta_text: str | None = None
+    cta_url: str | None = None
+    palette: dict[str, Any] = Field(default_factory=dict)
+
+
+class LayoutVariantResponse(BaseModel):
+    id: str
+    revision_id: str = Field(..., pattern=UUID_PATTERN)
+    key: str
+    name: str
+    description: str | None = None
+    layout_type: str | None = None
+    is_recommended: bool = False
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class CampaignRevisionResponse(BaseModel):
+    id: str
+    campaign_id: str = Field(..., pattern=UUID_PATTERN)
+    generation_run_id: str | None = None
+    revision_number: int
+    status: str
+    concept: dict[str, Any] = Field(default_factory=dict)
+    liquid_config: dict[str, Any] = Field(default_factory=dict)
+    html_preview: str | None = None
+    preview_storage_path: str | None = None
+    created_at: str | None = None
+    layout_variants: list[LayoutVariantResponse] = Field(default_factory=list)
+    variants: list[RevisionVariantResponse] = Field(default_factory=list)
+
+
+class RegenerateResponse(BaseModel):
+    generation_run: GenerationRunResponse
+    revision: CampaignRevisionResponse
+    refinement_request_id: str | None = None
+
+
+class VariantSelectionResponse(BaseModel):
+    campaign_id: str = Field(..., pattern=UUID_PATTERN)
+    selected_revision_id: str = Field(..., pattern=UUID_PATTERN)
+    selected_variant_id: str
+    campaign_status: str
+    revision: CampaignRevisionResponse

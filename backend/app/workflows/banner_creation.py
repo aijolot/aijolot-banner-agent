@@ -44,6 +44,8 @@ NODE_TO_FRONTEND_STEP: dict[str, str] = {
     for node_key in cast(tuple[str, ...], step["node_keys"])
 }
 
+DETERMINISTIC_LAYOUT_VARIANT_KEYS: tuple[str, ...] = ("A", "B", "C")
+
 
 def ordered_node_keys() -> list[str]:
     return [node.name for node in NODES]
