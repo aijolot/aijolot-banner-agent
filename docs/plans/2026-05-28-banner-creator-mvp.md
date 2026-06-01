@@ -1210,6 +1210,10 @@ supabase db reset
 
 ### Task 20: Performance/evolutionary memory API
 
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added schema-backed performance/evolutionary memory API under `/api/v1`: `GET /campaigns/{campaign_id}/performance`, `POST /campaigns/{campaign_id}/performance/snapshots`, and `POST /campaigns/{campaign_id}/optimization-proposals`. Responses carry explicit provenance (`live_analytics`, data source labels, and non-live metrics notes) so MVP manual/mock/seed/agent data is not presented as live analytics. Added Supabase repository wrappers for performance snapshots, optimization insights, and optimization proposals; added a Task 20 migration so non-live snapshot sources (`mock`, `seed`, `agent`) align with existing DB constraints. The service validates request team ownership through campaign lookup, validates revision IDs belong to the same campaign before writes, derives bounded rates, rejects inconsistent counts, and keeps no-Supabase fallback repositories team-isolated. Verified with focused performance unit/API tests and full backend `pytest -q` (`254 passed, 3 skipped`, with two pre-existing Pydantic warnings), `git diff --check`, secret/unsafe-code greps, and final narrow review approval.
+
 **Goal:** Power the prototype's performance screen with schema-backed mock/manual metrics.
 
 **Expected result:** Performance snapshots, optimization insights, and proposed V2 campaigns can be displayed without claiming live analytics.
