@@ -1297,6 +1297,10 @@ Manual:
 
 ### Task 22: Documentation cleanup and handoff
 
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Updated README, API contract, frontend-backend contract, and project-structure docs to match the implemented backend/static-frontend state: canonical `/api/v1` with demo auth context for callers, root unauthenticated compatibility routes, deterministic offline smoke path, seeded placement/resource fixtures, Supabase migration/seed reality, static React frontend/no Next.js migration, fail-closed Shopify publishing, current approval-service availability caveat, and explicit non-live/manual labels for performance/Lighthouse/Shopify sync/PDF-Figma/custom persona/AVIF/A-B-C/KG constraints. Verification performed for docs plus backend test/smoke/Supabase commands; exact results must be reported in handoff. Manual browser/API-doc/demo checks are only complete if explicitly run by the operator.
+
 **Goal:** Keep docs accurate after implementation.
 
 **Expected result:** README, API docs, frontend contract, and this plan match real behavior.
@@ -1338,18 +1342,21 @@ Canonical target API base:
 /api/v1
 ```
 
-Temporary root-level routes currently exist and must be preserved until frontend integration no longer needs them:
+Temporary root-level routes currently exist for prototype compatibility:
 
 - `GET /brands`
+- `POST /brands/import`
 - `GET /brands/{brand_id}`
 - `PUT /brands/{brand_id}`
+- `POST /campaigns`
+- `GET /campaigns`
 - `POST /campaigns/intake`
 - `GET /campaigns/{campaign_id}`
 - `PATCH /campaigns/{campaign_id}`
 
-New implementation should prefer `/api/v1`.
+New implementation should prefer `/api/v1`. Canonical `/api/v1` callers should send demo auth context through explicit demo headers or bearer format `Bearer demo:<user_id>:<team_id>[:<store_id>]`. Most protected v1 routes return 401 without context; approval/comment/refinement routes may currently return 503 first when their backing service is unavailable.
 
-Planned canonical endpoints:
+Implemented canonical endpoints:
 
 - `GET /health`
 - `GET /api/v1/brands`
@@ -1386,6 +1393,7 @@ Planned canonical endpoints:
 - `POST /api/v1/approval-threads/{thread_id}/approve`
 - `POST /api/v1/approval-threads/{thread_id}/request-changes`
 - `POST /api/v1/campaigns/{campaign_id}/refinement-requests`
+- `POST /api/v1/campaigns/{campaign_id}/variants/{variant_id}/select`
 - `POST /api/v1/campaigns/{campaign_id}/regenerate`
 - `GET /api/v1/campaigns/{campaign_id}/revisions`
 - `POST /api/v1/campaigns/{campaign_id}/schedule`
@@ -1456,38 +1464,32 @@ Manual demo checklist:
 
 ## 8. Carry-Over Bug/Gaps Ledger
 
-No temporary gap is allowed unless it is listed here with an owner task.
+Task 22 documentation has no hidden carry-over. Remaining limitations are documented constraints, not undocumented bugs:
 
-| Gap | Allowed after task | Must be fixed/decided in | Notes |
-| --- | --- | --- | --- |
-| Current tests cannot run in active shell because pytest is not installed | Current main | Task 0 | Environment/setup gap, not known code failure. |
-| Brand endpoints are Markdown/file-backed | Current main / Task 1 | Task 3 | Runtime source of truth must become Supabase. |
-| Campaign/intake store is in-memory | Current main / Task 3 | Task 4 | Must persist to Supabase before relying on it. |
-| Root-level routes only; no canonical `/api/v1` yet | Current main | Task 2 | Preserve compatibility while adding v1. |
-| Intake is deterministic/rule-based, not Gemini-backed | Current main / Task 4 | Task 9 | Keep deterministic fallback for tests. |
-| ADK graph, coordinator, tools, and skills are scaffolded but mostly `NotImplementedError` | Current main | Tasks 9-17 | Each task owns specific skill/tool replacement. |
-| `run_to_audit()` and `resume_after_hitl()` are not implemented | Current main / Task 10 | Tasks 14 and 17 | `run_to_audit` after render/audit; resume after schedule/publish. |
-| Brand write/import endpoints are unauthenticated | Task 3 | Task 19 | Local/dev MVP can proceed, but deployed backend must protect service-role-backed writes. |
-| Live Shopify resource sync missing | Task 5 | Closed/constrained in Task 21 | Demo path is locked to seeded resources unless an explicit real sync/import is run. |
-| Search-result placement validates but may not publish | Task 6 | Task 17 | Either implement or block with clear unsupported error. |
-| Custom model/persona is metadata-only | Task 8 | Closed/constrained in Task 21 | Explicitly non-MVP for hackathon demo; use seeded brand context/persona. |
-| Raw image bytes not optimized/stored | Task 12 | Task 13 | Closed in Task 13 with responsive WebP/JPG/optional AVIF uploads and `banner_assets` records. |
-| AVIF omitted or flaky | Task 13 | Closed/constrained in Task 21 | Demo docs label AVIF as skipped/audit-labeled when unavailable; smoke does not require AVIF. |
-| Lighthouse automation placeholder | Task 14 | Closed/constrained in Task 21 | Demo docs label Lighthouse/performance metrics as mock/manual/non-live unless manually run. |
-| Refinement requests stored but not applied | Task 15 | Task 16 | Comments must not silently mutate final asset. |
-| No active pg_cron due-publish job | Task 17 | Task 17 only if demo requires auto due-publish | Theme-enforced dates are MVP default. |
-| Static frontend API adapters exist | Task 18 | Frontend migration, outside backend MVP | Not a backend bug if documented. |
+| Constraint | Current documented behavior |
+| --- | --- |
+| Root compatibility routes still exist | Kept intentionally for prototype compatibility; `/api/v1` is canonical. |
+| Static frontend adapters still exist | Accepted until future frontend-owned Next.js/Tailwind migration. |
+| Deterministic/fake providers are used by default for smoke/tests | Real Gemini/image providers are opt-in and must be explicitly configured. |
+| Live Shopify resource sync | Non-MVP/manual; demo path uses seeded resource cache. |
+| Live analytics ingestion | Non-MVP/manual; performance data is manual/mock/seed/agent unless labeled live. |
+| PDF/Figma/brandbook extraction | Partial/mock outside Markdown import and not part of the smoke path. |
+| Custom model/persona | Metadata-only/non-MVP for the hackathon demo. |
+| AVIF | Optional; skipped must be audit-labeled when unavailable. |
+| Lighthouse | Mock/manual unless manually run and labeled. |
+| A/B/C variants | Deterministic/demo-labeled in smoke; not live model exploration. |
+| KG retrieval | Static deterministic retrieval is enough for smoke; embeddings/vector RAG are not required for chosen demo path. |
+| pg_cron due-publish | Not required for MVP demo because scheduling is theme/date-config enforced. |
 
 ---
 
-## 9. Immediate Next Steps
+## 9. Handoff Next Steps
 
-1. Run Task 0 to install backend dev dependencies and verify current merged tests.
-2. Run Task 1 to add settings/dependency boundaries.
-3. Run Task 2 to add `/api/v1` without breaking current root routes.
-4. Run Tasks 3-4 to move brand and campaign runtime storage to Supabase.
-5. Continue through Tasks 5-8 to complete non-agentic campaign setup APIs.
-6. Use existing ADK scaffold for Tasks 9-14; do not create a parallel graph.
-7. Implement review/schedule/publish in Tasks 15-17.
-8. Integrate the current static frontend in Task 18.
-9. Close demo gaps in Task 21 before rehearsing.
+1. Do not commit from this task unless the parent agent explicitly requests it.
+2. Review `git diff` for the five documentation files changed by Task 22.
+3. Re-run verification in the target environment before demo handoff:
+   - `cd backend && pytest -v`
+   - `cd .. && python3 scripts/smoke-demo-flow.py`
+   - `supabase db reset` when Docker/Supabase CLI are available
+4. For browser rehearsal, start backend and static frontend, open `http://localhost:8000/docs` and `http://localhost:5500`, and report exactly which manual checks were actually performed.
+5. For any real-provider demo, follow `docs/demo-script.md` and never print or commit secrets.
