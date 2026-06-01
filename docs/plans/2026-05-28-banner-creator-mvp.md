@@ -854,6 +854,10 @@ pytest -v
 
 ### Task 13: Implement asset optimization and Supabase Storage upload
 
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added Pillow-based responsive image optimization with WebP/JPEG variants, optional AVIF generation, explicit `avif_skipped` metadata when unavailable, duplicate-small-breakpoint prevention, corrupt-image normalization, input byte/pixel limits, and deterministic reports. Added `BannerAssetService`, Supabase Storage adapter, `banner_assets`/`campaign_revisions` repositories, and updated `image_optim` plus `image-asset-optimize` to return durable asset records when campaign/revision context is supplied or memory locators without storage. Storage object paths are sanitized and include a variant/image asset group key to avoid same-revision collisions. Integration storage test is opt-in/skipped unless Supabase env and `RUN_SUPABASE_STORAGE_TESTS=1` are present. Verified with `pytest tests/unit/test_image_optimizer.py -v`, `pytest tests/unit/test_asset_service.py -v`, `pytest tests/integration/test_storage_uploads.py -v`, and full `pytest -q` (`163 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
 **Goal:** Convert raw generated images into responsive durable assets.
 
 **Expected result:** Optimized WebP/AVIF/JPG assets are stored in Supabase Storage and recorded in `banner_assets`.
@@ -890,6 +894,8 @@ pytest tests/integration/test_storage_uploads.py -v
 
 - AVIF may be skipped only if the audit report explicitly says `avif_skipped` and the carry-over ledger is updated.
 - Fix/decision point: Task 21.
+
+**Completion note:** Implemented Pillow-based responsive optimization, Supabase Storage upload adapter, durable banner asset service, and thin `banner_assets`/`campaign_revisions` repositories. The image optimization report always includes `avif_skipped`; when local AVIF encoding is unavailable it also includes `avif_skip_reason` and continues with WebP/JPG. Unit tests use fakes only; the live storage integration test is skipped unless Supabase env and `RUN_SUPABASE_STORAGE_TESTS=1` are set. Task 14/21 must propagate the Task 13 `avif_skipped` optimization report into the audit output if AVIF is unavailable.
 
 ---
 
@@ -1435,8 +1441,8 @@ No temporary gap is allowed unless it is listed here with an owner task.
 | Live Shopify resource sync missing | Task 5 | Task 17 or Task 21 | Seeded cache is enough only if demo uses seeded resources. |
 | Search-result placement validates but may not publish | Task 6 | Task 17 | Either implement or block with clear unsupported error. |
 | Custom model/persona is metadata-only | Task 8 | Task 21 or explicitly non-MVP | Do not imply real custom model generation exists. |
-| Raw image bytes not optimized/stored | Task 12 | Task 13 | No review/publish with raw temp assets. |
-| AVIF omitted or flaky | Task 13 | Task 21 | Either enable or mark skipped in audit. |
+| Raw image bytes not optimized/stored | Task 12 | Task 13 | Closed in Task 13 with responsive WebP/JPG/optional AVIF uploads and `banner_assets` records. |
+| AVIF omitted or flaky | Task 13 | Task 21 | Task 13 reports `avif_skipped`/reason when encoder unavailable; Task 14/21 must surface that in audit. |
 | Lighthouse automation placeholder | Task 14 | Task 21 | Metrics must be honest: real, seeded, or mock/manual. |
 | Refinement requests stored but not applied | Task 15 | Task 16 | Comments must not silently mutate final asset. |
 | No active pg_cron due-publish job | Task 17 | Task 17 only if demo requires auto due-publish | Theme-enforced dates are MVP default. |

@@ -40,6 +40,8 @@ class BannerAssets(BaseModel):
     fallback_jpg: dict[int, str]
     alt_text_suggestion: str
     total_weight_kb_1280_webp: float
+    asset_records: list[dict[str, Any]] = Field(default_factory=list)
+    optimization_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuditReport(BaseModel):

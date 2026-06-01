@@ -32,3 +32,24 @@ class SupabaseClientFactory:
             url, key = self._settings.require_supabase_service_role()
             self._service_role_client = create_client(url, key)
         return self._service_role_client
+
+
+class SupabaseStorageAdapter:
+    """Small storage wrapper used by services and easily replaced in tests."""
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+
+    def upload(self, *, bucket: str, path: str, data: bytes, content_type: str, upsert: bool = True) -> dict[str, Any]:
+        file_options = {"content-type": content_type, "upsert": "true" if upsert else "false"}
+        result = self.client.storage.from_(bucket).upload(path, data, file_options=file_options)
+        if isinstance(result, dict):
+            return result
+        return {"result": result}
+
+    def public_url(self, *, bucket: str, path: str) -> str | None:
+        getter = getattr(self.client.storage.from_(bucket), "get_public_url", None)
+        if getter is None:
+            return None
+        value = getter(path)
+        return str(value) if value is not None else None
