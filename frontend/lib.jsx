@@ -367,6 +367,16 @@ const GenerationApi = {
     const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/revisions`));
     return { ok: true, fallback: false, data };
   },
+  // Resolve the most recent backend revision so canvas/performance can map
+  // layout (A|B|C) + audience (segment_key) selections to real variant UUIDs.
+  async latestRevision(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend revision lookup.", null);
+    const list = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/revisions`));
+    const rows = Array.isArray(list) ? list : [];
+    if (!rows.length) return fallbackResult("Backend has no revisions yet for this campaign.", null);
+    const latest = rows.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a));
+    return { ok: true, fallback: false, data: latest };
+  },
   async selectVariant(campaign, variantId) {
     if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend variant selection.", null);
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/variants/${variantId}/select`));
@@ -390,10 +400,58 @@ const ReviewApi = {
     const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/approval`));
     return { ok: true, fallback: false, data };
   },
-  async approveLocal(campaign, approverId, status) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend approval API requires generated revisions/reviewer UUIDs; using visible prototype approval state.", { approverId, status });
-    return fallbackResult("Static prototype approval controls are local; backend approval needs revision and reviewer UUID context.", { approverId, status });
+  // Lazily resolve (or create) the approval thread for a campaign revision.
+  // Returns the {ok,fallback,reason,data} envelope; approval/comment services
+  // fail closed with 503 in the local no-Supabase demo, surfaced as fallback.
+  async ensureThread(campaign, revisionId) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend approval requires a UUID campaign and generated revision.", null);
+    try {
+      const state = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/approval`));
+      const existing = state && (state.thread || state.approval_thread || (state.thread_id ? state : null));
+      const threadId = (existing && (existing.id || existing.thread_id)) || state.thread_id || (state.thread && state.thread.id);
+      if (threadId) return { ok: true, fallback: false, data: { ...state, id: threadId } };
+    } catch (e) {
+      if (e.status && e.status !== 404) return fallbackResult("Servicio de aprobación no disponible (" + errorText(e) + ").", null);
+    }
+    try {
+      const thread = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/approval/request`), {
+        revision_id: revisionId || null,
+        requested_by: AIJOLOT_DEMO_IDS.user,
+        reviewers: [AIJOLOT_DEMO_IDS.user],
+      });
+      return { ok: true, fallback: false, data: thread };
+    } catch (e) {
+      return fallbackResult("Servicio de aprobación no disponible (" + errorText(e) + ").", null);
+    }
   },
+  async approve(threadId, note) {
+    if (!threadId) return fallbackResult("No hay hilo de aprobación de backend; aprobación local.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/approve`), { user_id: AIJOLOT_DEMO_IDS.user, note: note || null });
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no registró la aprobación (" + errorText(e) + ").", null); }
+  },
+  async requestChangesThread(threadId, note) {
+    if (!threadId) return fallbackResult("No hay hilo de aprobación de backend; cambios locales.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/request-changes`), { user_id: AIJOLOT_DEMO_IDS.user, note: note || null });
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no registró la solicitud de cambios (" + errorText(e) + ").", null); }
+  },
+  async addComment(threadId, input) {
+    if (!threadId) return fallbackResult("No hay hilo de aprobación de backend; comentario local.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/comments`), input);
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no guardó el comentario (" + errorText(e) + ").", null); }
+  },
+  async resolveCommentSafe(commentId, input) {
+    try {
+      const data = await AijolotApi.patch(AijolotApi.v1(`/comments/${commentId}/resolve`), input || {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no resolvió el comentario (" + errorText(e) + ").", null); }
+  },
+  // Raw passthroughs kept for callers that handle their own error envelope.
   async comment(threadId, input) { return AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/comments`), input); },
   async resolveComment(commentId, input) { return AijolotApi.patch(AijolotApi.v1(`/comments/${commentId}/resolve`), input || {}); },
   async approveThread(threadId, input) { return AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/approve`), input); },

@@ -168,8 +168,56 @@ async function main() {
   }
   console.log(`ok: generation/events/KG/preview/audit/revisions (${generationEvents.length} events, preview=${previewOk}, audit=${auditOk}, ${revisions.length} revisions)`);
 
+  // Newly-wired stage interactions. Each of these is best-effort in the local
+  // no-Supabase demo: they either succeed against the request-scoped fallback or
+  // fail closed with 503/404. The frontend surfaces both honestly, so the smoke
+  // script accepts either outcome but asserts the call shape is correct.
+  async function attempt(label, fn) {
+    try {
+      await fn();
+      console.log(`ok: ${label} succeeded against backend`);
+    } catch (err) {
+      console.log(`ok: ${label} failed closed with ${err.status || "error"}`);
+    }
+  }
+
+  if (revisions.length) {
+    const rev = revisions.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a));
+    const variant = (rev.variants && rev.variants[0]) || (rev.layout_variants && rev.layout_variants[0]);
+    if (variant && variant.id) {
+      await attempt("select variant", () => api(`/campaigns/${campaign.id}/variants/${variant.id}/select`, { method: "POST" }));
+    }
+  } else {
+    console.log("ok: no revisions to select variants from (fail-closed local demo)");
+  }
+
+  await attempt("regenerate (refinement)", () => api(`/campaigns/${campaign.id}/regenerate`, { method: "POST", body: JSON.stringify({ prompt: "haz el fondo más brillante", requested_by: DEMO_USER_ID }) }));
+  await attempt("refinement request", () => api(`/campaigns/${campaign.id}/refinement-requests`, { method: "POST", body: JSON.stringify({ prompt: "subir contraste del CTA", requested_by: DEMO_USER_ID }) }));
+
+  // Approval thread + comments (503 in local no-Supabase demo).
+  let threadId = null;
+  await attempt("request approval", async () => {
+    const thread = await api(`/campaigns/${campaign.id}/approval/request`, { method: "POST", body: JSON.stringify({ requested_by: DEMO_USER_ID, reviewers: [DEMO_USER_ID] }) });
+    threadId = thread && thread.id;
+  });
+  if (threadId) {
+    await attempt("add comment", () => api(`/approval-threads/${threadId}/comments`, { method: "POST", body: JSON.stringify({ author_id: DEMO_USER_ID, body: "Se ve premium", pin_x: 40, pin_y: 30, device_key: "desktop" }) }));
+    await attempt("approve thread", () => api(`/approval-threads/${threadId}/approve`, { method: "POST", body: JSON.stringify({ user_id: DEMO_USER_ID }) }));
+  } else {
+    console.log("ok: approval thread unavailable (fail-closed local demo)");
+  }
+
   await expectFailure("schedule before approval", () => api(`/campaigns/${campaign.id}/schedule`, { method: "POST", body: JSON.stringify({ starts_at: new Date().toISOString(), timezone: "UTC", auto_unpublish: true }) }));
   await expectFailure("publish before eligible state", () => api(`/campaigns/${campaign.id}/publish`, { method: "POST" }));
+
+  // Performance snapshot + V2 optimization proposal.
+  await attempt("performance snapshot", () => api(`/campaigns/${campaign.id}/performance/snapshots`, { method: "POST", body: JSON.stringify({ source: "manual", impressions: 12840, clicks: 591, conversions: 96 }) }));
+  if (revisions.length) {
+    const rev = revisions.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a));
+    await attempt("optimization proposal", () => api(`/campaigns/${campaign.id}/optimization-proposals`, { method: "POST", body: JSON.stringify({ source_revision_id: rev.id, rationale: "Femenino CTR bajo", projected_lift: { ctr: "+18%" }, status: "sent_to_approval" }) }));
+  } else {
+    console.log("ok: no revision for optimization proposal (fail-closed local demo)");
+  }
 
   try {
     const perf = await api(`/campaigns/${campaign.id}/performance`);

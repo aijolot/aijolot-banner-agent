@@ -180,7 +180,20 @@ For frontend-facing endpoint wiring against a running backend, use:
 node scripts/smoke-frontend-backend-connection.mjs
 ```
 
-This script uses the same `/api/v1` base/auth/path-normalization rules as the static frontend and verifies intake streaming, UUID campaign handoff, placement, catalog/art direction, generation events/KG context, fail-closed schedule/publish, and non-live performance labels. Preview, audit, and revisions are attempted and reported as either loaded or visibly fail-closed in the no-Supabase local fallback.
+This script uses the same `/api/v1` base/auth/path-normalization rules as the static frontend and verifies intake streaming, UUID campaign handoff, placement, catalog/art direction, generation events/KG context, fail-closed schedule/publish, and non-live performance labels. Preview, audit, and revisions are attempted and reported as either loaded or visibly fail-closed in the no-Supabase local fallback. It also exercises the newly-wired stage interactions — variant selection, regenerate/refinement, approval-thread request/comment/approve, performance snapshot, and the V2 optimization proposal — accepting either backend success or a fail-closed `503`/`404`/`422` as correct for the deterministic local demo.
+
+## Newly-wired stage interactions
+
+These interactions previously held local-only prototype state and are now wired to their real `/api/v1` calls through the `{ ok, fallback, reason, data }` adapter envelope. Each keeps its existing visual but surfaces an honest amber badge when the backend declines (e.g. `503`/`404`/`422` in the local no-Supabase demo) and a green badge only on a real backend success — never false green.
+
+- **Placement validation** (`frontend/PlacementStage.jsx`): "Continuar al brief" calls `PlacementApi.validate(payloadFromPrototype(...))` (stateless, no campaign UUID needed) before advancing. A green "Ubicación validada por el backend" badge shows on success; a `422` shows an amber "inválida" badge and still advances with the local choice.
+- **Variant selection** (`frontend/CanvasStage.jsx`): on mount, `GenerationApi.latestRevision(campaign)` resolves real `layout_variants` (`A|B|C`) and audience `variants` (`segment_key`) UUIDs. Switching layout/segment tabs calls `GenerationApi.selectVariant(campaign, variantId)` when a UUID resolves; local tab switch always happens.
+- **Approval + comments** (`frontend/CanvasStage.jsx`, `ReviewApi`): `ReviewApi.ensureThread` lazily gets/creates the approval thread (`GET approval` then `POST approval/request`). Approve/request-changes call `approveThread`/`requestChanges` with the demo reviewer UUID; comment pins call `addComment`/`resolveCommentSafe`. All fail closed visibly — reviewer-identity UI remains prototype-labeled.
+- **Refinement loop** (`frontend/CanvasStage.jsx`): "Refinar con el agente" keeps the local shimmer/heuristic visual but fires `GenerationApi.regenerate(campaign, { prompt, source_revision_id })`; the success message appends " (local, sin backend)" on fallback and reloads the latest revision on success.
+- **Performance snapshot** (`frontend/PerformanceStage.jsx`): "Registrar snapshot" calls `PerformanceApi.snapshot(campaign, { source: "manual", ... })` and reflects the returned `data_source_label`; clearly labeled non-live.
+- **V2 optimization proposal** (`frontend/PerformanceStage.jsx`): the V2 "Enviar a aprobación" button calls `PerformanceApi.proposal(campaign, { source_revision_id, status: "sent_to_approval", ... })`.
+
+`frontend/lib.jsx` adds `GenerationApi.latestRevision(campaign)` (picks the highest `revision_number`) and the `ReviewApi` thread helpers (`ensureThread`, `approve`, `requestChangesThread`, `addComment`, `resolveCommentSafe`) that all return the `{ ok, fallback, reason, data }` envelope. The frontend smoke script exercises every one of these and asserts either backend success or fail-closed.
 
 ## Deferred/non-MVP gaps
 

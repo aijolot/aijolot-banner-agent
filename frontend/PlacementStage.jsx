@@ -1,9 +1,10 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, ChromeWindow, STORE_PAGES,
-   SCOPE_OPTS, BRANDS, COLLECTIONS, HomeMock, CollectionMock, ProductMock, SearchMock */
+   SCOPE_OPTS, BRANDS, COLLECTIONS, HomeMock, CollectionMock, ProductMock, SearchMock,
+   PlacementApi, LayoutDiagram, errorText */
 // Aijolot Banner Agent — Stage 0: navigate the store template & choose a placement + scope.
 const { useState: useStatePL } = React;
 
-function PlacementStage({ onNext }) {
+function PlacementStage({ onNext, onNotice }) {
   const [pageId, setPageId] = useStatePL("home");
   const page = STORE_PAGES.find((p) => p.id === pageId);
   const rec = (pg) => (pg.placements.find((x) => x.rec) || pg.placements[0]).id;
@@ -63,6 +64,29 @@ function PlacementStage({ onNext }) {
   };
   const canContinue = mode === "new" ? !!dropAt : !!sel;
   const selObj = page.placements.find((p) => p.id === sel) || page.placements[0];
+
+  function buildPlacement() {
+    return mode === "new"
+      ? { id: "custom", name: "Nuevo espacio", size: "responsivo", page: page.label, scope, layout: { ...layout, mode: "new", dropAt }, dropLabel: ZONE_LABELS[dropAt] }
+      : { ...selObj, page: page.label, scope, layout: { cols: [{ rows: 1, w: 1, align: "center" }], mode: "existing" } };
+  }
+  // Validate the chosen placement against the backend before advancing. This is a
+  // stateless check (no campaign UUID needed) so it works in the local demo. On a
+  // 422 we surface an honest amber badge but still advance with the local choice.
+  async function handleContinue() {
+    if (!canContinue) return;
+    const p = buildPlacement();
+    if (typeof PlacementApi !== "undefined" && PlacementApi.validate) {
+      try {
+        await PlacementApi.validate(PlacementApi.payloadFromPrototype(p));
+        onNotice && onNotice({ tone: "green", text: "Ubicación validada por el backend" });
+      } catch (e) {
+        if (e && e.status === 422) onNotice && onNotice({ tone: "amber", text: "El backend marcó la ubicación como inválida; se continúa con la selección local." });
+        else onNotice && onNotice({ tone: "amber", text: "No se pudo validar la ubicación en backend: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) });
+      }
+    }
+    onNext(p);
+  }
   const Mock = pageId === "home" ? HomeMock : pageId === "collection" ? CollectionMock : pageId === "product" ? ProductMock : SearchMock;
 
   const radioDot = (on) => (
@@ -307,11 +331,7 @@ function PlacementStage({ onNext }) {
               <span>Liquid: <b style={{ color: "#002B57" }}>{mode === "new" ? "crea una sección nueva" : `actualiza la sección «${selObj.name}»`}</b>{mode === "new" ? " e inyecta el banner" : ""}</span>
             </div>
             <Button variant="shine" icon="arrow-right" disabled={!canContinue}
-              onClick={() => canContinue && onNext(
-                mode === "new"
-                  ? { id: "custom", name: "Nuevo espacio", size: "responsivo", page: page.label, scope, layout: { ...layout, mode: "new", dropAt }, dropLabel: ZONE_LABELS[dropAt] }
-                  : { ...selObj, page: page.label, scope, layout: { cols: [{ rows: 1, w: 1, align: "center" }], mode: "existing" } }
-              )}
+              onClick={handleContinue}
               title={canContinue ? undefined : (mode === "new" ? "Arrastra el espacio a la página para continuar" : "Selecciona un espacio")}
               style={{ justifyContent: "center", marginTop: 2 }}>{mode === "new" && !dropAt ? "Arrastra a la página" : "Continuar al brief"}</Button>
           </GlassCard>
