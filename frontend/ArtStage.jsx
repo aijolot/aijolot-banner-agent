@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, ModelBank, LayoutDiagram, layoutCells, FoldPreview,
-   SEGMENTS, HERO_STYLES, MODELS, ArtDirectionApi */
+   SEGMENTS, HERO_STYLES, MODELS, CatalogApi, ArtDirectionApi */
 // Aijolot Banner Agent — Stage: Art direction (Concept→Product→Background→Assembly).
 const { useState: useStateAR } = React;
 
@@ -39,10 +39,12 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
 
   async function assemble() {
     try {
+      const snapshot = await CatalogApi.createSnapshot(campaign, { store_id: window.AIJOLOT_STORE_ID || "00000000-0000-0000-0000-000000000101", resource_types: ["collection", "product"], limit: 5 });
+      if (snapshot.fallback) onNotice && onNotice({ tone: "amber", text: snapshot.reason });
       const r = await ArtDirectionApi.save(campaign, art, placement);
-      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Dirección de arte guardada en backend" });
+      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Catálogo y dirección de arte guardados en backend" });
     } catch (e) {
-      onNotice && onNotice({ tone: "amber", text: "No se pudo guardar arte en backend: " + (e.message || e.status || "error") });
+      onNotice && onNotice({ tone: "amber", text: "No se pudo guardar catálogo/arte en backend: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) });
     }
     onAssemble && onAssemble(art);
   }

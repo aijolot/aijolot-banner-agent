@@ -96,8 +96,12 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     let canAdvance = false;
     try {
       const r = await ReviewApi.publish(campaign);
-      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Publicación enviada al backend" });
-      canAdvance = true;
+      if (r.fallback) {
+        onNotice && onNotice({ tone: "amber", text: r.reason });
+      } else {
+        onNotice && onNotice({ tone: "green", text: "Publicación enviada al backend" });
+        canAdvance = true;
+      }
     } catch (e) {
       onNotice && onNotice({ tone: "amber", text: "Backend no publicó aún: " + (e.message || e.status || "error") });
     }
@@ -107,8 +111,12 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     let accepted = false;
     try {
       const r = await ReviewApi.schedule(campaign, s);
-      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Agenda guardada en backend" });
-      accepted = true;
+      if (r.fallback) {
+        onNotice && onNotice({ tone: "amber", text: r.reason });
+      } else {
+        onNotice && onNotice({ tone: "green", text: "Agenda guardada en backend" });
+        accepted = true;
+      }
     } catch (e) {
       onNotice && onNotice({ tone: "amber", text: "Backend no aceptó la agenda: " + (e.message || e.status || "error") });
     }

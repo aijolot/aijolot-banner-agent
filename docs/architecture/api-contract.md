@@ -77,7 +77,7 @@ Seeded/fallback brand ids include `avocado_store`, `demo_apparel`, and `maison`.
 | GET | `/api/v1/campaigns/{campaign_id}` | Get campaign. |
 | PATCH | `/api/v1/campaigns/{campaign_id}` | Patch campaign/structured brief fields. |
 
-No-Supabase fallback can create non-UUID prototype ids for some root/local flows; UUID-typed stage APIs require UUID campaign ids.
+No-Supabase root/prototype fallback can create non-UUID prototype ids; authenticated `/api/v1` no-Supabase fallback creates UUID campaign ids so stage APIs can use the intake-returned id during local frontend integration.
 
 ### Stores, resources, and placements
 

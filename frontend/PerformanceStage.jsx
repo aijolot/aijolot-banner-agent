@@ -1,6 +1,6 @@
-/* global React, Icon, GlassCard, Button, Badge, Kicker, Spinner, Banner, SEGMENTS, METRICS, SEG_PERF, CTR_TREND, MEMORY */
+/* global React, Icon, GlassCard, Button, Badge, Kicker, Spinner, Banner, SEGMENTS, METRICS, SEG_PERF, CTR_TREND, MEMORY, PerformanceApi */
 // Aijolot Banner Agent — Stage 4: performance loop & self-optimization (Module 8).
-const { useState: useStateP } = React;
+const { useState: useStateP, useEffect: useEffectP } = React;
 
 function Sparkline({ data, w = 320, h = 70, color = "#22D3EE" }) {
   const min = Math.min(...data), max = Math.max(...data);
@@ -26,8 +26,29 @@ function Sparkline({ data, w = 320, h = 70, color = "#22D3EE" }) {
   );
 }
 
-function PerformanceStage({ tweaks, onBack }) {
+function PerformanceStage({ campaign, tweaks, onBack }) {
   const [v2, setV2] = useStateP("idle"); // idle | building | ready
+  const [backendPerf, setBackendPerf] = useStateP(null);
+  const [perfNotice, setPerfNotice] = useStateP("Datos demo etiquetados como manual/mock/seed/agent; no son analítica live de Shopify.");
+
+  useEffectP(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await PerformanceApi.get(campaign);
+        if (!alive) return;
+        if (r.fallback) setPerfNotice(r.reason);
+        else {
+          setBackendPerf(r.data);
+          const label = r.data && (r.data.data_source_label || (r.data.live_analytics ? "live" : "manual/mock/seed/agent"));
+          setPerfNotice(`Backend performance conectado · fuente: ${label || "manual/mock/seed/agent"}`);
+        }
+      } catch (e) {
+        if (alive) setPerfNotice("Performance backend no disponible: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) + ". Se muestran métricas demo no-live.");
+      }
+    })();
+    return () => { alive = false; };
+  }, [campaign && campaign.id]);
 
   function buildV2() {
     setV2("building");
@@ -40,10 +61,14 @@ function PerformanceStage({ tweaks, onBack }) {
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Kicker>Paso 6 de 6 · Performance</Kicker>
-          <h2 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 26, color: "#002B57", margin: 0 }}>Resultados en vivo</h2>
+          <h2 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 26, color: "#002B57", margin: 0 }}>Resultados no-live</h2>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Badge tone="slate" icon="database-zap">{perfNotice}</Badge>
+            {backendPerf ? <Badge tone="cyan" icon="wifi">{(backendPerf.snapshots || []).length} snapshots backend</Badge> : null}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <Badge tone="green" icon="check-circle-2">Publicado en Shopify</Badge>
+          <Badge tone="slate" icon="check-circle-2">Demo no-live</Badge>
           <Button variant="outline" icon="arrow-left" onClick={onBack}>Volver al lienzo</Button>
         </div>
       </div>

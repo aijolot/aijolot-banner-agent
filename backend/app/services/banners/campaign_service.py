@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Sequence
 from typing import Any, Protocol
+from uuid import uuid4
 
 from app.db.repositories.campaign_messages import CampaignMessageRepository
 from app.db.repositories.campaigns import CampaignRepository
@@ -63,11 +64,13 @@ class CampaignService:
         message_repository: CampaignMessageRepositoryProtocol | None = None,
         team_id: str | None = None,
         store_id: str | None = None,
+        uuid_ids: bool = False,
     ) -> None:
         self.campaign_repository = campaign_repository
         self.message_repository = message_repository
         self.team_id = team_id
         self.store_id = store_id
+        self.uuid_ids = uuid_ids
         self._campaigns: dict[str, Campaign] = {}
         self._ids = itertools.count(1)
 
@@ -104,7 +107,7 @@ class CampaignService:
                 status=status,
             )
             return self._campaign_from_record(row, [])
-        cid = f"cmp_{next(self._ids):04d}"
+        cid = str(uuid4()) if self.uuid_ids else f"cmp_{next(self._ids):04d}"
         campaign = Campaign(id=cid, title=title, raw_brief=raw_brief, structured_brief=brief, status=status)
         self._campaigns[cid] = campaign
         return campaign

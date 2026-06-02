@@ -154,6 +154,10 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
   const [phase, setPhase] = useStateG(0);
   const [typed, setTyped] = useStateG(0);
   const [shieldOn, setShieldOn] = useStateG(false);
+  const [backendRun, setBackendRun] = useStateG(null);
+  const [backendEvents, setBackendEvents] = useStateG([]);
+  const [kgContext, setKgContext] = useStateG(null);
+  const [artifactStatus, setArtifactStatus] = useStateG(null);
   const skipped = useRefG(false);
 
   useEffectG(() => {
@@ -161,9 +165,29 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
     (async () => {
       try {
         const r = await GenerationApi.start(campaign, { placement, art, source: "static-prototype" });
-        if (alive) onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Generación iniciada en backend" });
+        if (!alive) return;
+        onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Generación iniciada en backend" });
+        if (!r.fallback && r.data) {
+          setBackendRun(r.data);
+          const events = await GenerationApi.events(r.data.id);
+          if (!alive) return;
+          setBackendEvents(events);
+          const kg = events.find((event) => event.node_key === "research_best_practices" && event.status === "succeeded");
+          setKgContext(kg && kg.output_summary ? (kg.output_summary.summary || JSON.stringify(kg.output_summary)) : null);
+          const [preview, audit, revisions] = await Promise.allSettled([
+            GenerationApi.preview(campaign),
+            GenerationApi.audit(campaign),
+            GenerationApi.revisions(campaign),
+          ]);
+          if (!alive) return;
+          setArtifactStatus({
+            preview: preview.status === "fulfilled" && !preview.value.fallback,
+            audit: audit.status === "fulfilled" && !audit.value.fallback,
+            revisions: revisions.status === "fulfilled" && !revisions.value.fallback ? revisions.value.data.length : null,
+          });
+        }
       } catch (e) {
-        if (alive) onNotice && onNotice({ tone: "amber", text: "No se pudo iniciar generación backend: " + (e.message || e.status || "error") });
+        if (alive) onNotice && onNotice({ tone: "amber", text: "No se pudo iniciar generación backend: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) });
       }
     })();
     return () => { alive = false; };
@@ -204,6 +228,23 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
       <div style={{ height: 6, borderRadius: 9999, background: "#EEF2F6", overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct}%`, background: "linear-gradient(90deg,#22D3EE,#0891B2)", borderRadius: 9999, transition: "width .5s ease" }} />
       </div>
+
+      {(backendRun || backendEvents.length || kgContext || artifactStatus) ? (
+        <GlassCard style={{ padding: 14, display: "flex", flexDirection: "column", gap: 9, border: "1px solid rgba(34,211,238,.25)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <Badge tone="green" icon="wifi">Backend conectado</Badge>
+            {backendRun ? <Badge tone="cyan" icon="git-branch">Run {backendRun.id.slice(0, 8)} · {backendRun.status}</Badge> : null}
+            {backendEvents.length ? <Badge tone="purple" icon="activity">{backendEvents.length} eventos</Badge> : null}
+            {artifactStatus ? <Badge tone="slate" icon="file-check">Preview {artifactStatus.preview ? "OK" : "—"} · Audit {artifactStatus.audit ? "OK" : "—"} · Revs {artifactStatus.revisions == null ? "—" : artifactStatus.revisions}</Badge> : null}
+          </div>
+          {kgContext ? (
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start", fontFamily: "Inter", fontSize: 12, color: "#475569", lineHeight: 1.45 }}>
+              <Icon name="brain-circuit" size={14} color="#7C3AED" />
+              <span><b>Contexto usado:</b> {kgContext}</span>
+            </div>
+          ) : null}
+        </GlassCard>
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.1fr)", gap: 16, alignItems: "stretch" }}>
         <GlassCard style={{ padding: 18 }}><StepRail phase={phase} /></GlassCard>

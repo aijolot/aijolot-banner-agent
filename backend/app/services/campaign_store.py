@@ -239,7 +239,7 @@ def _configured_service_for_context(context: UserContext) -> CampaignService:
     if not has_supabase_signal:
         key = (context.team_id, context.store_id)
         if key not in _context_services:
-            _context_services[key] = CampaignService(team_id=context.team_id, store_id=context.store_id)
+            _context_services[key] = CampaignService(team_id=context.team_id, store_id=context.store_id, uuid_ids=True)
         return _context_services[key]
     if settings.supabase_url is None or settings.supabase_service_role_key is None:
         raise MissingSettingsError(("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"))

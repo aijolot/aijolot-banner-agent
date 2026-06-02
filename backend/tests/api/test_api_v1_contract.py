@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from uuid import UUID
 
 from fastapi.testclient import TestClient
 
@@ -26,6 +27,12 @@ def _new_v1_campaign() -> str:
     return response.json()["id"]
 
 
+def _done_campaign(events):
+    done = [e for e in events if e["type"] == "done"]
+    assert len(done) == 1
+    return done[0]["campaign"]
+
+
 def test_health_root_route_remains_available():
     r = client.get("/health")
     assert r.status_code == 200
@@ -47,10 +54,31 @@ def test_v1_intake_route_matches_root_contract():
         assert "text/event-stream" in r.headers["content-type"]
         events = _read_sse(r)
     assert any(e["type"] == "token" for e in events)
-    done = [e for e in events if e["type"] == "done"]
-    assert len(done) == 1
-    assert done[0]["campaign"]["id"].startswith("cmp_")
-    assert "missing" in done[0]
+    campaign = _done_campaign(events)
+    UUID(campaign["id"])
+    assert any("missing" in e for e in events if e["type"] == "done")
+
+
+def test_v1_campaign_create_uses_uuid_but_root_intake_preserves_prototype_ids():
+    cid = _new_v1_campaign()
+    UUID(cid)
+
+    with client.stream("POST", "/campaigns/intake", json={"message": "Promo en la home"}) as r:
+        assert r.status_code == 200
+        events = _read_sse(r)
+    assert _done_campaign(events)["id"].startswith("cmp_")
+
+
+def test_v1_intake_continues_with_returned_uuid_campaign_id():
+    with client.stream("POST", "/api/v1/campaigns/intake", headers=AUTH_HEADERS, json={"message": "Promo en home con CTA Comprar"}) as r:
+        assert r.status_code == 200
+        first = _done_campaign(_read_sse(r))
+    UUID(first["id"])
+
+    with client.stream("POST", "/api/v1/campaigns/intake", headers=AUTH_HEADERS, json={"message": "audiencia VIP y urgencia alta", "campaign_id": first["id"]}) as r:
+        assert r.status_code == 200
+        second = _done_campaign(_read_sse(r))
+    assert second["id"] == first["id"]
 
 
 def test_v1_brand_routes_match_root_contract(tmp_path, monkeypatch):

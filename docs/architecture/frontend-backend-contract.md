@@ -23,7 +23,14 @@ Example override before loading the app:
 
 ## Auth context
 
-Canonical `/api/v1` callers should send demo auth/team context. Accepted backend forms are documented in `docs/architecture/api-contract.md`:
+Canonical `/api/v1` callers should send demo auth/team context. The static prototype now centralizes that in `frontend/lib.jsx` through `AIJOLOT_DEMO_AUTH_HEADERS`; every `AijolotApi` request to `/api/v1` includes:
+
+- `X-Aijolot-User-Id`
+- `X-Aijolot-Team-Id`
+- `X-Aijolot-Store-Id`
+- `Authorization: Bearer demo:<user_id>:<team_id>:<store_id>` for endpoints that require the demo bearer form (for example preview access)
+
+Accepted backend forms are documented in `docs/architecture/api-contract.md`:
 
 - `X-Aijolot-User-Id`
 - `X-Aijolot-Team-Id`
@@ -44,25 +51,54 @@ store = 00000000-0000-0000-0000-000000000101
 
 ## Adapters exposed on `window`
 
-Defined primarily in `frontend/lib.jsx` and `frontend/data.jsx`:
+Defined primarily in `frontend/lib.jsx` and `frontend/data.jsx`. `AijolotApi.v1(path)` normalizes paths so `/api/v1` is appended exactly once, and `AijolotApi.streamIntakeEvents(...)` uses incremental `ReadableStream` parsing for browser UX.
 
 - `CampaignApi`
+  - `POST /api/v1/campaigns`
   - `GET /api/v1/campaigns`
+  - `GET /api/v1/campaigns/{campaign_id}`
   - `PATCH /api/v1/campaigns/{campaign_id}`
+- `StoreApi`
+  - `GET /api/v1/stores`
+  - `GET /api/v1/stores/{store_id}`
+  - `GET /api/v1/stores/{store_id}/shopify/resources`
+  - `GET /api/v1/stores/{store_id}/placement-types`
+  - `GET /api/v1/stores/{store_id}/placement-types/{placement_type_key}/targets`
 - `PlacementApi`
+  - `POST /api/v1/placements/validate`
   - `POST /api/v1/campaigns/{campaign_id}/placement`
+  - `GET /api/v1/campaigns/{campaign_id}/placement`
   - default seeded store id: `00000000-0000-0000-0000-000000000101`
   - prototype placement mapping uses seeded backend placement keys: `announcement_bar`, `hero_main`, `promo_card`, `collection_header`, `pdp_strip`, `pdp_cross_sell`, `footer_cta`, `search_results_banner`
   - collection/product target handles in the seeded fixture include `fragancias` and `boss-bottled-edp-100ml`
+- `CatalogApi`
+  - `POST /api/v1/campaigns/{campaign_id}/catalog-snapshot`
+  - `GET /api/v1/campaigns/{campaign_id}/catalog-snapshot`
 - `ArtDirectionApi`
   - `PUT /api/v1/campaigns/{campaign_id}/art-direction`
+  - `GET /api/v1/campaigns/{campaign_id}/art-direction`
 - `GenerationApi`
   - `POST /api/v1/campaigns/{campaign_id}/generation-runs`
   - `GET /api/v1/campaigns/{campaign_id}/generation-runs/latest`
+  - `GET /api/v1/generation-runs/{run_id}`
+  - `GET /api/v1/generation-runs/{run_id}/events`
+  - `GET /api/v1/campaigns/{campaign_id}/preview`
+  - `GET /api/v1/campaigns/{campaign_id}/audit-report`
+  - `GET /api/v1/campaigns/{campaign_id}/revisions`
+  - `POST /api/v1/campaigns/{campaign_id}/variants/{variant_id}/select`
+  - `POST /api/v1/campaigns/{campaign_id}/regenerate`
 - `ReviewApi`
   - canvas approval remains local/labeled until authenticated reviewer UUID and revision context are available in the static prototype
+  - approval/comment/refinement helpers are exposed for the canonical backend routes but still display/fail closed when the local approval service is unavailable
   - `POST /api/v1/campaigns/{campaign_id}/schedule`
+  - `PATCH /api/v1/campaigns/{campaign_id}/schedule`
+  - `POST /api/v1/campaigns/{campaign_id}/schedule/cancel`
   - `POST /api/v1/campaigns/{campaign_id}/publish`
+  - `POST /api/v1/campaigns/{campaign_id}/unpublish`
+- `PerformanceApi`
+  - `GET /api/v1/campaigns/{campaign_id}/performance`
+  - `POST /api/v1/campaigns/{campaign_id}/performance/snapshots`
+  - `POST /api/v1/campaigns/{campaign_id}/optimization-proposals`
 - `BrandAPI`
   - `GET /api/v1/brands`
   - `GET /api/v1/brands/{brand_id}`
@@ -76,7 +112,7 @@ Campaign intake streaming uses:
 ## Prototype flow wiring
 
 - Brand Context loads/saves through `BrandAPI`.
-- Brief chat streams from `/api/v1/campaigns/intake` and stores the returned backend campaign object.
+- Brief chat streams from `/api/v1/campaigns/intake` and stores the returned backend UUID campaign object in authenticated `/api/v1` no-Supabase/Supabase flows.
 - Edited brief chips persist with `PATCH /api/v1/campaigns/{campaign_id}` when a backend campaign id/context is usable.
 - Placement is selected before intake; once a backend campaign exists the adapter saves placement.
 - Art direction is saved before generation.
@@ -137,6 +173,14 @@ For deterministic non-browser verification, prefer:
 python3 scripts/reset-demo-data.py --local-only
 python3 scripts/smoke-demo-flow.py
 ```
+
+For frontend-facing endpoint wiring against a running backend, use:
+
+```bash
+node scripts/smoke-frontend-backend-connection.mjs
+```
+
+This script uses the same `/api/v1` base/auth/path-normalization rules as the static frontend and verifies intake streaming, UUID campaign handoff, placement, catalog/art direction, generation events/KG context, fail-closed schedule/publish, and non-live performance labels. Preview, audit, and revisions are attempted and reported as either loaded or visibly fail-closed in the no-Supabase local fallback.
 
 ## Deferred/non-MVP gaps
 
