@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.brand import BrandContext
 
@@ -28,7 +28,7 @@ class Variant(BaseModel):
 
 class Concept(BaseModel):
     layout: str
-    copy: dict[str, str]
+    copy: dict[str, str]  # noqa: shadow — intentional, matches source design contract
     palette_usage: dict[str, str]
     image_prompt: str
     hierarchy_notes: str
@@ -77,6 +77,8 @@ class PublishResult(BaseModel):
 class BannerSessionState(BaseModel):
     """In-graph state. Passed by reference between nodes via ADK."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     trace_id: str
     session_id: str
     brand_id: str
@@ -97,6 +99,3 @@ class BannerSessionState(BaseModel):
 
     cost_usd_running: float = 0.0
     retries: dict[str, int] = Field(default_factory=dict)  # node -> count, max 2
-
-    class Config:
-        arbitrary_types_allowed = True

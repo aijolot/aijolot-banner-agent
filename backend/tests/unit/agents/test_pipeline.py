@@ -1,4 +1,10 @@
-"""Tests for ADK Workflow pipeline graph construction and composition."""
+"""Tests for ADK Workflow pipeline graph construction and composition.
+
+These tests validate the PIPELINE_MODE=full pipeline — the Workflow graph
+that replaces SequentialAgent/LoopAgent/ParallelAgent. The smoke-demo-flow.py
+script exercises the legacy API route path and does not use the Workflow;
+this test suite is the authoritative coverage for the ADK Workflow pipeline.
+"""
 
 from __future__ import annotations
 
@@ -33,7 +39,7 @@ class TestPipelineConstruction:
             "brand_load", "personalization", "best_practices",
             "concept_draft", "prompt_refine", "image_gen", "image_opt",
             "html_render", "liquid_build", "render_join", "audit",
-            "pipeline_done",
+            "hitl_review",
         }
         assert expected.issubset(node_names), f"Missing: {expected - node_names}"
 
@@ -70,6 +76,17 @@ class TestPipelineConstruction:
         assert "pass" in routes, "Missing 'pass' route from audit"
         assert "retry" in routes, "Missing 'retry' route from audit"
 
+    def test_pass_edge_goes_to_hitl_review(self):
+        from app.agents.pipeline import build_pre_review_pipeline
+
+        pipeline = build_pre_review_pipeline()
+        pass_edges = [
+            e for e in pipeline.graph.edges
+            if e.from_node.name == "audit" and e.route == "pass"
+        ]
+        assert len(pass_edges) == 1
+        assert pass_edges[0].to_node.name == "hitl_review"
+
     def test_retry_edge_goes_to_concept_draft(self):
         from app.agents.pipeline import build_pre_review_pipeline
 
@@ -80,6 +97,14 @@ class TestPipelineConstruction:
         ]
         assert len(retry_edges) == 1
         assert retry_edges[0].to_node.name == "concept_draft"
+
+    def test_hitl_review_node_exists(self):
+        """Node 10 (HITL) must be an explicit node in the graph."""
+        from app.agents.pipeline import build_pre_review_pipeline
+
+        pipeline = build_pre_review_pipeline()
+        node_names = {n.name for n in pipeline.graph.nodes}
+        assert "hitl_review" in node_names
 
     def test_parallel_render_fan_out(self):
         """html_render and liquid_build should both follow image_opt."""
@@ -205,46 +230,71 @@ class TestStateBridge:
 
 
 class TestAuditRouting:
-    """Verify audit node routing logic."""
+    """Verify audit node routing logic using _DECISION_RETRY_TARGETS."""
 
-    def test_pass_route(self):
-        """node_audit should set ctx.route='pass' on pass decision."""
-        # We test the routing logic directly since running the full
-        # FunctionNode requires an ADK Context
+    def _simulate_routing(self, state: dict) -> str:
+        """Simulate the routing logic from node_audit without ADK Context."""
+        from app.agents.pipeline import _DECISION_RETRY_TARGETS
+
+        decision = state.get("audit_decision", "human_review_required")
+        retry_target = _DECISION_RETRY_TARGETS.get(decision)
+
+        if retry_target is None:
+            return "pass"
+
+        retries = dict(state.get("retries", {}))
+        current = retries.get(retry_target, 0)
+        if current >= 2:
+            state["audit_decision"] = "escalate_hitl"
+            return "pass"
+        else:
+            retries[retry_target] = current + 1
+            state["retries"] = retries
+            return "retry"
+
+    def test_pass_on_human_review_required(self):
         state = {"retries": {}, "audit_decision": "human_review_required"}
-        decision = state["audit_decision"]
-        if decision in ("pass", "human_review_required", "escalate_hitl"):
-            route = "pass"
-        else:
-            route = "retry"
-        assert route == "pass"
+        assert self._simulate_routing(state) == "pass"
 
-    def test_retry_route(self):
+    def test_pass_on_escalate_hitl(self):
+        state = {"retries": {}, "audit_decision": "escalate_hitl"}
+        assert self._simulate_routing(state) == "pass"
+
+    def test_retry_node_5_targets_concept(self):
+        """retry_node_5 should target draft_banner_concept."""
         state = {"retries": {}, "audit_decision": "retry_node_5"}
-        decision = state["audit_decision"]
-        if decision in ("pass", "human_review_required", "escalate_hitl"):
-            route = "pass"
-        else:
-            retries = dict(state.get("retries", {}))
-            target = "draft_banner_concept" if "node_5" in decision else "render_html"
-            current = retries.get(target, 0)
-            if current >= 2:
-                route = "pass"
-            else:
-                retries[target] = current + 1
-                state["retries"] = retries
-                route = "retry"
-        assert route == "retry"
+        assert self._simulate_routing(state) == "retry"
         assert state["retries"]["draft_banner_concept"] == 1
 
-    def test_retry_exhausted_routes_to_pass(self):
+    def test_retry_node_8_targets_render_html(self):
+        """retry_node_8 should target render_html."""
+        state = {"retries": {}, "audit_decision": "retry_node_8"}
+        assert self._simulate_routing(state) == "retry"
+        assert state["retries"]["render_html"] == 1
+
+    def test_retry_counter_increments(self):
+        """Two consecutive retries should increment the counter to 2."""
+        state = {"retries": {}, "audit_decision": "retry_node_5"}
+        self._simulate_routing(state)
+        assert state["retries"]["draft_banner_concept"] == 1
+
+        state["audit_decision"] = "retry_node_5"  # second retry
+        self._simulate_routing(state)
+        assert state["retries"]["draft_banner_concept"] == 2
+
+    def test_retry_exhausted_escalates(self):
+        """After 2 retries, should escalate to HITL instead of retrying."""
         state = {"retries": {"draft_banner_concept": 2}, "audit_decision": "retry_node_5"}
-        decision = state["audit_decision"]
-        retries = dict(state.get("retries", {}))
-        target = "draft_banner_concept"
-        current = retries.get(target, 0)
-        if current >= 2:
-            route = "pass"
-        else:
-            route = "retry"
-        assert route == "pass"
+        assert self._simulate_routing(state) == "pass"
+        assert state["audit_decision"] == "escalate_hitl"
+
+    def test_render_html_retry_exhausted(self):
+        """render_html target also respects the 2-retry budget."""
+        state = {"retries": {"render_html": 2}, "audit_decision": "retry_node_8"}
+        assert self._simulate_routing(state) == "pass"
+        assert state["audit_decision"] == "escalate_hitl"
+
+    def test_unknown_decision_routes_to_pass(self):
+        """Unknown decisions (not in _DECISION_RETRY_TARGETS) pass through."""
+        state = {"retries": {}, "audit_decision": "some_unknown_value"}
+        assert self._simulate_routing(state) == "pass"

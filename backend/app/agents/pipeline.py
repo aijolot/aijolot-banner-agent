@@ -158,11 +158,17 @@ async def node_liquid_build(ctx: Context) -> None:
     await _emit_done(ctx, "render_liquid", t0)
 
 
+_DECISION_RETRY_TARGETS: dict[str, str] = {
+    "retry_node_5": "draft_banner_concept",
+    "retry_node_8": "render_html",
+}
+
+
 async def node_audit(ctx: Context) -> None:
     """Audit node with conditional routing for retry loop.
 
     Sets ctx.route to control the Workflow graph:
-    - "pass" → exit to END (audit passed or warn)
+    - "pass" → exit to hitl_review (audit passed, warn, or escalated)
     - "retry" → loop back to concept_draft
     """
     t0 = time.monotonic()
@@ -172,20 +178,22 @@ async def node_audit(ctx: Context) -> None:
     for k, v in sb.write_performance_audit(ctx.state, result).items():
         ctx.state[k] = v
 
-    # Determine routing
+    # Determine routing using explicit retry_target lookup
     decision = ctx.state.get("audit_decision", "human_review_required")
-    if decision in ("pass", "human_review_required", "escalate_hitl"):
+    retry_target = _DECISION_RETRY_TARGETS.get(decision)
+
+    if retry_target is None:
+        # pass, human_review_required, escalate_hitl → exit loop
         ctx.route = "pass"
     else:
-        # Check retry budget
+        # Check retry budget for the specific target node
         retries = dict(ctx.state.get("retries", {}))
-        target = "draft_banner_concept" if "node_5" in decision else "render_html"
-        current = retries.get(target, 0)
+        current = retries.get(retry_target, 0)
         if current >= 2:
             ctx.state["audit_decision"] = "escalate_hitl"
             ctx.route = "pass"
         else:
-            retries[target] = current + 1
+            retries[retry_target] = current + 1
             ctx.state["retries"] = retries
             ctx.route = "retry"
 
@@ -226,12 +234,25 @@ fn_liquid_build = FunctionNode(func=node_liquid_build, name="liquid_build")
 fn_audit = FunctionNode(func=node_audit, name="audit")
 render_join = JoinNode(name="render_join")
 
-async def node_pipeline_done(ctx: Context) -> None:
-    """Terminal node — marks pre-review pipeline as complete."""
+async def node_hitl_review(ctx: Context) -> None:
+    """Node 10 — HITL review gate.
+
+    Marks the pipeline as awaiting human review. The actual pause
+    happens at the pipeline boundary: the Workflow completes, the API
+    stores the session state, and resumes post_review after the human
+    decision arrives via the approval API.
+
+    When GH-30 lands, this node will emit a RequestInput interrupt
+    to pause the Workflow mid-execution and resume in-place.
+    """
+    t0 = time.monotonic()
+    await _emit_start(ctx, "human_review")
     ctx.state["pipeline_status"] = "awaiting_review"
+    ctx.state["hitl_status"] = "review_requested"
+    await _emit_done(ctx, "human_review", t0)
 
 
-fn_pipeline_done = FunctionNode(func=node_pipeline_done, name="pipeline_done")
+fn_hitl_review = FunctionNode(func=node_hitl_review, name="hitl_review")
 fn_schedule = FunctionNode(func=node_schedule_route, name="schedule_route")
 fn_publish = FunctionNode(func=node_shopify_publish, name="shopify_publish")
 
@@ -239,13 +260,13 @@ fn_publish = FunctionNode(func=node_shopify_publish, name="shopify_publish")
 # ── Pipeline builders ─────────────────────────────────────────────
 
 def build_pre_review_pipeline() -> Workflow:
-    """Pipeline: nodes 1, 3-9 with creative-audit retry loop.
+    """Pipeline: nodes 1, 3-9, 10 with creative-audit retry loop + HITL gate.
 
     Topology:
       START → brand_load → personalization → best_practices
         → concept_draft → prompt_refine → image_gen → image_opt
         → (html_render, liquid_build) → render_join
-        → audit → {"pass": END, "retry": concept_draft}
+        → audit → {"pass": hitl_review, "retry": concept_draft}
     """
     return Workflow(
         name="pre_review_pipeline",
@@ -259,9 +280,9 @@ def build_pre_review_pipeline() -> Workflow:
             (fn_image_opt, (fn_html_render, fn_liquid_build)),
             # Fan-in: join after both renders complete
             ((fn_html_render, fn_liquid_build), render_join),
-            # Audit with conditional routing
+            # Audit with conditional routing → HITL review on pass
             (render_join, fn_audit, {
-                "pass": fn_pipeline_done,
+                "pass": fn_hitl_review,
                 "retry": fn_concept_draft,
             }),
         ],
