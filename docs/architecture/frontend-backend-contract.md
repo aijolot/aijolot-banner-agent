@@ -32,6 +32,8 @@ Canonical `/api/v1` callers should send demo auth/team context. Accepted backend
 
 The deterministic smoke script supplies these headers itself. Browser demos should verify the static frontend version being served includes/sends demo context before claiming an authenticated end-to-end API flow. Do not put real Gemini/Supabase/Shopify secrets in browser headers.
 
+For a copy/paste-friendly list of frontend API functions, parameters, and payloads, see `docs/architecture/frontend-integration-function-reference.md`.
+
 Demo fixture ids:
 
 ```text
