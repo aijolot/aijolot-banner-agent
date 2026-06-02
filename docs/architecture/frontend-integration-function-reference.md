@@ -38,8 +38,12 @@ Suggested client helper:
 ```ts
 type Json = Record<string, unknown> | unknown[] | null;
 
+function apiPath(path: string): string {
+  return path.startsWith("/") ? path : `/${path}`;
+}
+
 async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${apiPath(path)}`, {
     ...init,
     headers: {
       Accept: "application/json",
@@ -70,6 +74,7 @@ Important caveats:
 - Some stage APIs require UUID campaign IDs. Campaigns created through `/api/v1/campaigns` or Supabase-backed intake are safest for full frontend integration.
 - Performance values are manual/mock/seed/agent unless explicitly marked live; do not label demo values as live analytics.
 - Publishing fails closed unless Shopify credentials and safe campaign state are configured.
+- DELETE operations are not part of the MVP API surface. If the UI needs removal, hide/archive locally or ask backend for an explicit endpoint instead of assuming `DELETE` exists.
 
 ## 1. Health
 
@@ -274,16 +279,53 @@ data: {"type":"token","text":"..."}
 data: {"type":"done","campaign":{...},"complete":true,"missing":[]}
 ```
 
-Suggested parser:
+Recommended incremental parser:
 
 ```ts
-function parseIntakeEvents(text: string) {
-  return text
-    .split("\n\n")
-    .filter((chunk) => chunk.startsWith("data: "))
-    .map((chunk) => JSON.parse(chunk.replace(/^data: /, "")));
+type IntakeEvent =
+  | { type: "token"; text: string }
+  | { type: "done"; campaign: Campaign; complete: boolean; missing: string[] };
+
+async function streamIntakeEvents(
+  message: string,
+  onEvent: (event: IntakeEvent) => void,
+  campaignId?: string | null,
+) {
+  const response = await fetch(`${API_BASE}/campaigns/intake`, {
+    method: "POST",
+    headers: {
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+      ...demoAuthHeaders,
+    },
+    body: JSON.stringify({ message, campaign_id: campaignId ?? null }),
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`intake failed: ${response.status} ${await response.text()}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  for (;;) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary >= 0) {
+      const chunk = buffer.slice(0, boundary).trim();
+      buffer = buffer.slice(boundary + 2);
+      if (chunk.startsWith("data: ")) onEvent(JSON.parse(chunk.slice(6)) as IntakeEvent);
+      boundary = buffer.indexOf("\n\n");
+    }
+
+    if (done) break;
+  }
 }
 ```
+
+For tests or non-streaming environments, consuming `await response.text()` and splitting on blank lines is acceptable, but browser chat UX should prefer the `ReadableStream` pattern above.
 
 Core `Campaign` shape:
 
@@ -561,6 +603,38 @@ Functionality: returns ordered progress events mapped to frontend steps.
 
 Response: `GenerationEventResponse[]`.
 
+Event shape:
+
+```ts
+type FrontendStep = "intake_context" | "concept" | "image" | "render_audit" | "review_publish";
+type GenerationEventStatus = "started" | "succeeded" | "failed" | "retried" | "escalated";
+
+type GenerationEventResponse = {
+  id: string;
+  generation_run_id: string;
+  node_key: string;
+  frontend_step: FrontendStep;
+  status: GenerationEventStatus;
+  input_summary?: Record<string, unknown> | null;
+  output_summary?: Record<string, unknown> | null;
+  duration_ms?: number | null;
+  cost_usd?: number | null;
+  created_at?: string | null;
+};
+```
+
+Frontend progress mapping:
+
+| `frontend_step` | UI label | ADK/node keys included |
+| --- | --- | --- |
+| `intake_context` | Intake & context | `load_brand_context`, `intake_campaign_idea`, `capture_user_personalization`, `research_best_practices` |
+| `concept` | Banner concept | `draft_banner_concept` |
+| `image` | Image & assets | `generate_image`, `optimize_assets` |
+| `render_audit` | Render & audit | `render_html`, `audit` |
+| `review_publish` | Review & publish | `human_review`, `schedule_or_publish`, `publish_to_shopify` |
+
+Knowledge Graph / 2nd Brain note: KG retrieval is internal to the agent, not a direct frontend API. If the backend emits a `generation_events` row with `node_key: "research_best_practices"`, its `output_summary` is the frontend-safe place to show a small "Powered by best practices"/"Context used" callout. Treat `output_summary` keys as optional because deterministic fallback and provider-backed runs may include different detail levels.
+
 ### `getCampaignPreview(campaignId)`
 
 ```ts
@@ -621,6 +695,54 @@ GET /api/v1/campaigns/{campaign_id}/revisions
 Functionality: lists revision history for the campaign.
 
 Response: `CampaignRevisionResponse[]`.
+
+Revision / layout / audience variant model:
+
+```ts
+type CampaignRevisionResponse = {
+  id: string;
+  campaign_id: string;
+  generation_run_id?: string | null;
+  revision_number: number;
+  status: "draft" | "selected" | "superseded" | "approved" | "published" | string;
+  concept: Record<string, unknown>;
+  liquid_config: Record<string, unknown>;
+  html_preview?: string | null;
+  preview_storage_path?: string | null;
+  created_at?: string | null;
+  layout_variants: LayoutVariantResponse[];
+  variants: RevisionVariantResponse[];
+};
+
+type LayoutVariantResponse = {
+  id: string;
+  revision_id: string;
+  key: string; // deterministic MVP keys: "A" | "B" | "C"
+  name: string;
+  description?: string | null;
+  layout_type?: string | null;
+  is_recommended: boolean;
+  config: Record<string, unknown>;
+};
+
+type RevisionVariantResponse = {
+  id: string;
+  revision_id: string;
+  segment_key: string; // e.g. default, vip, new_signup, masculino, femenino when available
+  segment_label: string;
+  customer_tag?: string | null;
+  audience_rule: Record<string, unknown>;
+  product_snapshot_item_id?: string | null;
+  eyebrow?: string | null;
+  headline?: string | null;
+  subheadline?: string | null;
+  cta_text?: string | null;
+  cta_url?: string | null;
+  palette: Record<string, unknown>;
+};
+```
+
+Navigation rule: there are no direct MVP endpoints like `GET /api/v1/revisions/{id}/variants` or `GET /api/v1/variants/{id}/assets`. Use `listCampaignRevisions(campaignId)` to obtain revision-level `layout_variants` and audience `variants`, and use `getCampaignPreview(campaignId)` when you need composed HTML. Asset rows exist in the database hierarchy (`campaign_revisions -> banner_layout_variants / banner_variants -> banner_assets`), but direct asset navigation is intentionally encapsulated by preview/render endpoints for the MVP.
 
 ## 7. Approval, comments, and refinement
 
@@ -895,7 +1017,16 @@ Functionality: creates a V2 optimization proposal tied to the campaign/revision.
 
 Response: `OptimizationProposalResponse`.
 
-## 10. Root compatibility functions, avoid for new frontend work
+## 10. Explicit non-scope for MVP frontend agents
+
+The following are intentionally not part of the MVP API surface:
+
+- No `DELETE` endpoints. Do not assume delete exists for campaigns, comments, revisions, brands, schedules, or assets.
+- No direct Knowledge Graph query endpoint. KG/2nd Brain retrieval is an internal generation event (`research_best_practices`) surfaced only through generation run outputs/events.
+- No direct variant/asset navigation endpoints. Use `listCampaignRevisions`, `selectVariant`, `getCampaignPreview`, and `getCampaignAuditReport`.
+- No live Shopify resource sync or live analytics ingestion endpoint in the deterministic demo path.
+
+## 11. Root compatibility functions, avoid for new frontend work
 
 These routes remain unauthenticated for older prototype compatibility only:
 
@@ -913,7 +1044,7 @@ PATCH /campaigns/{campaign_id}
 
 Frontend agents should prefer `/api/v1` functions above.
 
-## 11. Recommended frontend implementation order
+## 12. Recommended frontend implementation order
 
 1. Add shared API client with base URL and demo auth headers.
 2. Wire `listBrands`, `getBrand`, `saveBrand`.
@@ -927,7 +1058,7 @@ Frontend agents should prefer `/api/v1` functions above.
 10. Wire schedule/publish/unpublish, with fail-closed error handling.
 11. Wire performance/proposals with non-live labels.
 
-## 12. Quick smoke checklist for frontend agents
+## 13. Quick smoke checklist for frontend agents
 
 Before claiming connected frontend/backend:
 
