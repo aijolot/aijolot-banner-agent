@@ -1,94 +1,68 @@
-"""Brand storage — read/write ``brands/{id}.md`` files.
+"""Compatibility facade for brand runtime storage.
 
-Each brand lives in a markdown file with a YAML frontmatter block holding the
-structured :class:`BrandContext` fields, followed by a free-form notes body::
-
-    ---
-    id: avocado_store
-    name: Avocado Store
-    ...
-    ---
-
-    # Notes...
-
-This keeps brands diff-friendly and editable by hand, while the FastAPI bridge
-serves them as validated JSON.
+Runtime storage is Supabase-backed when SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
+and BRAND_CONTEXT_TEAM_ID (or SUPABASE_TEAM_ID) are configured. Markdown files
+remain available as seed/import sources and as the local dev/test fallback.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
+from app.core.settings import MissingSettingsError, Settings
 from app.schemas.brand import BrandContext, BrandSummary
+from app.services.brands.brand_service import BrandNotFound, BrandService
+from app.services.brands.markdown_importer import BrandMarkdownImporter, dump_markdown, split_frontmatter
+from app.services.supabase.client import SupabaseClientFactory
 
-# repo-root/brands  (this file is backend/app/services/brand_store.py)
 BRANDS_DIR = Path(__file__).resolve().parents[3] / "brands"
+DEMO_TEAM_ID = "00000000-0000-0000-0000-000000000001"
 
-_FENCE = "---"
+
+def _default_service_for_team(team_id_override: str | None = None) -> BrandService:
+    importer = BrandMarkdownImporter(base_dir=BRANDS_DIR)
+    settings = Settings.from_env()
+    team_id = team_id_override or settings.brand_context_team_id or settings.supabase_team_id
+    has_supabase_credentials = settings.supabase_url is not None and settings.supabase_service_role_key is not None
+    if has_supabase_credentials and not team_id:
+        raise MissingSettingsError(("BRAND_CONTEXT_TEAM_ID", "SUPABASE_TEAM_ID"))
+    try:
+        client = SupabaseClientFactory(settings).service_role_client()
+    except MissingSettingsError:
+        if team_id_override and team_id_override != DEMO_TEAM_ID:
+            team_dir = BRANDS_DIR / ".runtime" / team_id_override
+            return BrandService(markdown_importer=BrandMarkdownImporter(base_dir=team_dir), markdown_writes_dir=team_dir)
+        return BrandService(markdown_importer=importer, markdown_writes_dir=BRANDS_DIR)
+    return BrandService.from_supabase_client(client, team_id=team_id, markdown_importer=importer)
 
 
-class BrandNotFound(Exception):
-    """Raised when a brand id has no backing ``.md`` file."""
+def _default_service() -> BrandService:
+    return _default_service_for_team()
+
+
+def service_for_team(team_id: str) -> BrandService:
+    return _default_service_for_team(team_id)
 
 
 def _split_frontmatter(text: str) -> tuple[dict, str]:
-    """Return ``(frontmatter_dict, body)`` from a markdown file's text."""
-    stripped = text.lstrip()
-    if not stripped.startswith(_FENCE):
-        return {}, text
-    # drop everything up to the first fence, then split on the closing fence
-    rest = stripped[len(_FENCE):]
-    end = rest.find("\n" + _FENCE)
-    if end == -1:
-        return {}, text
-    fm_raw = rest[:end]
-    body = rest[end + len(_FENCE) + 1:]
-    data = yaml.safe_load(fm_raw) or {}
-    return data, body.lstrip("\n")
+    return split_frontmatter(text)
 
 
 def _dump_markdown(brand: BrandContext) -> str:
-    """Serialize a BrandContext back into frontmatter + body."""
-    data = brand.model_dump(exclude={"notes"})
-    fm = yaml.safe_dump(data, sort_keys=False, allow_unicode=True).rstrip()
-    body = brand.notes.rstrip()
-    return f"{_FENCE}\n{fm}\n{_FENCE}\n\n{body}\n"
-
-
-def _path(brand_id: str) -> Path:
-    return BRANDS_DIR / f"{brand_id}.md"
-
-
-def _load_file(path: Path) -> BrandContext:
-    fm, body = _split_frontmatter(path.read_text(encoding="utf-8"))
-    fm["notes"] = body
-    # ensure id matches filename even if frontmatter omits it
-    fm.setdefault("id", path.stem)
-    return BrandContext(**fm)
+    return dump_markdown(brand)
 
 
 def list_brands() -> list[BrandSummary]:
-    if not BRANDS_DIR.exists():
-        return []
-    out: list[BrandSummary] = []
-    for path in sorted(BRANDS_DIR.glob("*.md")):
-        brand = _load_file(path)
-        out.append(BrandSummary(id=brand.id, name=brand.name, palette=brand.palette))
-    return out
+    return _default_service().list_brands()
 
 
 def get_brand(brand_id: str) -> BrandContext:
-    path = _path(brand_id)
-    if not path.exists():
-        raise BrandNotFound(brand_id)
-    return _load_file(path)
+    return _default_service().get_brand(brand_id)
 
 
 def save_brand(brand_id: str, brand: BrandContext) -> BrandContext:
-    # the path is authoritative for the id
-    brand = brand.model_copy(update={"id": brand_id})
-    BRANDS_DIR.mkdir(parents=True, exist_ok=True)
-    _path(brand_id).write_text(_dump_markdown(brand), encoding="utf-8")
-    return brand
+    return _default_service().save_brand(brand_id, brand)
+
+
+def import_markdown_brand(brand_id: str | None = None, path: str | Path | None = None) -> BrandContext:
+    return _default_service().import_markdown(brand_id=brand_id, path=path)

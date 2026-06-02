@@ -40,15 +40,25 @@ class BannerAssets(BaseModel):
     fallback_jpg: dict[int, str]
     alt_text_suggestion: str
     total_weight_kb_1280_webp: float
+    asset_records: list[dict[str, Any]] = Field(default_factory=list)
+    optimization_report: dict[str, Any] = Field(default_factory=dict)
 
 
 class AuditReport(BaseModel):
-    html_w3c: str
-    lighthouse: dict[str, float]
+    html_w3c: dict[str, Any] | str
+    lighthouse: dict[str, Any]
     schema_valid: bool
     breakpoints_render: dict[str, bool]
     root_cause_hint: str | None = None
     overall_pass: bool
+    status: str = "pending"  # pass | warn | fail | pending
+    findings: list[dict[str, Any]] = Field(default_factory=list)
+    schema_report: dict[str, Any] = Field(default_factory=dict)
+    asset_weight_report: dict[str, Any] = Field(default_factory=dict)
+    wcag_report: dict[str, Any] = Field(default_factory=dict)
+    seo_report: dict[str, Any] = Field(default_factory=dict)
+    avif_skipped: bool = False
+    human_review_required: bool = True
 
 
 class HITLDecision(BaseModel):

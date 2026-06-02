@@ -1,0 +1,257 @@
+from __future__ import annotations
+
+import hashlib
+import json
+from datetime import UTC, datetime
+from typing import Any
+
+from app.core.settings import Settings
+from app.db.repositories.campaign_placements import CampaignPlacementRepository
+from app.db.repositories.campaign_revisions import CampaignRevisionRepository
+from app.db.repositories.campaigns import CampaignRepository
+from app.db.repositories.publish_jobs import PublishJobRepository
+from app.db.repositories.schedules import ScheduleRepository
+from app.db.repositories.stores import StoreRepository
+from app.schemas.schedules import PublishJobResponse
+from app.services.shopify import metafields, theme_files
+from app.services.supabase.client import SupabaseClientFactory
+
+
+class PublishError(Exception):
+    pass
+
+
+class PublisherUnavailable(PublishError):
+    pass
+
+
+class CampaignNotFound(PublishError):
+    def __init__(self, campaign_id: str) -> None:
+        super().__init__(f"campaign {campaign_id} not found")
+
+
+class CampaignNotScheduled(PublishError):
+    def __init__(self, campaign_id: str, status: str | None) -> None:
+        super().__init__(f"campaign {campaign_id} must be scheduled before publishing (current status: {status})")
+
+
+class CampaignRevisionNotFound(PublishError):
+    def __init__(self, campaign_id: str) -> None:
+        super().__init__(f"campaign {campaign_id} has no selected schedule revision")
+
+
+class StoreNotFound(PublishError):
+    def __init__(self, store_id: str) -> None:
+        super().__init__(f"store {store_id} not found")
+
+
+class PublishUnsupported(PublishError):
+    pass
+
+
+class ShopifyPublisher:
+    def __init__(
+        self,
+        *,
+        client: Any,
+        campaigns: Any,
+        revisions: Any,
+        stores: Any,
+        schedules: Any,
+        placements: Any,
+        publish_jobs: Any,
+        team_id: str | None = None,
+    ) -> None:
+        self.client = client
+        self.campaigns = campaigns
+        self.revisions = revisions
+        self.stores = stores
+        self.schedules = schedules
+        self.placements = placements
+        self.publish_jobs = publish_jobs
+        self.team_id = team_id
+
+    def install_theme_files(self, store_id: str) -> PublishJobResponse:
+        """Install controlled theme files without creating invalid FK publish_jobs rows."""
+        store = self._store(store_id)
+        theme_id = str(store.get("theme_id") or "")
+        if not theme_id:
+            raise PublishUnsupported("store has no theme_id configured")
+        idempotency_key = f"install-theme-files:{store_id}:{theme_id}:v1"
+        try:
+            response = {"assets": theme_files.install_theme_files(self.client, theme_id=theme_id)}
+            row = self._standalone_theme_job(store_id=store_id, theme_id=theme_id, status="succeeded", response_payload=response, idempotency_key=idempotency_key)
+            return PublishJobResponse.model_validate(row)
+        except Exception as exc:
+            row = self._standalone_theme_job(store_id=store_id, theme_id=theme_id, status="failed", error_message=str(exc), idempotency_key=idempotency_key)
+            return PublishJobResponse.model_validate(row)
+
+    def publish_campaign(self, campaign_id: str) -> PublishJobResponse:
+        campaign = self._campaign(campaign_id)
+        if campaign.get("status") not in {"scheduled", "published"}:
+            raise CampaignNotScheduled(campaign_id, campaign.get("status"))
+        schedule = self._active_schedule(campaign_id, campaign.get("status"))
+        revision = self._revision_for_schedule(campaign, schedule)
+        store = self._store(str(campaign["store_id"]))
+        placement = self.placements.get_by_campaign_id(campaign_id=campaign_id) if self.placements else None
+        if placement and placement.get("target_type") == "search":
+            raise PublishUnsupported("search result placement publishing is not supported in the Shopify Liquid MVP")
+        config = self._campaign_config(campaign=campaign, revision=revision, placement=placement, schedule=schedule)
+        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"], "config": config}
+        job = self._create_job(
+            campaign_id=campaign_id,
+            revision_id=str(revision["id"]),
+            schedule_id=str(schedule["id"]),
+            action="publish",
+            request_payload=request_payload,
+            idempotency_key="publish:" + _hash(request_payload),
+        )
+        if job.get("status") == "succeeded":
+            return PublishJobResponse.model_validate(job)
+        try:
+            if store.get("theme_id"):
+                theme_files.install_theme_files(self.client, theme_id=str(store["theme_id"]))
+            response = metafields.publish_campaign_config(
+                self.client,
+                namespace=str(store.get("banner_metafield_namespace") or "aijolot"),
+                key=str(store.get("banner_metafield_key") or "banner_campaigns"),
+                config=config,
+            )
+            self.campaigns.update(campaign_id=campaign_id, data={"status": "published"}, team_id=self.team_id)
+            row = self.publish_jobs.update(job_id=job["id"], data={"status": "succeeded", "response_payload": response, "finished_at": _now()}) or {**job, "status": "succeeded", "response_payload": response}
+            return PublishJobResponse.model_validate(row)
+        except Exception as exc:
+            self.publish_jobs.update(job_id=job["id"], data={"status": "failed", "error_message": str(exc), "finished_at": _now()})
+            self.campaigns.update(campaign_id=campaign_id, data={"status": "failed"}, team_id=self.team_id)
+            raise
+
+    def unpublish_campaign(self, campaign_id: str) -> PublishJobResponse:
+        campaign = self._campaign(campaign_id)
+        schedule = self.schedules.get_active_by_campaign_id(campaign_id=campaign_id) if self.schedules else None
+        revision = self._revision_for_schedule(campaign, schedule) if schedule and schedule.get("status") in {"pending", "active"} else None
+        store = self._store(str(campaign["store_id"])) if revision else None
+        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"]} if revision and store else None
+        existing_job = self._existing_job("unpublish:" + _hash(request_payload)) if request_payload else None
+        if existing_job and existing_job.get("status") == "succeeded":
+            return PublishJobResponse.model_validate(existing_job)
+        if campaign.get("status") not in {"scheduled", "published"}:
+            raise CampaignNotScheduled(campaign_id, campaign.get("status"))
+        if not schedule or schedule.get("status") not in {"pending", "active"} or not revision or not store or not request_payload:
+            raise CampaignNotScheduled(campaign_id, campaign.get("status"))
+        job = self._create_job(
+            campaign_id=campaign_id,
+            revision_id=str(revision["id"]),
+            schedule_id=str(schedule["id"]),
+            action="unpublish",
+            request_payload=request_payload,
+            idempotency_key="unpublish:" + _hash(request_payload),
+        )
+        if job.get("status") == "succeeded":
+            return PublishJobResponse.model_validate(job)
+        try:
+            response = metafields.clear_campaign_config(
+                self.client,
+                namespace=str(store.get("banner_metafield_namespace") or "aijolot"),
+                key=str(store.get("banner_metafield_key") or "banner_campaigns"),
+                campaign_id=campaign_id,
+            )
+            self.campaigns.update(campaign_id=campaign_id, data={"status": "approved"}, team_id=self.team_id)
+            row = self.publish_jobs.update(job_id=job["id"], data={"status": "succeeded", "response_payload": response, "finished_at": _now()}) or {**job, "status": "succeeded", "response_payload": response}
+            return PublishJobResponse.model_validate(row)
+        except Exception as exc:
+            self.publish_jobs.update(job_id=job["id"], data={"status": "failed", "error_message": str(exc), "finished_at": _now()})
+            raise
+
+    def _campaign_config(self, *, campaign: dict[str, Any], revision: dict[str, Any], placement: dict[str, Any] | None, schedule: dict[str, Any]) -> dict[str, Any]:
+        base = dict(revision.get("liquid_config") or {})
+        base.update(
+            {
+                "campaign_id": str(campaign["id"]),
+                "revision_id": str(revision["id"]),
+                "title": campaign.get("title"),
+                "placement": dict(placement or {}),
+                "active_from": schedule.get("starts_at"),
+                "active_until": schedule.get("ends_at"),
+            }
+        )
+        return base
+
+    def _campaign(self, campaign_id: str) -> dict[str, Any]:
+        campaign = self.campaigns.get(campaign_id=campaign_id, team_id=self.team_id)
+        if not campaign:
+            raise CampaignNotFound(campaign_id)
+        return campaign
+
+    def _active_schedule(self, campaign_id: str, status: str | None) -> dict[str, Any]:
+        schedule = self.schedules.get_active_by_campaign_id(campaign_id=campaign_id) if self.schedules else None
+        if not schedule or schedule.get("status") not in {"pending", "active"}:
+            raise CampaignNotScheduled(campaign_id, status)
+        return schedule
+
+    def _revision_for_schedule(self, campaign: dict[str, Any], schedule: dict[str, Any]) -> dict[str, Any]:
+        revision_id = schedule.get("revision_id") or campaign.get("selected_revision_id")
+        revision = self.revisions.get(revision_id=revision_id) if revision_id else None
+        if not revision or str(revision.get("campaign_id")) != str(campaign["id"]):
+            raise CampaignRevisionNotFound(str(campaign["id"]))
+        return revision
+
+    def _store(self, store_id: str) -> dict[str, Any]:
+        store = self.stores.get(store_id=store_id, team_id=self.team_id)
+        if not store:
+            raise StoreNotFound(store_id)
+        return store
+
+    def _create_job(self, **data: Any) -> dict[str, Any]:
+        payload = {"status": "running", "started_at": _now(), "request_payload": {}, "response_payload": {}, **data}
+        if hasattr(self.publish_jobs, "create_or_get"):
+            return self.publish_jobs.create_or_get(data=payload)
+        return self.publish_jobs.create(data=payload)
+
+    def _existing_job(self, idempotency_key: str) -> dict[str, Any] | None:
+        if hasattr(self.publish_jobs, "get_by_idempotency_key"):
+            return self.publish_jobs.get_by_idempotency_key(idempotency_key=idempotency_key)
+        return None
+
+    @staticmethod
+    def _standalone_theme_job(*, store_id: str, theme_id: str, status: str, idempotency_key: str, response_payload: dict[str, Any] | None = None, error_message: str | None = None) -> dict[str, Any]:
+        return {
+            "id": idempotency_key,
+            "campaign_id": "00000000-0000-0000-0000-000000000000",
+            "revision_id": "00000000-0000-0000-0000-000000000000",
+            "action": "install_theme_files",
+            "status": status,
+            "request_payload": {"store_id": store_id, "theme_id": theme_id},
+            "response_payload": response_payload or {},
+            "error_message": error_message,
+            "idempotency_key": idempotency_key,
+            "finished_at": _now(),
+        }
+
+
+def _now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _hash(value: Any) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
+
+
+def configured_publisher() -> ShopifyPublisher:
+    # Intentionally fail closed: Shopify publishing needs a request-scoped/decrypted token adapter.
+    settings = Settings.from_env()
+    if not (settings.supabase_url and settings.supabase_service_role_key):
+        raise PublisherUnavailable("publishing endpoints require Supabase and an injected Shopify client adapter")
+    _ = SupabaseClientFactory(settings).service_role_client()
+    raise PublisherUnavailable("publishing endpoints require an injected Shopify client adapter; refusing to read or print Shopify secrets")
+
+
+__all__ = [
+    "ShopifyPublisher",
+    "PublisherUnavailable",
+    "CampaignNotFound",
+    "CampaignNotScheduled",
+    "CampaignRevisionNotFound",
+    "StoreNotFound",
+    "PublishUnsupported",
+    "configured_publisher",
+]

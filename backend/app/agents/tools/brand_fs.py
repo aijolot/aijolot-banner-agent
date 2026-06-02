@@ -11,8 +11,8 @@ from app.services import brand_store
 
 
 def read(brand_id: str) -> BrandContext:
-    return brand_store.load_brand(brand_id)
+    return brand_store.get_brand(brand_id)
 
 
 def write(brand: BrandContext) -> None:
-    brand_store.save_brand(brand)
+    brand_store.save_brand(brand.id, brand)

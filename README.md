@@ -1,153 +1,134 @@
 # Aijolot Banner Agent
 
-Hackathon MVP for an agentic banner creation and publishing workflow using Google's ADK + Gemini.
+Hackathon MVP for an agentic banner creation, review, scheduling, and Shopify publishing workflow using FastAPI, Supabase, Google ADK/Gemini provider boundaries, and the current static React prototype.
 
 License: MIT.
 
 Goal: help marketing teams create, review, schedule, position, and publish store banners. MVP scope targets Shopify stores.
 
+## Current status
+
+The backend MVP is implemented on the feature branch. The documented demo path is deterministic/offline by default and uses seeded fixtures; real Gemini, Supabase, Shopify, and Lighthouse checks are opt-in/manual. The frontend remains a static React UMD/Babel prototype, not a Next.js app.
+
+Important constraints:
+
+- Canonical backend routes live under `/api/v1`; callers should send demo auth/team context. Most implemented v1 routes fail closed with 401 when it is missing, while approval/comment/refinement routes can currently return service-unavailable before auth when their service is not configured.
+- Root routes such as `/brands`, `/campaigns/intake`, and `/campaigns/{id}` remain unauthenticated for prototype compatibility.
+- Performance data shown in the MVP is manual/mock/seed/agent unless explicitly labeled `live_analytics` by a deliberately wired live ingestion path.
+- Shopify publishing is fail-closed without real credentials and safe target store/theme configuration.
+- The smoke path does not call Gemini, Shopify, Supabase, Lighthouse, or external networks.
+
 ## Repository layout
 
 ```text
-backend/      Python/FastAPI backend, ADK/Gemini agent graph, Shopify/Supabase services.
-frontend/     Current static React UX prototype from frontend/design-implementation; future Next.js + Tailwind target.
-obsidian/     Git-synced Obsidian vault for project notes and DB design.
-brands/       Versioned brand context Markdown/YAML files used by the agent.
+backend/      Python/FastAPI backend, ADK/Gemini provider boundaries, Supabase/Shopify services, tests.
+frontend/     Current static React 18 UMD/Babel prototype and static API adapters; no build step.
+brands/       Versioned brand context Markdown/YAML import/fallback files.
 supabase/     Local Supabase config, migrations, seed data, storage buckets.
-docs/         Architecture notes, extracted source docs, alignment notes, and implementation plans.
-demo/         Demo scenarios, scripts, and presentation support.
-scripts/      Developer automation scripts.
+docs/         Architecture docs, API/frontend contracts, demo docs, and implementation plans.
+demo/         Demo scenarios and presentation support.
+scripts/      Reset/smoke/developer automation scripts.
+obsidian/     Git-synced Obsidian vault for project notes and DB design.
 ```
 
-Current status: base folder structure and implementation plan created. Backend/frontend code will be added in following tasks.
+See also `docs/architecture/project-structure.md`.
 
-## Running locally
+## Backend local setup
 
-### Backend bridge (FastAPI)
+Requires Python 3.11+.
 
 ```bash
 cd backend
-python3 -m venv .venv && . .venv/bin/activate
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -e ".[dev]"
-uvicorn app.main:app --reload --port 8000   # OpenAPI docs at http://localhost:8000/docs
-pytest                                       # run tests
+pytest -v
+uvicorn app.main:app --reload --port 8000
 ```
 
-### Frontend (static prototype)
+Open API docs at:
 
-The current frontend is a CDN React + Babel-standalone prototype (no build step):
+```text
+http://localhost:8000/docs
+```
+
+Health check:
+
+```bash
+curl http://localhost:8000/health
+```
+
+## Demo auth for `/api/v1`
+
+Canonical `/api/v1` routes require request context. Use demo identity headers or a demo bearer token; never use real provider secrets here.
+
+```text
+X-Aijolot-User-Id: 00000000-0000-0000-0000-000000000601
+X-Aijolot-Team-Id: 00000000-0000-0000-0000-000000000001
+X-Aijolot-Store-Id: 00000000-0000-0000-0000-000000000101
+Authorization demo bearer format: `Bearer demo:<user_id>:<team_id>[:<store_id>]`
+```
+
+Root compatibility routes are still unauthenticated for prototype/local compatibility, but new integrations should use `/api/v1`.
+
+## Static frontend
+
+The frontend is a CDN React + Babel-standalone prototype with no build step:
 
 ```bash
 python3 -m http.server 5500 --directory frontend
 # open http://localhost:5500
 ```
 
-The Brand Context view (sidebar → "Marca") talks to the bridge at
-`http://localhost:8000` (override with `window.AIJOLOT_API_BASE`). If the bridge
-is unreachable it falls back to in-memory brand seeds, so the UI stays usable
-offline.
+The static adapters use backend base:
 
-## Brand Context (GH-26)
+```js
+window.AIJOLOT_API_BASE || "http://localhost:8000"
+```
 
-Brands live as `brands/{id}.md` files — YAML frontmatter (the structured
-`BrandContext`: palette, typography, voice, logo, image directives, Shopify
-config) plus a free-form notes body. The bridge exposes:
+New API calls target `/api/v1`. Those routes require demo auth context; the current static browser prototype may show 401/fallback notices unless the served adapters include/send demo headers or an authenticated wrapper supplies them. The adapters use seeded demo placement/store conventions and visible fallback notices for local/prototype-only states. See `docs/architecture/frontend-backend-contract.md` for exact adapter behavior.
 
-| Method | Route            | Purpose                          |
-| ------ | ---------------- | -------------------------------- |
-| GET    | `/brands`        | list brand summaries             |
-| GET    | `/brands/{id}`   | full `BrandContext`              |
-| PUT    | `/brands/{id}`   | validate (Pydantic) and persist  |
+## Deterministic demo smoke path
 
-Seeded brands: `avocado_store`, `demo_apparel`, `maison`.
-Current status: frontend prototype and database schema are in place; backend implementation comes next.
+From repo root, after backend dependencies are installed:
+
+```bash
+python3 scripts/reset-demo-data.py --local-only
+python3 scripts/smoke-demo-flow.py  # first run
+python3 scripts/smoke-demo-flow.py  # second run verifies repeatability
+```
+
+Expected: both smoke runs exit 0 and print that auth, seeded resources, intake, patch, static KG, and deterministic A/B/C generation passed.
+
+The smoke script runs FastAPI in-process via TestClient, forces deterministic fallback mode, and does not call external providers. The chosen scenario and demo limitations are documented in `docs/demo-script.md`.
+
+Optional real local Supabase reset when Docker and Supabase CLI are available:
+
+```bash
+python3 scripts/reset-demo-data.py --supabase
+# or directly:
+supabase db reset
+```
+
+If Supabase reset is skipped or fails, do not claim it passed; use the local-only smoke path.
 
 ## Local Supabase setup
 
-This project uses Supabase locally so every teammate and AI agent can run the same database, auth, storage buckets, seed records, and RLS policies.
+This project uses local Supabase for shared database/auth/storage schema and seeds.
 
-### Prerequisites
-
-Install:
+Prerequisites:
 
 - Docker Desktop
 - Supabase CLI
 
-Recommended versions used when this project was initialized:
+Start Docker Desktop, then from repo root:
 
 ```bash
-supabase --version
-# 2.98.2 or newer
-
-docker --version
-# Docker 29.x or compatible
-```
-
-On macOS with Homebrew:
-
-```bash
-brew install supabase/tap/supabase
-brew install --cask docker
-```
-
-Start Docker Desktop before running Supabase commands.
-
-### Files that define the local database
-
-All team members must treat these files as the source of truth:
-
-```text
-supabase/config.toml
-supabase/migrations/20260528190000_initial_schema.sql
-supabase/seed.sql
-.env.example
-```
-
-Migrations live only in:
-
-```text
-supabase/migrations/
-```
-
-Seed data lives in:
-
-```text
-supabase/seed.sql
-```
-
-Do not edit the local database manually and then rely on it. If the schema changes, create or edit a migration and reset locally so everyone gets the same state.
-
-### First-time setup
-
-From the repo root:
-
-```bash
-cd /Users/pk/Documents/Projects/freelance/hackathons/aijolot-banner-agent
-
-# Make sure Docker is running.
-docker info
-
-# Start Supabase local services for this project.
-# We intentionally use project-specific 553xx ports in supabase/config.toml
-# to avoid collisions with other local Supabase projects.
 supabase start
-```
-
-The CLI prints local URLs and keys. Copy the printed values into a local env file:
-
-```bash
 cp .env.example .env.local
 ```
 
-Then update at least these values in `.env.local` from the `supabase start` output:
-
-```bash
-SUPABASE_URL=http://127.0.0.1:55321
-SUPABASE_ANON_KEY=<local anon key from supabase start>
-SUPABASE_SERVICE_ROLE_KEY=<local service_role key from supabase start>
-NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:55321
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<same local anon key>
-```
+Copy local keys printed by `supabase start` into `.env.local`. Do not commit `.env.local` or real secrets.
 
 Useful local URLs:
 
@@ -158,241 +139,71 @@ DB:     postgresql://postgres:***@127.0.0.1:55322/postgres
 Emails: http://127.0.0.1:55324
 ```
 
-Edge Functions and analytics are disabled in `supabase/config.toml` for the MVP local database workflow, so teammates do not need to pull or run those containers yet. If a later task needs Edge Functions or analytics, enable the relevant section in `supabase/config.toml`.
-
-Note: the actual local DB password is printed by `supabase start`. Use the printed value if it differs from `postgres`.
-
-### Apply migrations and seed data
-
-For a clean aligned database:
+Apply migrations and seed data:
 
 ```bash
 supabase db reset
 ```
 
-This command:
+Executable schema/seed sources:
 
-1. Drops the local database.
-2. Re-applies every migration in `supabase/migrations/` in filename order.
-3. Runs `supabase/seed.sql` because `supabase/config.toml` has seed enabled.
-
-Use this whenever a teammate adds or changes migrations.
-
-### Verify local DB state
-
-Open Studio:
-
-```bash
-open http://127.0.0.1:55323
+```text
+supabase/config.toml
+supabase/migrations/20260528190000_initial_schema.sql
+supabase/migrations/20260529000000_kg_pgvector.sql
+supabase/migrations/20260601010500_task20_performance_non_live_sources.sql
+supabase/seed.sql
+.env.example
 ```
 
-Or verify from the terminal:
+Expected seeded records include placement types, demo team/store, demo brand context, Shopify resource cache examples, KG/static recommendations, and optimization/performance examples.
 
-```bash
-psql postgresql://postgres:postgres@127.0.0.1:55322/postgres \
-  -c "select key, label from public.placement_types order by key;"
-```
-
-If `psql` is not installed, use Supabase Studio table editor instead.
-
-Expected seeded records:
-
-- placement types for announcement bar, hero, promo card, collection header, PDP strip, PDP cross-sell, footer CTA, search-results banner
-- demo team: `Aijolot Demo Team`
-- demo store: `maison-store.myshopify.com`
-- demo brand context: `Maison / Hugo Boss Demo`
-- Shopify resource cache examples for collections, products, and pages
-- optimization memory examples
-
-### Stop local Supabase
+Stop local Supabase:
 
 ```bash
 supabase stop
 ```
 
-Stop and delete local data volumes if you need a completely clean Docker state:
+## Backend capabilities and known MVP labels
 
-```bash
-supabase stop --no-backup
-```
+Implemented capability groups:
 
-Then recreate with:
+- Brand context CRUD/import with Supabase-first storage and Markdown fallback.
+- Campaign create/list/intake/get/patch with Supabase-first persistence and team-isolated no-Supabase fallback.
+- Store/resource cache APIs using seeded/cached Shopify resources.
+- Placement validation and campaign placement persistence.
+- Catalog snapshot persistence from cached resources.
+- Art direction persistence.
+- Generation run/event tracking with five frontend-visible progress steps.
+- Deterministic/Gemini provider boundaries for text/image generation.
+- Asset optimization/upload plumbing with WebP/JPG and optional AVIF; AVIF skipped must be labeled.
+- Preview HTML, controlled Shopify Liquid payloads, and audit reports; Lighthouse is mock/manual unless run separately.
+- Approval threads, comments, all-reviewer approval, refinement requests, regeneration, and revision history.
+- Scheduling plus Shopify publish/unpublish through controlled theme assets/metafield config when real credentials are configured.
+- Performance/evolutionary memory APIs with explicit non-live provenance labels.
 
-```bash
-supabase start
-supabase db reset
-```
+MVP/documented constraints:
 
-## Database structure overview
+- PDF/Figma/brandbook import is partial/mock only outside Markdown import.
+- Live Shopify resource sync and live analytics ingestion are non-MVP/manual.
+- Custom model/persona support is metadata-only/non-MVP.
+- Deterministic A/B/C variants are demo-labeled in smoke; not live model exploration.
+- Static KG retrieval is sufficient for smoke; vector/embedding retrieval is not required for the chosen path.
 
-The schema is based on the Obsidian note:
+## Migration workflow
 
-```text
-obsidian/Notes/Database Structure Proposal.md
-```
+When changing schema:
 
-The actual executable schema is:
-
-```text
-supabase/migrations/20260528190000_initial_schema.sql
-```
-
-Main table groups:
-
-### Identity and teams
-
-- `profiles`
-- `teams`
-- `team_members`
-
-Supabase Auth owns credentials. App tables reference `auth.users(id)` through `profiles.id`.
-
-### Shopify/store integration
-
-- `stores`
-- `shopify_resource_cache`
-
-The MVP uses token/custom app access. Products, collections, and pages are cached for list/select placement UX.
-
-### Brand context
-
-- `brand_contexts`
-- `brand_assets`
-
-Backend supports full CRUD. Brand context includes palette, typography, voice, allowed/forbidden rules, image directives, logos, and import metadata.
-
-### Placement and campaign creation
-
-- `placement_types`
-- `campaigns`
-- `campaign_placements`
-- `campaign_messages`
-- `campaign_catalog_snapshots`
-- `campaign_catalog_items`
-
-The frontend supports existing Shopify placements and new injected sections. New-section layouts are stored as JSON.
-
-### Art direction and generation
-
-- `art_directions`
-- `generation_runs`
-- `generation_events`
-
-The backend ADK graph can be mapped to the frontend's 5 visible generation steps.
-
-### Creative output
-
-- `campaign_revisions`
-- `banner_layout_variants`
-- `banner_variants`
-- `banner_assets`
-
-Refinements should create new revisions or generation runs rather than silently overwriting final assets.
-
-### Review and approval
-
-- `approval_threads`
-- `approval_reviewers`
-- `comments`
-- `refinement_requests`
-
-MVP approval policy is `all_members`: all assigned reviewers must approve before scheduling or publishing.
-
-Comments support canvas pins through `pin_x` and `pin_y` percentage coordinates.
-
-### Scheduling and publishing
-
-- `schedules`
-- `publish_jobs`
-- `scheduled_banners`
-
-MVP scheduling is theme-enforced using campaign config dates. `scheduled_banners` is included for future Supabase `pg_cron` due-publish automation compatibility.
-
-### Audit, usage, and performance
-
-- `audit_reports`
-- `audit_events`
-- `generation_usage_events`
-- `performance_snapshots`
-- `optimization_insights`
-- `optimization_proposals`
-
-`generation_usage_events` supports the soft guard: warn after 20 image generations per authenticated user per 15 minutes. It is not a hard cap.
-
-## Storage buckets
-
-The initial migration creates these local Supabase Storage buckets:
-
-```text
-brand-assets
-campaign-assets
-rendered-previews
-```
-
-Recommended object path patterns:
-
-```text
-brand-assets/{team_id}/{brand_context_id}/{asset_id}-{filename}
-campaign-assets/{team_id}/{campaign_id}/{revision_id}/{variant_key}/{size_key}.{format}
-rendered-previews/{team_id}/{campaign_id}/{revision_id}/preview.html
-```
-
-For MVP, backend service-role uploads should own most storage writes. Direct authenticated storage policies are permissive locally to avoid slowing down the hackathon.
-
-## Migration workflow for the team and agents
-
-When changing the schema:
-
-1. Create a new migration file:
-
-```bash
-supabase migration new describe_change_here
-```
-
-2. Edit the generated SQL file under `supabase/migrations/`.
-
-3. Reset local DB to verify from scratch:
-
-```bash
-supabase db reset
-```
-
-4. If seed data must change, edit:
-
-```text
-supabase/seed.sql
-```
-
-5. Update these docs when relevant:
-
-```text
-README.md
-obsidian/Notes/Database Structure Proposal.md
-docs/plans/2026-05-28-banner-creator-mvp.md
-```
-
-6. Commit migrations and docs together.
+1. Create a migration under `supabase/migrations/`.
+2. Edit SQL and seed data as needed.
+3. Run `supabase db reset`.
+4. Run backend tests.
+5. Update docs when behavior changes.
 
 Rules:
 
 - Do not commit `supabase/.temp/`.
 - Do not commit `.env.local` or real secrets.
-- Do not rely on manual Studio changes unless they are converted into a migration/seed.
-- Prefer additive migrations after this initial schema.
-- If a migration fails on `supabase db reset`, fix it before pushing.
-
-## Local env file
-
-Use:
-
-```text
-.env.example
-```
-
-as the template for local development:
-
-```bash
-cp .env.example .env.local
-```
-
-`.env.local` is intentionally ignored and should contain local keys and secrets only.
+- Do not rely on manual Studio changes unless converted into migration/seed.
+- Prefer additive migrations.
+- If `supabase db reset` fails, fix it before handoff.

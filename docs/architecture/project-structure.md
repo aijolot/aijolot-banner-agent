@@ -2,54 +2,58 @@
 
 ```text
 aijolot-banner-agent/
-├── brands/                         # Versioned brand context Markdown/YAML files
 ├── backend/
 │   ├── app/
-│   │   ├── agents/                 # Google ADK graph, state, nodes, prompts, tools
-│   │   │   ├── nodes/              # 12 graph node implementations
+│   │   ├── agents/                 # ADK graph scaffold, skills, prompts, provider tools
 │   │   │   ├── prompts/            # Versioned prompt templates
-│   │   │   └── tools/              # Agent-facing tools/adapters
-│   │   ├── api/
-│   │   │   └── routes/             # HTTP route modules
-│   │   ├── core/                   # settings, logging, app bootstrap helpers
+│   │   │   ├── skills/             # Implemented deterministic/provider skill functions
+│   │   │   ├── sub_agents/         # Creative director/auditor sub-agent scaffolds
+│   │   │   └── tools/              # Gemini, image, render, audit, KG, Shopify adapters
+│   │   ├── api/                    # Root compatibility routes and canonical v1 routes
+│   │   │   └── v1/                 # Auth-required /api/v1 integration API
+│   │   ├── core/                   # Settings, auth, dependency boundaries
 │   │   ├── db/
-│   │   │   ├── models/             # persistence models / DB row mapping
-│   │   │   └── repositories/       # Supabase data-access layer
-│   │   ├── schemas/                # request/response/domain validation schemas
+│   │   │   └── repositories/       # Supabase/in-memory repository adapters
+│   │   ├── schemas/                # Pydantic request/response/domain schemas
 │   │   ├── services/
-│   │   │   ├── approvals/          # review, comment, approval orchestration
-│   │   │   ├── audit/              # Lighthouse/html/schema validation services
-│   │   │   ├── banners/            # banner generation, variants, assets, placements
-│   │   │   ├── gemini/             # Gemini image/text generation adapters
-│   │   │   ├── shopify/            # Shopify Admin API integration
-│   │   │   └── supabase/           # Supabase auth/storage/client helpers
-│   │   ├── templates/
-│   │   │   └── shopify/            # Liquid/Jinja templates for section/snippets
-│   │   ├── workflows/              # end-to-end business workflows
-│   │   └── utils/                  # shared utility functions
-│   └── tests/
-│       ├── unit/
-│       └── integration/
-├── frontend/
-│   ├── app/                        # Future Next.js App Router pages/layouts
-│   ├── components/                 # Future UI components
-│   ├── lib/                        # Future API clients and shared frontend helpers
-│   ├── public/                     # Future static assets
-│   ├── styles/                     # Future Tailwind/global CSS
-│   └── *.jsx/*.css                 # Current static React UX prototype from frontend/design-implementation
+│   │   │   ├── approvals/          # Approval threads, comments, refinement orchestration
+│   │   │   ├── banners/            # Campaigns, placements, catalog, generation, assets, revisions, schedules, performance
+│   │   │   ├── brands/             # Brand Supabase service and Markdown importer
+│   │   │   ├── gemini/             # Text/image provider boundaries and fake provider support
+│   │   │   ├── shopify/            # Resource cache, controlled Liquid/theme/metafield publishing
+│   │   │   └── supabase/           # Supabase client/storage helpers
+│   │   ├── templates/              # Shopify Liquid/Jinja templates
+│   │   ├── workflows/              # Banner creation workflow helpers
+│   │   └── utils/                  # Shared utility functions
+│   ├── adk_agents/                 # ADK web-compatible banner coordinator entrypoint
+│   ├── tests/                      # API/unit/integration tests
+│   └── pyproject.toml              # Python package/dependency config
+├── frontend/                       # Static React 18 UMD/Babel prototype; no Next.js build yet
+│   ├── data.jsx                    # Prototype data plus BrandAPI adapter
+│   ├── lib.jsx                     # Shared UI primitives and API adapters
+│   ├── index.html                  # Static browser entrypoint
+│   └── *.jsx/*.css                 # Prototype stages/components/styles
+├── brands/                         # Versioned Markdown/YAML brand context import/fallback files
 ├── supabase/
-│   ├── migrations/                 # SQL migrations
-│   └── seed/                       # local/dev seed data
-├── obsidian/                       # Git-synced Obsidian vault for project notes
+│   ├── config.toml                 # Local Supabase ports/config
+│   ├── migrations/                 # SQL migrations, including KG and Task 20 provenance update
+│   └── seed.sql                    # Local/dev seed data
 ├── docs/
-│   ├── architecture/               # design docs, extracted source docs, alignment notes
-│   ├── demo/                       # demo script and scenario docs
-│   └── plans/                      # implementation plans
-├── demo/                           # demo scenarios/assets
-└── scripts/                        # dev scripts
+│   ├── architecture/               # API/frontend contracts, structure, design docs
+│   ├── demo-script.md              # Constrained deterministic/real-provider demo script
+│   └── plans/                      # Implementation plans and completion notes
+├── demo/
+│   └── scenarios/                  # Demo scenario notes
+├── scripts/
+│   ├── reset-demo-data.py          # Local/Supabase-aware reset helper
+│   └── smoke-demo-flow.py          # Offline deterministic API smoke path
+└── obsidian/                       # Git-synced Obsidian vault for project notes
 ```
 
 Notes:
-- Frontend contains structure only. No Next.js/Tailwind code or package files were created yet.
-- Backend contains structure only. Python application code and dependency manifests are intentionally deferred to the next implementation task.
-- `.gitkeep` files keep intentionally empty directories tracked by Git.
+
+- The backend application is implemented and test-covered. It supports Python 3.11+ and normally runs from `backend/.venv` for local development.
+- `/api/v1` is the canonical backend namespace and requires demo auth/team context. Root-level routes remain compatibility routes for older prototype flows.
+- The frontend is still the static prototype. Future Next.js/Tailwind migration is frontend-owned and should replace static adapters rather than treating them as final architecture.
+- Supabase migrations are additive and live under `supabase/migrations/`; seed data lives in `supabase/seed.sql`.
+- The deterministic demo smoke path is `python3 scripts/smoke-demo-flow.py` from repo root and does not call external providers.

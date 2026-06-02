@@ -1,4 +1,4 @@
-"""banner-html-seo-render skill — see SKILL.md. Lands in GH-14."""
+"""banner-html-seo-render skill — see SKILL.md."""
 
 from app.agents.state import BannerAssets, Concept
 from app.agents.tools import html_render

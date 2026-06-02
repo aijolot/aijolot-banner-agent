@@ -130,4 +130,139 @@ function Avatar({ initials, gradient = "linear-gradient(135deg,#F72585,#8B5CF6)"
   );
 }
 
-Object.assign(window, { Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar });
+// --- Backend API client/adapters ---
+// Static prototype integration point. New backend calls use /api/v1 and default to
+// http://localhost:8000 unless the hosting page defines window.AIJOLOT_API_BASE.
+window.API_BASE = window.AIJOLOT_API_BASE || window.API_BASE || "http://localhost:8000";
+const API_V1 = "/api/v1";
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isApiCampaign(campaign) { return !!(campaign && UUID_RE.test(campaign.id || "")); }
+function localId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+function fallbackResult(reason, data) { return { ok: true, fallback: true, reason: reason || "mock/local fallback", data }; }
+
+const AijolotApi = {
+  base: window.API_BASE,
+  v1(path) { return API_V1 + path; },
+  async request(path, options) {
+    const resp = await fetch(this.base + path, {
+      ...options,
+      headers: { "Accept": "application/json", ...(options && options.headers ? options.headers : {}) },
+    });
+    const text = await resp.text();
+    let body = null;
+    try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
+    if (!resp.ok) {
+      const err = new Error((body && body.detail) || body || `HTTP ${resp.status}`);
+      err.status = resp.status; err.body = body; throw err;
+    }
+    return body;
+  },
+  get(path) { return this.request(path); },
+  post(path, body) { return this.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); },
+  put(path, body) { return this.request(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); },
+  patch(path, body) { return this.request(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); },
+};
+
+function placementPayloadFromPrototype(placement) {
+  const id = placement && placement.id || "hero";
+  const page = (placement && placement.page || "Inicio").toLowerCase();
+  const isNew = placement && placement.layout && placement.layout.mode === "new";
+  const pageTarget = page.includes("cole") ? "collection" : page.includes("producto") ? "product" : page.includes("búsqueda") || page.includes("busqueda") ? "search" : "home";
+  const map = {
+    announce: { key: "announcement_bar", slot: "announce", target: pageTarget === "search" ? "store" : pageTarget },
+    hero: { key: "hero_main", slot: "hero", target: pageTarget === "collection" ? "collection" : "home" },
+    promo_l: { key: "promo_card", slot: "promo_l", target: pageTarget === "collection" ? "collection" : "home" },
+    promo_r: { key: "promo_card", slot: "promo_r", target: pageTarget === "collection" ? "collection" : "home" },
+    coll_top: { key: "collection_header", slot: "coll_top", target: "collection" },
+    coll_inline: { key: "promo_card", slot: "coll_inline", target: "collection" },
+    pdp_strip: { key: "pdp_strip", slot: "pdp_strip", target: "product" },
+    pdp_cross: { key: "pdp_cross_sell", slot: "pdp_cross", target: "product" },
+    footer: { key: "footer_cta", slot: "footer", target: pageTarget === "search" ? "store" : pageTarget },
+    search_top: { key: "search_results_banner", slot: "search_top", target: "search" },
+  };
+  const cfg = map[id] || map.hero;
+  const targetHandle = cfg.target === "collection" ? "fragancias" : cfg.target === "product" ? "boss-bottled-edp-100ml" : null;
+  return {
+    store_id: window.AIJOLOT_STORE_ID || "00000000-0000-0000-0000-000000000101",
+    placement_type_key: cfg.key,
+    mode: isNew ? "new_section" : "existing_section",
+    target_type: cfg.target,
+    target_handle: targetHandle,
+    target_title: cfg.target === "collection" ? "Fragancias" : cfg.target === "product" ? "Boss Bottled EDP 100ml" : (placement && placement.page || "Inicio"),
+    existing_placement_key: isNew ? null : cfg.slot,
+    existing_placement_label: isNew ? null : (placement && placement.name || "Hero principal"),
+    existing_placement_size: placement && placement.size || null,
+    slot: isNew ? (placement.layout.dropAt || cfg.slot) : cfg.slot,
+    slot_order: 0,
+    scope_rule: (placement && placement.scope) || {},
+    layout_json: (placement && placement.layout) || { cols: [{ rows: 1, w: 1, align: "center" }] },
+  };
+}
+
+const CampaignApi = {
+  async list() { return AijolotApi.get(AijolotApi.v1("/campaigns")); },
+  async patch(id, fields) { return AijolotApi.patch(AijolotApi.v1(`/campaigns/${id}`), fields); },
+};
+
+const PlacementApi = {
+  async save(campaign, placement) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend placement API requires a UUID campaign; local intake uses prototype ids unless Supabase is configured.", placement);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), placementPayloadFromPrototype(placement));
+    return { ok: true, fallback: false, data };
+  },
+};
+
+const ArtDirectionApi = {
+  async save(campaign, art, placement) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend art-direction API requires a UUID campaign; saved locally in prototype state.", art);
+    const payload = {
+      background_mode: art.bg || "usage",
+      hero_style_key: art.heroStyle || null,
+      model_key: art.model || null,
+      custom_model: art.customModel || {},
+      fold_percentage: art.fold || 55,
+      layout_hints: { placement: placement || null },
+    };
+    const data = await AijolotApi.put(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`), payload);
+    return { ok: true, fallback: false, data };
+  },
+};
+
+const GenerationApi = {
+  async start(campaign, metadata) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend generation runs require a UUID campaign; showing labeled prototype progress.", { id: localId("run"), status: "succeeded" });
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/generation-runs`), { metadata: metadata || {} });
+    return { ok: true, fallback: false, data };
+  },
+  async latest(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend generation lookup.", null);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/generation-runs/latest`));
+    return { ok: true, fallback: false, data };
+  },
+};
+
+const ReviewApi = {
+  async approveLocal(campaign, approverId, status) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend approval API requires generated revisions/reviewer UUIDs; using visible prototype approval state.", { approverId, status });
+    // Full backend approval requires revision and reviewer UUIDs created by the generation pipeline.
+    // The static prototype keeps the reviewer UX local until the Next.js migration owns auth/team identity.
+    return fallbackResult("Static prototype approval controls are local; backend approval needs revision and reviewer UUID context.", { approverId, status });
+  },
+  async schedule(campaign, schedule) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend scheduling requires an approved UUID campaign; using visible prototype schedule state.", schedule);
+    const startsAt = new Date(schedule.start).toISOString();
+    const endsAt = schedule.auto && schedule.end ? new Date(schedule.end).toISOString() : null;
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/schedule`), { starts_at: startsAt, ends_at: endsAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", auto_unpublish: !!schedule.auto });
+    return { ok: true, fallback: false, data };
+  },
+  async publish(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend publishing requires a scheduled UUID campaign; using visible prototype publish state.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/publish`));
+    return { ok: true, fallback: false, data };
+  },
+};
+
+Object.assign(window, { Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar, AijolotApi, CampaignApi, PlacementApi, ArtDirectionApi, GenerationApi, ReviewApi, API_V1, UUID_RE, isApiCampaign });

@@ -1,867 +1,231 @@
 # Banner Creator MVP Implementation Plan
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task after requirements are clarified.
+> **For Hermes:** Use `subagent-driven-development` to implement this plan task-by-task. Start every implementation task from `main` on a new branch. Do not re-create files/features already present unless the task explicitly says to refactor or replace them.
 
-**Goal:** Build a Shopify-focused agentic banner creator that lets marketing users define a brief, generate banner art/copy, request team review, approve, schedule, position, and publish banners to a Shopify store.
+**Last updated:** 2026-05-29, after merging the team's frontend, campaign-object, chatbox, and ADK scaffold work.
 
-**Architecture:** A Python/FastAPI backend owns the business workflow, Google ADK 12-node agent graph, Gemini generation, Supabase persistence/storage/auth, approvals, scheduling, audit gates, and Shopify publishing. A Next.js + Tailwind frontend provides the admin panel and calls backend APIs. Shopify storefront rendering uses a controlled Online Store 2.0 Liquid section/snippet that reads campaign configuration from metafields/metaobjects and renders responsive HTML text over optimized image assets.
+**Goal:** Build a Shopify-focused agentic banner creator that lets marketing users select placement, write a campaign brief, generate banner art/copy with Google ADK + Gemini, request team review/comments, approve, schedule, and publish approved banners to a Shopify store.
 
-**Tech Stack:** Python, FastAPI, Google ADK, Gemini 2.5 Pro/Flash, Gemini image generation with a Vertex/Imagen-compatible adapter boundary, Supabase Postgres/Auth/Storage, optional Supabase pg_cron, Shopify Admin GraphQL API, Shopify Liquid sections/snippets, Pillow image optimization, Lighthouse/html validation/schema validation, Next.js, Tailwind CSS.
+**Architecture:** FastAPI owns the backend API, state transitions, Supabase persistence/storage/auth integration, Google ADK orchestration, Gemini generation, audit gates, scheduling, and Shopify publishing. The current frontend under `frontend/` is a static React prototype and is now the UX/product contract; future Next.js + Tailwind migration is frontend-owned. Shopify storefront rendering uses a controlled Online Store 2.0 Liquid section/snippet that reads structured campaign config from Shopify metafields/metaobjects and keeps banner copy as HTML/CSS/Liquid-rendered text, not baked into generated images.
+
+**Tech Stack:** Python 3.11+, FastAPI, Pydantic v2, Google ADK, google-genai/Gemini, Supabase Postgres/Auth/Storage/pg_cron/pg_net, Shopify Admin GraphQL API, Jinja2/Liquid, Pillow/WebP/AVIF, pytest/httpx/respx, current static React prototype, future Next.js + Tailwind.
 
 ---
 
-## 1. Confirmed MVP Scope
+## 1. Current Repository Reality
+
+### 1.1 Existing backend/API work that must not be re-done
+
+The team has already added these backend artifacts on `main`:
+
+- `backend/pyproject.toml`
+  - Includes FastAPI, uvicorn, Pydantic, PyYAML, SSE support, Google ADK, google-genai, Supabase client, Pillow/AVIF, Jinja2, validators, httpx, tenacity, pytest tooling.
+- `backend/app/main.py`
+  - FastAPI app.
+  - Dev CORS.
+  - Routers included for `brands`, `intake`, and `campaigns`.
+  - `GET /health` exists.
+- Brand endpoints already existed before the latest merge:
+  - `GET /brands`
+  - `GET /brands/{brand_id}`
+  - `PUT /brands/{brand_id}`
+  - Still Markdown/file-backed through `brands/{id}.md`.
+- New campaign/intake endpoints now exist:
+  - `POST /campaigns/intake`
+  - `GET /campaigns/{campaign_id}`
+  - `PATCH /campaigns/{campaign_id}`
+- New campaign objects now exist:
+  - `backend/app/schemas/campaign.py`
+  - `StructuredBrief`
+  - `CampaignMessage`
+  - `Campaign`
+  - `IntakeRequest`
+  - `BriefPatch`
+- New deterministic/in-memory campaign store now exists:
+  - `backend/app/services/campaign_store.py`
+  - rule-based brief extraction
+  - in-memory campaigns
+  - in-memory campaign messages
+  - SSE-compatible intake response flow
+- Tests now exist:
+  - `backend/tests/api/test_intake.py`
+  - `backend/tests/api/test_campaigns.py`
+  - `backend/tests/api/test_brands.py`
+
+Conclusion: the plan must not ask us to recreate a FastAPI skeleton, campaign schema, root-level intake SSE, or basic campaign GET/PATCH from scratch. Those are now baseline work to preserve and evolve.
+
+### 1.2 Existing ADK/agentic scaffold that must not be re-done
+
+The team has scaffolded the agentic stack:
+
+- `backend/app/agents/state.py`
+  - `BannerSessionState`
+  - in-graph `Campaign`, `Variant`, `Concept`, `BannerAssets`, `AuditReport`, `HITLDecision`, `PublishResult`
+- `backend/app/agents/graph.py`
+  - 12-node topology and `NodeSpec` list:
+    1. `load_brand_context`
+    2. `intake_campaign_idea`
+    3. `capture_user_personalization`
+    4. `research_best_practices`
+    5. `draft_banner_concept`
+    6. `generate_image`
+    7. `optimize_assets`
+    8. `render_html`
+    9. `audit`
+    10. `human_review`
+    11. `schedule_or_publish`
+    12. `publish_to_shopify`
+- `backend/app/agents/coordinator.py`
+  - Coordinator placeholder with model env lookup.
+- `backend/app/workflows/banner_creation.py`
+  - `start_session()` implemented.
+  - `run_to_audit()` and `resume_after_hitl()` intentionally `NotImplementedError`.
+- `backend/adk_agents/banner_coordinator/agent.py`
+  - Minimal ADK `root_agent` for `adk web` intake-only demo.
+- ADK internal tools scaffold exists under `backend/app/agents/tools/`:
+  - `gemini_text.py`
+  - `nano_banana_image.py`
+  - `image_optim.py`
+  - `html_render.py`
+  - `liquid_render.py`
+  - `audit_w3c.py`
+  - `audit_lighthouse.py`
+  - `audit_schema.py`
+  - `audit_log.py`
+  - `brand_fs.py`
+  - `kg.py`
+  - `shopify.py`
+- ADK skills scaffold exists under `backend/app/agents/skills/` with `SKILL.md` + `impl.py` placeholders.
+- Sub-agent scaffold exists:
+  - `backend/app/agents/sub_agents/creative_director.py`
+  - `backend/app/agents/sub_agents/auditor.py`
+- Prompt files exist:
+  - `backend/app/agents/prompts/*.md`
+- KG seed README exists:
+  - `docs/kg_seed/README.md`
+
+Conclusion: the 12-node graph, state models, skills index, prompts, internal tools, and ADK web intake-only entrypoint are in scope and match our plan. We should integrate with them rather than creating parallel `agents/nodes/*` modules unless we intentionally migrate the scaffold.
+
+### 1.3 Existing Supabase work
+
+The project already has local Supabase defined by:
+
+- `supabase/config.toml`
+- `supabase/migrations/20260528190000_initial_schema.sql`
+- `supabase/seed.sql`
+- `.env.example`
+
+Local ports:
+
+- API: `http://127.0.0.1:55321`
+- Studio: `http://127.0.0.1:55323`
+- DB: `127.0.0.1:55322`
+- Mailpit: `http://127.0.0.1:55324`
+
+Verified local DB extensions from the running project instance:
+
+- `pg_cron` installed
+- `pg_net` installed
+
+Storage buckets:
+
+- `brand-assets`
+- `campaign-assets`
+- `rendered-previews`
+
+Conclusion: the implementation plan should not include an initial schema task as if the DB does not exist. Future DB work should be additive migrations only.
+
+### 1.4 Existing frontend work
+
+The frontend is currently a full static React 18 UMD/Babel prototype, not a Next.js app yet. It lives under `frontend/` and includes the full UX flow:
+
+- Dashboard/shell
+- Brand context
+- Placement
+- Brief/chat
+- Art direction
+- Generation pipeline
+- Canvas/review/approval/schedule/publish
+- Performance/evolutionary memory
+
+Reference doc:
+
+- `docs/architecture/frontend-template-deep-dive.md`
+
+Conclusion: backend APIs should support this UX contract. Do not rewrite or migrate frontend as part of backend tasks unless explicitly requested.
+
+### 1.5 Verification limitation found while updating this plan
+
+Attempted test commands:
+
+```bash
+cd backend
+pytest -q
+python3 -m pytest -q
+```
+
+Both failed because pytest is not installed in the currently active Python environment. This is not a code failure; it is an environment/setup gap. Task 0 below makes backend environment setup and test verification explicit.
+
+---
+
+## 2. Scope Decisions
 
 ### In scope
+
 - Shopify stores only.
-- Admin panel for marketing users.
-- User selects banner placement.
-- User provides a brief/prompt.
-- Backend generates banner concepts/art using Gemini.
-- Backend keeps text/copy as HTML/Liquid-rendered elements, not as text inside generated images.
-- Backend creates responsive image assets for mobile/tablet/desktop.
-- Backend supports personalization variants, with Shopify `customer.tags` as the first concrete storefront mechanism.
-- Backend uses portable brand context files as generation inputs.
-- Backend optimizes generated assets to WebP/AVIF/srcset plus fallback JPG.
-- Backend renders standalone HTML preview and Shopify Liquid output/config.
-- Backend runs programmatic audit gates before human review where feasible.
-- User can request team approval/comments.
-- Human-in-the-loop approval is mandatory before publishing.
-- Approved banner can be scheduled with an active period.
-- Approved scheduled banner can be published to Shopify.
-- Folder structure now; backend/frontend implementation later.
+- FastAPI backend.
+- Supabase Auth/Postgres/Storage.
+- Google ADK + Gemini agentic workflow.
+- Current static React prototype support.
+- Future Next.js + Tailwind compatibility, but not our current implementation responsibility.
+- Brand context API and storage.
+- Campaign intake and structured brief.
+- Campaign placement.
+- Campaign catalog snapshots.
+- Art direction persistence.
+- Generation run tracking and progress events.
+- ADK 12-node graph execution up to audit and HITL handoff.
+- Team approval/comments with all-reviewers approval policy.
+- Scheduling with active start/end window.
+- Optional pg_cron-compatible due-publish records.
+- Shopify publishing through Admin GraphQL and controlled Liquid section/snippet.
+- Performance/audit/optimization memory schema support.
 
-### Out of scope until clarified or explicitly added
-- Multi-platform ecommerce support beyond Shopify.
-- Multi-language banner generation.
-- Advanced or automatic A/B testing.
-- Post-publish analytics such as CTR/conversion optimization.
-- Dynamic multi-theme switching.
-- Real-time collaborative editing.
-- Visual WYSIWYG/banner canvas editor.
-- Historical banner library/management beyond minimal audit/demo records.
-- Automatic periodic regeneration.
-- Automated legal/brand compliance unless simplified to checklist or agent review.
-- Payment/subscription functionality.
+### Out of scope unless explicitly added
+
+- Full Shopify OAuth app flow.
+- Multi-platform ecommerce.
+- Payment/subscription.
+- True real-time collaborative editing.
+- Fully generic arbitrary DOM injection into unknown Shopify themes.
+- Live analytics ingestion unless needed for demo.
+- Full frontend migration to Next.js + Tailwind.
 
 ---
 
-## 2. Clarifications Status
+## 3. Implementation Rules Going Forward
 
-### Resolved decisions
-- Backend framework: FastAPI.
-- Agent framework: Google ADK.
-- LLM: Gemini; use Pro for creative reasoning and Flash for faster structured tasks where possible.
-- Image generation: Gemini image generation by default; keep adapter compatible with Vertex/Imagen because the source design had Imagen 4 vs Gemini Image as an open spike.
-- Frontend: Next.js + Tailwind admin panel, not Streamlit.
-- Auth: Supabase Auth.
-- Storage: Supabase Storage for generated/optimized assets.
-- Shopify auth: token/custom app access for MVP, not full OAuth.
-- Shopify rendering: one controlled Shopify Liquid section/snippet reads campaign config.
-- Publishing: use Shopify Admin API; `themeFilesUpsert` installs/updates reusable Liquid files, while campaign config is published as metafield/metaobject JSON.
-- Scheduling: theme-enforced active dates for local MVP; keep schema/service compatible with future Supabase `pg_cron` due publishing.
-- HITL: mandatory before publishing; no bypass.
-- Approval/comments: per team member.
-- Responsive sizes: mobile, tablet, desktop, plus optimized srcset widths.
-- Personalization: multiple variants; Shopify `customer.tags` first, cookies/context later.
-- Development/deployment: local-first for now.
-
-### Resolved follow-up decisions
-- Approval policy for MVP: all assigned reviewers must approve before the campaign can become approved.
-- Brand context authoring: should be supported by backend APIs because the intended UX is UI-based editing. Repo Markdown brand files remain useful for seed/demo/versioned examples.
-- First Shopify resource scope: support home, collections, products, and pages.
-- Image provider adapter: keep Gemini as default and preserve Vertex/Imagen-compatible adapter boundary.
-- Cost controls: do not hard-cap daily usage for the dev team during the hackathon. Track usage/costs and add a soft rate guard per short window, e.g. warnings or confirmation after N image generations per 15 minutes.
-- Reviewer auth: reviewers log in with Supabase Auth; no anonymous approval links for MVP.
-- License: MIT for the public/stable hackathon repo.
-
-### Resolved final blocking decisions
-- Soft image-generation warning threshold: 20 generations per authenticated user per 15 minutes. This is a warning/soft guard, not a hard cap.
-- Brand context API depth: implement full backend CRUD for brand profiles.
-- Shopify resource selection UX for MVP: backend supports list/select for home, collections, products, and pages. Search/autocomplete is deferred unless the frontend/product team requests it.
-
-### Still open / needs product decision
-1. Whether Shopify products/pages/collections search/autocomplete should be added after the MVP list/select flow is validated.
+1. Start every task from `main` on a new branch.
+2. Do not duplicate existing root routes while adding `/api/v1`; wrap or migrate them.
+3. Do not create a second campaign model tree that conflicts with `backend/app/schemas/campaign.py` or `backend/app/agents/state.py`.
+4. Do not create a second ADK topology that conflicts with `backend/app/agents/graph.py`.
+5. Existing `NotImplementedError` scaffolds are not bugs by themselves; they are planned implementation seams. Each must be replaced in the task that owns it.
+6. Do not rely on in-memory stores past the tasks that explicitly allow them.
+7. Every allowed temporary gap must appear in the carry-over ledger in Section 8.
+8. When schema changes are needed, add a new migration under `supabase/migrations/`; do not edit local DB manually.
+9. Keep demo reliability first: if an external provider is unstable, use explicit fake/deterministic providers and label them.
 
 ---
 
-## 3. Confirmed Technical Decisions
+## 4. Status Model
 
-These decisions were confirmed after initial clarification:
-
-1. Use FastAPI for the Python backend HTTP API.
-2. Use Google ADK for agent workflow orchestration, not for every simple CRUD action.
-3. Use Gemini 2.5 Pro for heavier creative reasoning and Gemini Flash for fast structured extraction where possible.
-4. Use Gemini for brief refinement, copy suggestions, generation prompt creation, and generative image creation. Keep the image-generation code behind an adapter so Vertex/Imagen can be swapped in if the hackathon environment requires it.
-5. Generated images must not contain baked-in text, logos, or faces unless explicitly approved later.
-6. Store generated image files in Supabase Storage.
-7. Use Supabase Auth for real user authentication.
-8. Use Shopify custom/private app token access for the MVP instead of full Shopify OAuth.
-9. For Shopify demo reliability, use a custom Online Store 2.0 theme section/snippet that reads banner config from Shopify metafields/metaobjects. Use Shopify Admin GraphQL `themeFilesUpsert` only for installing/updating the reusable section/snippets/assets.
-10. Keep banner text as HTML/CSS/Liquid-rendered elements, not baked into generated images.
-11. Support responsive image/layout sizes for mobile, tablet, and desktop.
-12. Support personalized banner variants, e.g. default, men, women, VIP, new_signup. First concrete storefront personalization mechanism: Shopify `customer.tags`; cookie/context matching can be added as an extension.
-13. Represent scheduling in Shopify metafields and let the theme section show/hide based on dates for the MVP. Keep backend schedule records and design services so Supabase `pg_cron` due-publish automation can be added later without redesign.
-14. Approval/commenting is per team member, not just one global approval action.
-15. Programmatic audit gates should run before human review; failed audits retry upstream at most two times, then escalate to human review with root-cause hints.
-16. Start with local development. Deployment will be planned in a later session.
-
-## 3.1 Recommended MVP Decisions Still Open
-
-1. Start with a controlled demo Shopify theme and one reusable banner section that can be inserted into multiple page templates.
-2. Keep approval MVP simple but team-aware: each reviewer can comment and approve/request changes independently; the campaign becomes approved only after all assigned reviewers approve.
-3. Begin with a small set of placement types, then make the placement registry extensible.
-4. Publish configuration to Shopify as structured JSON in a metafield/metaobject read by the custom section.
-5. Use Supabase RLS where practical, but prioritize reliable local demo flow first.
-
----
-
-## 4. Domain Model Draft
-
-### Main entities
-
-#### `stores`
-Represents a Shopify store connection.
-- `id`
-- `shop_domain`
-- `access_token_secret_ref` or encrypted token field
-- `shopify_api_version`
-- `created_at`
-- `updated_at`
-
-#### `brand_contexts`
-Portable brand/store generation context. Runtime records can be seeded from repo files under `brands/{brand_id}.md`.
-- `id`
-- `brand_key`
-- `store_id`
-- `name`
-- `palette` JSON
-- `typography` JSON
-- `voice` JSON, including tone, prohibited words, required phrases
-- `logo_url`
-- `image_style_directives`
-- `default_placement`
-- `source_file_path` nullable
-- `created_at`
-- `updated_at`
-
-#### `campaigns`
-Top-level banner campaign.
-- `id`
-- `store_id`
-- `title`
-- `brief`
-- `status`: `draft | generating | needs_review | changes_requested | approved | scheduled | publishing | published | failed | archived`
-- `created_by`
-- `approved_by`
-- `created_at`
-- `updated_at`
-
-#### `placement_types`
-Registry of supported banner/component types.
-- `id`
-- `key`: `hero_banner | promo_strip | collection_banner | popup_banner | inline_banner`
-- `label`
-- `description`
-- `supported_targets` JSON, e.g. `home`, `collection`, `product`, `page`, `blog`
-- `supported_slots` JSON, e.g. `top`, `after_header`, `above_product_grid`, `custom_section_anchor`
-- `required_dimensions` JSON for mobile/tablet/desktop
-- `config_schema` JSON for type-specific options
-- `is_active`
-
-#### `placements`
-Selected destination for a campaign.
-- `id`
-- `campaign_id`
-- `placement_type_id`
-- `target_type`: `home | collection | product | page | blog | theme_template`
-- `target_handle` nullable, e.g. collection/product/page handle
-- `slot`: `top | after_header | above_product_grid | below_product_info | custom_section_anchor`
-- `slot_order` integer for ordering when multiple banners exist in one slot
-- `selector_hint` nullable for advanced/custom placement mapping
-- `created_at`
-
-#### `banner_variants`
-Personalization-level variants generated for a campaign.
-- `id`
-- `campaign_id`
-- `variant_key`: `default | men | women | vip | custom_segment_key`
-- `variant_label`
-- `audience_rule` JSON, e.g. cookie/customer/context matching rule
-- `status`: `generated | selected | rejected`
-- `generation_metadata` JSON
-- `created_at`
-
-#### `banner_assets`
-Responsive assets for each personalized variant.
-- `id`
-- `banner_variant_id`
-- `size_key`: `mobile | tablet | desktop`
-- `width`
-- `height`
-- `image_prompt`
-- `image_url`
-- `alt_text`
-- `created_at`
-
-#### `banner_copy`
-HTML-rendered text/copy for each personalized variant.
-- `id`
-- `banner_variant_id`
-- `headline`
-- `subheadline`
-- `cta_text`
-- `cta_url`
-- `text_position`
-- `theme_tokens` JSON for colors/typography/layout hints
-- `created_at`
-
-#### `approval_threads`
-Review container for a selected campaign/variant set.
-- `id`
-- `campaign_id`
-- `status`: `open | approved | changes_requested | rejected`
-- `approval_policy`: `all_members` for MVP; schema can later allow `any_member | required_members | owner_only`
-- `requested_by`
-- `created_at`
-- `resolved_at`
-
-#### `approval_reviewers`
-Per-team-member approval state.
-- `id`
-- `approval_thread_id`
-- `user_id`
-- `status`: `pending | approved | changes_requested | rejected`
-- `last_comment_id`
-- `created_at`
-- `updated_at`
-
-#### `comments`
-Review comments.
-- `id`
-- `approval_thread_id`
-- `author_id`
-- `banner_variant_id` nullable, for variant-specific comments
-- `banner_asset_id` nullable, for size-specific comments
-- `body`
-- `created_at`
-
-#### `schedules`
-Active period for approved banners.
-- `id`
-- `campaign_id`
-- `starts_at`
-- `ends_at`
-- `timezone`
-- `status`: `pending | active | completed | cancelled`
-- `created_at`
-
-#### `publish_jobs`
-Publishing attempts to Shopify.
-- `id`
-- `campaign_id`
-- `status`: `queued | running | succeeded | failed`
-- `shopify_resource_type`
-- `shopify_resource_id`
-- `error_message`
-- `created_at`
-- `finished_at`
-
-#### `audit_events`
-Traceability for demo and debugging.
-- `id`
-- `campaign_id` nullable
-- `trace_id`
-- `session_id`
-- `brand_context_id` nullable
-- `actor_type`: `user | agent | system`
-- `node`, e.g. `generate_image`, `audit`, `publish_to_shopify`
-- `event_type`
-- `duration_ms`
-- `cost_usd`
-- `audit_pass` nullable
-- `review_decision` nullable
-- `shopify_section_id` nullable
-- `payload` JSON
-- `created_at`
-
-#### `audit_reports`
-Structured validation result for generated preview/Liquid output.
-- `id`
-- `campaign_id`
-- `html_w3c` JSON
-- `lighthouse` JSON, including performance, lcp_ms, cls
-- `schema_valid` boolean
-- `breakpoints_render` JSON
-- `asset_weight_report` JSON
-- `root_cause_hint` nullable
-- `retry_count`
-- `status`: `pass | fail | escalated`
-- `created_at`
-
-#### `generation_usage_events`
-Tracks Gemini/image generation usage for cost visibility and soft throttling.
-- `id`
-- `user_id`
-- `campaign_id` nullable
-- `event_type`: `text_generation | image_generation | asset_optimization`
-- `provider`
-- `model`
-- `estimated_cost_usd` nullable
-- `metadata` JSON
-- `created_at`
-
-## 4.1 Placement Selection Recommendation
-
-The placement UX should separate "what kind of banner is this?" from "where should it appear?".
-
-### Suggested user flow
-
-1. User selects a banner type.
-   - Hero banner
-   - Promotional strip
-   - Collection page banner
-   - Product page banner
-   - Inline content banner
-   - Popup/modal banner, if desired later
-
-2. Backend returns valid target types and slots for that banner type.
-   - Example: `hero_banner` supports `home.top`, `collection.top`, `page.top`.
-   - Example: `promo_strip` supports `home.after_header`, `collection.after_header`, `product.after_header`.
-
-3. User selects the page/template target.
-   - Home page
-   - Collection page + collection handle
-   - Product page + product handle
-   - Custom page + page handle
-   - Theme template/global slot
-   - MVP scope supports all four primary Shopify page resources: home, collections, products, and pages.
-
-4. User selects the slot/position inside that target.
-   - Top of page
-   - After header
-   - Above product grid
-   - Below product info
-   - Custom section anchor
-
-5. Backend validates that the selected banner type, target, and slot are compatible.
-
-6. Publishing writes a normalized JSON config to Shopify. The custom theme section/snippet reads that config and decides which banner to render based on:
-   - current page/template
-   - selected slot
-   - active start/end dates
-   - personalization/audience rules
-   - mobile/tablet/desktop viewport
-
-### Why this model works
-
-- It keeps the MVP manageable while still feeling flexible.
-- It avoids arbitrary DOM injection into unknown Shopify themes.
-- It gives the frontend a simple wizard-like selection flow.
-- It lets us add new banner types later by adding rows/config instead of rewriting business logic.
-- It supports multiple banners on the same page through `slot_order` and conflict rules.
-
-### MVP placement types to start with
-
-1. `hero_banner`
-   - Targets: home, collection, page
-   - Slots: top, after_header
-   - Sizes: desktop/tablet/mobile
-
-2. `promo_strip`
-   - Targets: home, collection, product, page
-   - Slots: after_header
-   - Sizes: desktop/tablet/mobile, usually short height
-
-3. `collection_banner`
-   - Targets: collection
-   - Slots: top, above_product_grid
-   - Sizes: desktop/tablet/mobile
-
-We can add product/inline/popup after the core flow is stable.
-
----
-
-## 5. Agentic Workflow Design
-
-The source technical design defines the workflow as a Google ADK graph with 12 nodes. The backend should expose this graph through normal FastAPI endpoints, but the agent execution boundary should remain explicit and testable.
-
-### 12-node graph
-
-1. `load_brand_context`
-   - Input: `brand_id` / `store_id`.
-   - Output: `BrandContext { name, palette, typography, voice, logo_url, image_style_directives, shopify }`.
-   - Source: versioned `brands/{brand_id}.md` plus Supabase runtime records.
-
-2. `intake_campaign_idea`
-   - Input: raw user brief/prompt and selected placement.
-   - Output: structured `Campaign { goal, audience, cta, tone, urgency, placement, deadline? }`.
-   - Recommended model: Gemini Flash with structured output.
-
-3. `capture_user_personalization`
-   - Input: campaign, brand context, user-requested segments.
-   - Output: `Variant[] { customer_tag, intent_delta, copy_override? }`.
-   - MVP storefront mechanism: Shopify `customer.tags` with variants like `default`, `vip`, `new_signup`, `men`, `women`.
-
-4. `research_best_practices`
-   - Input: placement type and campaign goal.
-   - Output: static best-practice guidance for layout/copy/accessibility/performance.
-   - D1/MVP: static cheatsheet in repo. Later: RAG.
-
-5. `draft_banner_concept`
-   - Input: structured campaign, brand context, placement constraints, best practices.
-   - Output: `Concept { layout, copy, palette_usage, image_prompt, hierarchy_notes }`.
-   - Recommended model: Gemini 2.5 Pro for higher-quality creative reasoning.
-
-6. `generate_image`
-   - Input: concept image prompt and required responsive sizes.
-   - Output: raw generated image(s).
-   - Use Gemini image generation by default behind an adapter compatible with Vertex/Imagen if needed.
-   - Prompt constraints: no embedded text, no logos, no faces unless explicitly allowed.
-
-7. `optimize_assets`
-   - Input: generated image(s).
-   - Output: WebP/AVIF srcset assets, fallback JPG, alt text suggestion.
-   - Target sizes: 320, 768, 1280, 1920 where applicable.
-   - Target weight: under 80KB at 1280 WebP where feasible.
-
-8. `render_html`
-   - Input: selected/generated variants, copy, assets, placement config.
-   - Output: standalone HTML preview plus Shopify Liquid/config payload.
-   - Include SEO meta data and JSON-LD `PromotionalOffer` where applicable.
-
-9. `audit`
-   - Input: rendered preview/Liquid output and assets.
-   - Output: `AuditReport { html_w3c, lighthouse, schema_valid, breakpoints_render, asset_weight_report, root_cause_hint? }`.
-   - Max two retries upstream when failures can be fixed automatically; then escalate to human with root-cause hints.
-
-10. `human_review`
-   - Input: preview, variants, audit report, comments.
-   - Output: approve/reject/edit_request/set_schedule.
-   - Current UI: Next.js admin panel, not Streamlit. The source design's Streamlit UI is superseded by the current team split.
-   - No bypass: publishing must never happen before human approval.
-
-11. `schedule_or_publish`
-   - Input: approved campaign and selected active period.
-   - Output: immediate publish job or scheduled campaign config.
-   - MVP: Shopify theme reads active dates from campaign config. Future-compatible path: Supabase `scheduled_banners` + pg_cron due-publish automation.
-
-12. `publish_to_shopify`
-   - Input: approved campaign, placement, schedule, Liquid/config payload.
-   - Output: idempotent Shopify publish result.
-   - Use Shopify Admin GraphQL. `themeFilesUpsert` installs/updates reusable Liquid section/snippets; campaign data is published as metafield/metaobject JSON consumed by that section.
-
-### Human-in-the-loop boundaries
-- Human selects placement and enters brief.
-- Human chooses generated variant(s) or requests regeneration.
-- Human requests team review.
-- Each assigned reviewer can comment and approve/request changes.
-- MVP approval policy requires all assigned reviewers to approve before scheduling/publishing is allowed.
-- Human selects active period.
-- Human confirms publish.
-
-The agent can assist and automate inside each step but should not publish without explicit user approval for MVP safety.
-
----
-
-## 6. Backend API Draft
-
-Base path: `/api/v1`
-
-### Campaigns
-- `POST /campaigns`
-  - Create campaign with title, brief, store, brand context, placement.
-- `GET /campaigns`
-  - List campaigns.
-- `GET /campaigns/{campaign_id}`
-  - Get campaign detail with variants, assets, copy, approval, schedule, audit report.
-- `PATCH /campaigns/{campaign_id}`
-  - Update draft campaign fields.
-
-### Brand context
-- `POST /brands`
-  - Create a brand context/profile.
-- `GET /brands`
-  - List brand contexts available to the authenticated team.
-- `GET /brands/{brand_id}`
-  - Get brand context, including palette, typography, voice rules, logo, and image directives.
-- `PATCH /brands/{brand_id}`
-  - Update brand context/profile fields.
-- `DELETE /brands/{brand_id}`
-  - Archive/delete a brand context when it is not used by active campaigns.
-- `POST /brands/import`
-  - Optional local/demo helper to import `brands/{brand_id}.md` into Supabase.
-
-### Generation
-- `POST /campaigns/{campaign_id}/generate`
-  - Run ADK/Gemini workflow through nodes 1-9 to generate variants, assets, HTML preview, Liquid/config payload, and audit report.
-- `POST /campaigns/{campaign_id}/variants/{variant_id}/select`
-  - Select final variant or personalized variant set.
-- `POST /campaigns/{campaign_id}/variants/{variant_id}/regenerate`
-  - Regenerate based on feedback.
-- `GET /campaigns/{campaign_id}/preview`
-  - Return standalone HTML preview URL/body and responsive asset/copy data.
-- `GET /campaigns/{campaign_id}/audit-report`
-  - Return latest audit report and root-cause hints.
-
-### Approval
-- `POST /campaigns/{campaign_id}/approval/request`
-  - Open approval thread.
-- `POST /approval-threads/{thread_id}/comments`
-  - Add review comment.
-- `POST /approval-threads/{thread_id}/approve`
-  - Approve selected variant.
-- `POST /approval-threads/{thread_id}/request-changes`
-  - Mark changes requested.
-
-### Scheduling
-- `POST /campaigns/{campaign_id}/schedule`
-  - Set start/end date and timezone.
-- `PATCH /campaigns/{campaign_id}/schedule`
-  - Update schedule before publish.
-- `POST /campaigns/{campaign_id}/schedule/cancel`
-  - Cancel schedule.
-
-### Shopify
-- `POST /stores/shopify/connect`
-  - Save Shopify connection using custom/private app token for MVP.
-- `GET /stores/{store_id}/placement-types`
-  - Return supported banner/component types.
-- `GET /stores/{store_id}/placement-types/{placement_type_key}/targets`
-  - Return valid target types and slots for selected banner type.
-- `GET /stores/{store_id}/shopify/resources`
-  - Return selectable Shopify resources for placement targeting, e.g. collections, products, pages.
-- `GET /stores/{store_id}/placements/preview`
-  - Validate and preview a placement selection.
-- `POST /campaigns/{campaign_id}/publish`
-  - Publish approved scheduled banner config to Shopify metafield/metaobject consumed by the custom section.
-- `POST /campaigns/{campaign_id}/unpublish`
-  - Optional but recommended for rollback.
-
----
-
-## 7. Frontend Screen Draft
-
-Frontend implementation is owned by another team member, but backend should support these screens.
-
-1. Dashboard
-   - Campaign list by status.
-   - Create campaign button.
-
-2. Create campaign
-   - Store selector.
-   - Placement selector.
-   - Brief/prompt textarea.
-   - Optional brand/product context.
-
-3. Generate banners
-   - Trigger generation.
-   - Show status/progress.
-   - Display generated variants.
-   - Select variant or regenerate.
-
-4. Review/approval
-   - Selected banner preview.
-   - Comment thread.
-   - Request approval button.
-   - Approve / request changes actions.
-
-5. Schedule
-   - Start datetime.
-   - End datetime.
-   - Timezone.
-   - Validation summary.
-
-6. Publish
-   - Final preview.
-   - Shopify target placement.
-   - Publish button.
-   - Publish result/status.
-
-7. Store settings
-   - Shopify store connection status.
-   - Supported placements.
-
-
----
-
-## 7.1 Frontend Template Alignment
-
-A static React prototype from `origin/frontend/design-implementation` is now pulled into `frontend/` and documented in `docs/architecture/frontend-template-deep-dive.md`. Treat it as the current UX base even though it is not yet a Next.js app.
-
-Backend/data model changes driven by the frontend:
-
-- The studio flow is 6 steps: placement, brief, art direction, generation, collaborative canvas, performance.
-- Brand context needs full CRUD plus import from PDF/Figma/brandbook.
-- Placement supports existing Shopify sections and new injected sections. New-section mode requires layout JSON for columns, rows, widths, alignment, and drop zone.
-- Placement scope must support home, whole store, selected collections, all collections, single product, product brand, product tag, and search-query trigger. MVP API can expose list/select resources first; search/autocomplete is deferred.
-- Brief generation needs a campaign catalog snapshot because the frontend expects Shopify SKU/stock/pricing validation.
-- Art direction must persist background mode, hero style, selected/custom usage model, and fold percentage.
-- The backend's 12-node ADK graph should map to the frontend's 5 visible pipeline steps: Smart Querying, Brand Guidelines Engine, IA Image Generation, HTML/Liquid Compiler, Core Web Vitals Shield.
-- Review canvas needs layout variants A/B/C, device previews, segment variants, pinned comments with x/y coordinates, agent refinement events, all-reviewer approval, scheduling, and publish-now.
-- Performance/evolutionary memory is visible in the frontend. Keep it schema-ready even if real analytics are post-MVP.
-
----
-
-## 8. Implementation Phases
-
-### Phase 0: Repository structure and docs
-Status: done for initial scaffold.
-
-Tasks:
-1. Create `backend/`, `frontend/`, `supabase/`, `docs/`, `scripts/` folders.
-2. Add `.gitkeep` placeholders.
-3. Add root `.gitignore`.
-4. Add README and project structure docs.
-5. Add implementation plan.
-
-Verification:
-- `git status --short` shows created folders/docs.
-- No backend/frontend code has been introduced yet.
-
-### Phase 1: Backend foundation
-Goal: runnable Python API skeleton.
-
-Tasks:
-1. Decide backend framework after clarification; recommended FastAPI.
-2. Add backend dependency manifest.
-3. Add settings loader for environment variables.
-4. Add app bootstrap.
-5. Add health endpoint.
-6. Add test runner setup.
-7. Add local dev instructions.
-
-Expected files:
-- `backend/pyproject.toml`
-- `backend/app/main.py`
-- `backend/app/core/settings.py`
-- `backend/app/api/routes/health.py`
-- `backend/tests/unit/test_health.py`
-
-Verification:
-- Backend starts locally.
-- Health endpoint returns OK.
-- Unit tests pass.
-
-### Phase 2: Supabase schema
-Goal: persistence for campaigns, variants, approvals, schedules, stores, audit.
-
-Tasks:
-1. Create first migration under `supabase/migrations/`.
-2. Add tables listed in Domain Model Draft.
-3. Add indexes for campaign status, store, schedule dates.
-4. Add status check constraints or enum strategy.
-5. Add seed data for demo store/campaign if useful.
-6. Add repository tests with a local/test Supabase strategy or mocked client.
-
-Expected files:
-- `supabase/migrations/0001_initial_schema.sql`
-- `supabase/seed/demo.sql`
-- `backend/app/db/repositories/*.py`
-
-Verification:
-- Migration applies cleanly.
-- Seed creates demo data.
-- Backend can create/read campaigns.
-
-### Phase 3: Campaign and placement API
-Goal: frontend can create and inspect campaign drafts.
-
-Tasks:
-1. Add request/response schemas.
-2. Add campaign repository.
-3. Add campaign service.
-4. Add campaign routes.
-5. Add supported placements endpoint.
-6. Add tests for create/list/detail/update.
-
-Expected files:
-- `backend/app/schemas/campaigns.py`
-- `backend/app/services/banners/campaign_service.py`
-- `backend/app/api/routes/campaigns.py`
-- `backend/app/api/routes/stores.py`
-
-Verification:
-- Campaign CRUD works.
-- Placement options are returned.
-- Tests cover validation and status transitions.
-
-### Phase 4: Google ADK + Gemini workflow
-Goal: implement the source design's 12-node ADK graph up to audit-ready output.
-
-Tasks:
-1. Add ADK dependency and configuration.
-2. Create graph state models for brand context, campaign, variants, assets, render output, audit report.
-3. Create `load_brand_context` node.
-4. Create `intake_campaign_idea` node.
-5. Create `capture_user_personalization` node.
-6. Create `research_best_practices` node using a static repo cheatsheet for MVP.
-7. Create `draft_banner_concept` node.
-8. Create `generate_image` node through an image-generation adapter.
-9. Create `optimize_assets` node.
-10. Create `render_html` node.
-11. Create `audit` node with max-two-retry metadata.
-12. Persist generated variants, assets, preview output, audit reports, and audit events.
-13. Add tests around prompt construction, structured parsing, retry limits, and fallback behavior.
-
-Expected files:
-- `backend/app/agents/graph.py`
-- `backend/app/agents/state.py`
-- `backend/app/agents/nodes/load_brand_context.py`
-- `backend/app/agents/nodes/intake_campaign_idea.py`
-- `backend/app/agents/nodes/capture_user_personalization.py`
-- `backend/app/agents/nodes/research_best_practices.py`
-- `backend/app/agents/nodes/draft_banner_concept.py`
-- `backend/app/agents/nodes/generate_image.py`
-- `backend/app/agents/nodes/optimize_assets.py`
-- `backend/app/agents/nodes/render_html.py`
-- `backend/app/agents/nodes/audit.py`
-- `backend/app/agents/prompts/*.md`
-- `backend/app/workflows/banner_generation.py`
-
-Verification:
-- `POST /campaigns/{id}/generate` moves campaign from draft to generating to needs_review when audit passes or to audit_failed/escalated when audit cannot be fixed automatically.
-- Generated variants, responsive assets, HTML preview, Liquid/config payload, and audit report are stored.
-- Failures are captured without losing campaign state.
-
-### Phase 5: Asset storage and optimization
-Goal: generated image assets are optimized, durable, and previewable by frontend and Shopify Liquid.
-
-Tasks:
-1. Use Supabase Storage for MVP asset persistence.
-2. Create storage adapter.
-3. Create image optimizer using Pillow and AVIF/WebP support.
-4. Generate responsive variants for 320, 768, 1280, 1920 widths where applicable.
-5. Generate WebP/AVIF plus fallback JPG.
-6. Save asset URLs and metadata in `banner_assets`.
-7. Generate and store alt text suggestions.
-8. Enforce/report target weight cap: under 80KB at 1280 WebP where feasible.
-9. Add asset cleanup/update strategy.
-
-Expected files:
-- `backend/app/services/supabase/storage.py`
-- `backend/app/services/banners/asset_service.py`
-- `backend/app/services/banners/image_optimizer.py`
-
-Verification:
-- Frontend can load image URL.
-- Shopify preview can use srcset data.
-- Regeneration creates new assets without overwriting selected assets unexpectedly.
-- Asset weight report is included in `audit_reports`.
-
-### Phase 6: Approval workflow
-Goal: human-in-the-loop approval with comments.
-
-Tasks:
-1. Add approval thread repository.
-2. Add comments repository.
-3. Add approval service and status transitions.
-4. Add approval endpoints.
-5. Add optional review assistant agent for comment summarization.
-6. Add tests for approve/reject/request-changes transitions.
-
-Expected files:
-- `backend/app/services/approvals/approval_service.py`
-- `backend/app/api/routes/approvals.py`
-- `backend/app/agents/review_assistant_agent.py`
-
-Verification:
-- Only selected variants can be sent for approval.
-- Only approved campaigns can move to scheduling.
-- Comments are stored and returned.
-
-### Phase 7: Scheduling
-Goal: approved banners can be assigned active windows.
-
-Tasks:
-1. Add schedule service.
-2. Validate start/end times and timezone.
-3. Prevent scheduling non-approved campaigns.
-4. Expose schedule endpoints.
-5. Decide how schedule is enforced in Shopify publishing.
-
-Expected files:
-- `backend/app/services/banners/schedule_service.py`
-- `backend/app/api/routes/schedules.py`
-
-Verification:
-- Approved campaigns can be scheduled.
-- Invalid date ranges fail clearly.
-- Campaign status moves to scheduled.
-
-### Phase 8: Shopify publishing
-Goal: publish scheduled approved banner to Shopify demo store.
-
-Tasks:
-1. Use token-based Shopify Admin API credentials for MVP.
-2. Add Shopify GraphQL client wrapper with exponential backoff for rate limits.
-3. Add store connection model/API.
-4. Add reusable Liquid section/snippet templates.
-5. Add `themeFilesUpsert` installer/updater for the controlled Shopify section/snippets.
-6. Add publish payload builder for metafield/metaobject JSON config consumed by the section.
-7. Add publish workflow agent/service.
-8. Add publish endpoint.
-9. Add rollback/unpublish endpoint if time allows.
-10. Add integration test with mocked Shopify API.
-
-Expected files:
-- `backend/app/services/shopify/client.py`
-- `backend/app/services/shopify/theme_files.py`
-- `backend/app/services/shopify/publisher.py`
-- `backend/app/agents/nodes/publish_to_shopify.py`
-- `backend/app/workflows/shopify_publish.py`
-- `backend/app/templates/shopify/banner_section.liquid.j2`
-- `backend/app/templates/shopify/banner_block.liquid.j2`
-
-Verification:
-- Publish endpoint refuses non-approved/non-scheduled campaigns.
-- Theme section/snippet install is idempotent.
-- Campaign config publish/update is idempotent.
-- Publish job records success/failure.
-- Demo Shopify store shows the banner in the chosen placement.
-
-### Phase 9: Frontend integration support
-Goal: provide API contract and helper docs for the frontend owner.
-
-Tasks:
-1. Generate/maintain OpenAPI docs.
-2. Add sample request/response docs.
-3. Add status transition diagram.
-4. Coordinate screen-by-screen API requirements.
-
-Expected files:
-- `docs/architecture/api-contract.md`
-- `docs/architecture/status-flow.md`
-
-Verification:
-- Frontend can implement all MVP screens without backend ambiguity.
-
-### Phase 10: Demo hardening
-Goal: reliable hackathon presentation.
-
-Tasks:
-1. Seed a demo store/campaign.
-2. Add deterministic fallback if generation API fails.
-3. Add visible audit trail for agent actions.
-4. Add clear loading/error states for long-running generation/publish.
-5. Add one-click reset script for demo data.
-6. Record expected demo path.
-
-Expected files:
-- `scripts/reset-demo-data.*`
-- `docs/demo-script.md`
-
-Verification:
-- Demo can be run start-to-finish twice in a row.
-- Failed external API calls fail gracefully.
-- Published banner can be verified in Shopify.
-
----
-
-## 9. Status Transition Draft
+Primary path:
 
 ```text
 draft
+  -> placement_selected
+  -> brief_ready
+  -> art_direction_ready
   -> generating
   -> audit_pending
   -> needs_review
@@ -876,6 +240,7 @@ draft
 ```
 
 Failure/escalation paths:
+
 ```text
 generating -> failed -> draft or generating
 audit_pending -> audit_retrying -> audit_pending
@@ -886,110 +251,1245 @@ published -> archived
 ```
 
 Rules:
-- Only `draft` or `changes_requested` campaigns can generate/regenerate.
-- Only `needs_review` campaigns can be approved.
-- Only `approved` campaigns can be scheduled.
-- Only `scheduled` campaigns can be published.
-- Publishing should be idempotent when possible.
+
+- Only campaigns with placement, brief, and art direction can start generation.
+- Publishing must never happen before HITL approval.
+- MVP approval policy requires all assigned reviewers to approve.
+- Scheduling requires approved campaign status.
+- Publishing requires scheduled campaign status unless an explicit publish-now path first creates a valid schedule/window.
 
 ---
 
-## 10. Environment Variables Draft
+## 5. Updated Implementation Plan
 
-Backend:
-- `GOOGLE_API_KEY` or Google Cloud auth variables, depending on ADK/Gemini setup.
-- `GOOGLE_CLOUD_PROJECT` if using Vertex-backed generation.
-- `GOOGLE_CLOUD_LOCATION` if using Vertex-backed generation.
-- `GEMINI_MODEL_PRO`
-- `GEMINI_MODEL_FLASH`
-- `GEMINI_MODEL_IMAGE`
-- `IMAGE_GENERATION_PROVIDER`, e.g. `gemini` or `vertex_imagen`.
-- `SUPABASE_URL`
-- `SUPABASE_ANON_KEY`
-- `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_STORAGE_BUCKET`
-- `SHOPIFY_SHOP_DOMAIN`
-- `SHOPIFY_ADMIN_ACCESS_TOKEN`
-- `SHOPIFY_API_VERSION`
-- `SHOPIFY_THEME_ID`
-- `SHOPIFY_BANNER_METAFIELD_NAMESPACE`
-- `SHOPIFY_BANNER_METAFIELD_KEY`
-- `SOFT_IMAGE_GENERATION_LIMIT_PER_15_MINUTES`, default `20` per authenticated user
-- `APP_ENV`
-- `APP_BASE_URL`
+### Task 0: Local backend environment and baseline verification
 
-Frontend:
-- `NEXT_PUBLIC_API_BASE_URL`
-- `NEXT_PUBLIC_SUPABASE_URL` if using Supabase Auth directly.
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` if using Supabase Auth directly.
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
 
-Security note:
-- Never expose Shopify Admin tokens or Supabase service role keys to the frontend.
+**Completion note:** Added explicit setuptools package discovery for `app*` and `adk_agents*` in `backend/pyproject.toml`, created backend `.venv` with Python 3.11.15, installed `pip install -e ".[dev]"`, and verified `pytest -v` passes with 12 tests.
 
----
+**Goal:** Make the current merged work runnable and testable locally before adding more code.
 
-## 11. Hackathon Risk Register
+**Expected result:** Backend dependencies are installed in a local virtual environment and current tests can run.
 
-### Risk: Shopify theme integration takes too long
-Mitigation: use one controlled demo store/theme, install one reusable Liquid section/snippet via `themeFilesUpsert`, and publish only config changes afterward.
+**Files:**
 
-### Risk: image generation quality is inconsistent
-Mitigation: generate multiple variants, forbid embedded text/logos/faces in prompts, and keep a deterministic fallback demo asset.
+- Modify only if needed: `README.md`
+- Modify only if needed: `backend/pyproject.toml`
 
-### Risk: approval workflow scope expands
-Mitigation: keep MVP to team-member reviewer statuses, comment thread, approve, reject, and request changes.
+**Steps:**
 
-### Risk: schedule automation is too complex
-Mitigation: for MVP, publish schedule metadata and let the Shopify section show/hide by date; preserve `scheduled_banners`/pg_cron-compatible schema for later automation.
+```bash
+git checkout main
+git pull --ff-only
+git checkout -b chore/backend-baseline-verification
+cd backend
+python3.11 -m venv .venv || python3 -m venv .venv
+. .venv/bin/activate
+pip install -e ".[dev]"
+pytest -v
+```
 
-### Risk: ADK integration slows basic product delivery
-Mitigation: isolate ADK workflows under `backend/app/agents` and `backend/app/workflows`; keep CRUD/services normal and testable.
+If Python 3.11 is not available locally, install it or document the Python version actually used.
 
-### Risk: frontend/backend contract mismatch
-Mitigation: write OpenAPI/schema docs early and provide sample payloads.
+**Verification:**
 
-### Risk: audit loop never converges
-Mitigation: max two automatic retries, then escalate to human with root-cause hints.
+- `pytest -v` runs.
+- Current tests pass or any real failures are documented and fixed before feature work.
 
-### Risk: banner hurts storefront performance/LCP
-Mitigation: optimize images, enforce/report size caps, run Lighthouse, and target performance score >= 90.
-
-### Risk: Shopify API rate limits
-Mitigation: exponential backoff up to 3 retries and idempotent publish jobs.
-
-### Risk: image generation cost runaway
-Mitigation: cost/usage logging in audit events, visible cost per banner where possible, and soft rate guard warnings per 15-minute window. Do not enforce hard daily caps during hackathon dev unless the team later requests them.
-
-### Risk: invalid brand context
-Mitigation: validate brand Markdown/YAML with Pydantic before generation.
+**Carry-over bugs/gaps:** none. Do not proceed with implementation while tests cannot run.
 
 ---
 
-## 12. Hackathon Success Criteria
+### Task 1: Add shared settings and dependency boundaries without duplicating existing app setup
 
-Targets from the source technical design, adapted to the current Next/FastAPI plan:
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
 
-- Intake to publish under 10 minutes for the main demo scenario.
-- Audit pass first try >= 70%.
-- HITL approval first try >= 60%.
-- Lighthouse Performance >= 90 for published banners.
-- LCP on 4G mobile under 1.0s target.
-- Schedule accuracy within +/- 5 minutes for scheduled demo flow.
-- Brand context reusable across at least 2 demo stores.
-- Personalization demonstrates at least 3 variants.
-- Three demo scenarios recorded or rehearsed:
-  1. Avocado Store Black Friday immediate publish with default variant.
-  2. Avocado Store onboarding scheduled campaign with `new_signup` variant.
-  3. Demo Apparel product launch with `vip` + default variants and different brand context.
+**Completion note:** Added `app.core.settings`, `app.core.dependencies`, and lazy Supabase client factory. Settings now cover Supabase/Gemini/Google/Shopify/app behavior env vars, use `SecretStr` for secrets, defer required-secret validation to `require_*` methods, ignore blank env vars safely, and provide FastAPI-overridable dependency boundaries. Verified with `pytest tests/unit/test_settings.py -v` and full `pytest -v`.
+
+**Goal:** Centralize env/settings and client dependencies while preserving existing `app.main`, routers, and tests.
+
+**Expected result:** Settings can be loaded for Supabase, Gemini, Shopify, and app behavior. External clients are created behind injectable boundaries, not at import time.
+
+**Files:**
+
+- Create: `backend/app/core/settings.py`
+- Create: `backend/app/core/dependencies.py`
+- Create: `backend/app/services/supabase/client.py`
+- Modify: `backend/app/main.py` only if dependency wiring needs app state.
+- Modify: `.env.example` only if missing variables.
+- Test: `backend/tests/unit/test_settings.py`
+
+**Do not redo:**
+
+- Do not recreate `backend/pyproject.toml` from scratch.
+- Do not recreate the FastAPI app.
+- Do not remove existing `brands`, `intake`, or `campaigns` routers.
+
+**Verification:**
+
+```bash
+cd backend
+. .venv/bin/activate
+pytest tests/unit/test_settings.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Existing brand and campaign stores may remain file/in-memory backed after this task.
+- They must be moved to Supabase in Tasks 2 and 4.
 
 ---
 
-## 13. Immediate Next Steps
+### Task 2: Add `/api/v1` router while preserving current prototype routes
 
-1. Start Phase 1 backend foundation with FastAPI.
-2. Add brand context sample files, validation, and full backend CRUD APIs early because the 12-node graph and future UI editing depend on them.
-3. Implement the placement registry before campaign creation so the frontend can build the selection wizard for home, collections, products, and pages.
-4. Implement Shopify resource list/select endpoints for collections, products, and pages. Defer search/autocomplete unless requested.
-5. Implement soft image-generation usage tracking: warn after 20 generations per authenticated user per 15 minutes.
-6. Keep MIT LICENSE in place for public/stable hackathon release.
-7. Share `docs/architecture/project-structure.md`, `docs/architecture/source-plan-alignment.md`, and this plan with the frontend teammate so they can align screens to API phases.
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added canonical `/api/v1` router modules that reuse existing brand/intake/campaign route logic, registered the v1 router in `app.main`, documented the current compatibility and v1 API contract, and added contract tests for root compatibility plus v1 brand/intake/campaign routes. Verified with `pytest tests/api/test_api_v1_contract.py -v` and full `pytest -v`.
+
+**Goal:** Create the stable canonical API namespace without breaking the static frontend prototype.
+
+**Expected result:** Existing root routes still work, and equivalent `/api/v1` routes are available for new integration work.
+
+**Files:**
+
+- Create: `backend/app/api/v1/router.py`
+- Create or move wrappers:
+  - `backend/app/api/v1/brands.py`
+  - `backend/app/api/v1/campaigns.py`
+  - `backend/app/api/v1/intake.py`
+- Modify: `backend/app/main.py`
+- Create: `docs/architecture/api-contract.md`
+- Test: `backend/tests/api/test_api_v1_contract.py`
+
+**Existing work to reuse:**
+
+- `backend/app/api/brands.py`
+- `backend/app/api/intake.py`
+- `backend/app/api/campaigns.py`
+- `backend/app/schemas/campaign.py`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/api/test_api_v1_contract.py -v
+pytest -v
+```
+
+Manual:
+
+- `GET /health` works.
+- `POST /campaigns/intake` still works.
+- `POST /api/v1/campaigns/intake` works or documented canonical equivalent exists.
+
+**Carry-over bugs/gaps:**
+
+- Root-level compatibility routes may remain until static frontend migration is complete.
+- Fix/decision point: Task 18.
+
+---
+
+### Task 3: Move brand context runtime storage to Supabase
+
+**Status:** Completed on 2026-05-29 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added Supabase repositories for `brand_contexts`/`brand_assets`, a brand service with Supabase-first runtime storage and Markdown fallback/import, safe Markdown importer, `POST /brands/import`, hyphenated brand slug support, repository payload filtering to actual schema columns, centralized brand team settings, deterministic fallback tests, and a skippable live Supabase integration test. Verified with targeted brand tests and full `pytest -v` (`42 passed, 1 skipped`). Auth for write endpoints remains a planned Task 19 concern.
+
+**Goal:** Replace Markdown file-backed runtime brand storage with Supabase-backed `brand_contexts`/`brand_assets`, while preserving Markdown files as seed/import sources.
+
+**Expected result:** Brand endpoints return Supabase data; Markdown import remains available for demo/versioned seed content.
+
+**Files:**
+
+- Modify: `backend/app/services/brand_store.py`
+- Create: `backend/app/db/repositories/brand_contexts.py`
+- Create: `backend/app/db/repositories/brand_assets.py`
+- Create: `backend/app/services/brands/brand_service.py`
+- Create: `backend/app/services/brands/markdown_importer.py`
+- Modify: `backend/app/api/brands.py`
+- Modify or create: `backend/app/api/v1/brands.py`
+- Modify: `backend/app/schemas/brand.py` only as needed.
+- Test: `backend/tests/unit/test_brand_markdown_importer.py`
+- Test: `backend/tests/api/test_brands.py`
+- Test: `backend/tests/integration/test_brand_context_repository.py`
+
+**Do not redo:**
+
+- Do not delete the current brand schema unless replacing it with compatible fields.
+- Do not remove seed Markdown files.
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_brand_markdown_importer.py -v
+pytest tests/api/test_brands.py -v
+pytest -v
+cd ..
+supabase db reset
+```
+
+**Carry-over bugs/gaps:**
+
+- PDF/Figma/brandbook extraction can be partial/mock if clearly labeled.
+- Fix/decision point: Task 21.
+
+---
+
+### Task 4: Move campaign/intake runtime storage from in-memory to Supabase
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added Supabase repositories for `campaigns` and `campaign_messages`, a `CampaignService` with Supabase-first persistence and local in-memory fallback only when Supabase is not configured, status transition helpers, `/api/v1/campaigns` create/list/get/patch semantics through the shared router, persisted intake messages, non-editable campaign protection, partial Supabase config fail-fast behavior, live Supabase integration opt-in via `RUN_LIVE_SUPABASE_TESTS=1`, and route-level Task 19 auth/scoping TODOs. Verified with targeted Task 4 tests and full `pytest -v` (`49 passed, 2 skipped`). Auth/request-scoped tenancy remains intentionally deferred to Task 19.
+
+**Goal:** Keep the team's campaign/intake behavior while persisting campaigns and messages in Supabase.
+
+**Expected result:** `POST /campaigns/intake`, `GET /campaigns/{id}`, and `PATCH /campaigns/{id}` survive process restarts and use `campaigns`/`campaign_messages` tables.
+
+**Files:**
+
+- Modify: `backend/app/services/campaign_store.py`
+- Create: `backend/app/db/repositories/campaigns.py`
+- Create: `backend/app/db/repositories/campaign_messages.py`
+- Create: `backend/app/services/banners/campaign_service.py`
+- Create: `backend/app/services/banners/status_machine.py`
+- Modify: `backend/app/api/intake.py`
+- Modify: `backend/app/api/campaigns.py`
+- Modify or create: `backend/app/api/v1/intake.py`
+- Modify or create: `backend/app/api/v1/campaigns.py`
+- Test: `backend/tests/unit/test_campaign_status_machine.py`
+- Test: `backend/tests/api/test_intake.py`
+- Test: `backend/tests/api/test_campaigns.py`
+- Test: `backend/tests/integration/test_campaign_repository.py`
+
+**Existing work to reuse:**
+
+- `StructuredBrief`
+- `CampaignMessage`
+- `Campaign`
+- deterministic `extract_into()` behavior
+- SSE response shape from `POST /campaigns/intake`
+
+**Implementation notes:**
+
+- Keep deterministic extractor as fallback/test path.
+- Preserve SSE event shape:
+  - `token`
+  - `done`
+- Add list/create/detail semantics under `/api/v1` as needed by dashboard:
+  - `POST /api/v1/campaigns`
+  - `GET /api/v1/campaigns`
+  - `GET /api/v1/campaigns/{campaign_id}`
+  - `PATCH /api/v1/campaigns/{campaign_id}`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/api/test_intake.py -v
+pytest tests/api/test_campaigns.py -v
+pytest tests/integration/test_campaign_repository.py -v
+pytest -v
+```
+
+Manual:
+
+- Start backend, create campaign through intake, restart backend, retrieve same campaign.
+
+**Carry-over bugs/gaps:**
+
+- The intake may still use deterministic extraction after this task.
+- Gemini-powered extraction must be connected in Task 9.
+
+---
+
+### Task 5: Implement store and Shopify resource cache APIs
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added frontend-safe store/resource schemas, Supabase repositories for `stores` and `shopify_resource_cache`, a cache-only `ShopifyResourceService` with seeded fallback, fail-closed Supabase team scoping, recursive metadata secret redaction, UUID store route validation, and `/api/v1/stores` endpoints for store list/detail and selectable cached/virtual Shopify resources. Verified with Task 5 tests and full `pytest -v` (`63 passed, 2 skipped`). Live Shopify sync remains intentionally deferred to Task 17/21.
+
+**Goal:** Provide store/catalog data required by placement and brief stages using seeded `stores` and `shopify_resource_cache` data first.
+
+**Expected result:** Frontend can list stores and selectable Shopify resources without live Shopify calls.
+
+**Files:**
+
+- Create: `backend/app/schemas/stores.py`
+- Create: `backend/app/db/repositories/stores.py`
+- Create: `backend/app/db/repositories/shopify_resource_cache.py`
+- Create: `backend/app/services/shopify/resource_service.py`
+- Create: `backend/app/api/v1/stores.py`
+- Modify: `backend/app/api/v1/router.py`
+- Test: `backend/tests/api/test_stores.py`
+- Test: `backend/tests/unit/test_shopify_resource_service.py`
+
+**Endpoints:**
+
+- `GET /api/v1/stores`
+- `GET /api/v1/stores/{store_id}`
+- `GET /api/v1/stores/{store_id}/shopify/resources?resource_type=collection|product|page|search`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/api/test_stores.py -v
+pytest tests/unit/test_shopify_resource_service.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Live Shopify sync can remain unimplemented if demo uses seeded resources.
+- Fix/decision point: Task 17 or Task 21.
+
+---
+
+### Task 6: Implement placement registry and campaign placement APIs
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added placement schemas, seeded/Supabase placement type repositories, campaign placement repository, placement service, `/api/v1` placement endpoints, validation for existing-section and new-section modes, cached/virtual target validation, campaign placement save/read, UUID validation, non-resource target guardrails, and Task 19 auth/scoping TODOs. Verified with Task 6 tests and full `pytest -v` (`81 passed, 2 skipped`). Search-result placement validation is supported; actual publish support remains deferred to Task 17.
+
+**Goal:** Power the frontend placement stage using seeded placement types and persist selected placement details.
+
+**Expected result:** Campaign placement can be validated and saved, including existing-section mode and injected-section layout JSON.
+
+**Files:**
+
+- Create: `backend/app/schemas/placements.py`
+- Create: `backend/app/db/repositories/placement_types.py`
+- Create: `backend/app/db/repositories/campaign_placements.py`
+- Create: `backend/app/services/banners/placement_service.py`
+- Create: `backend/app/api/v1/placements.py`
+- Modify: `backend/app/api/v1/router.py`
+- Test: `backend/tests/unit/test_placement_service.py`
+- Test: `backend/tests/api/test_placements.py`
+
+**Endpoints:**
+
+- `GET /api/v1/stores/{store_id}/placement-types`
+- `GET /api/v1/stores/{store_id}/placement-types/{placement_type_key}/targets`
+- `POST /api/v1/placements/validate`
+- `POST /api/v1/campaigns/{campaign_id}/placement`
+- `GET /api/v1/campaigns/{campaign_id}/placement`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_placement_service.py -v
+pytest tests/api/test_placements.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Search-result placement can validate/save before publish support exists.
+- Fix/decision point: Task 17. It must either publish correctly or be blocked with a clear unsupported-for-publish error.
+
+---
+
+### Task 7: Implement catalog snapshot APIs
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added catalog snapshot schemas, Supabase/in-memory catalog repositories, catalog snapshot service, and `/api/v1/campaigns/{campaign_id}/catalog-snapshot` POST/GET endpoints. Snapshots are sourced only from cached/seeded Shopify resources, include reproducible item context with safe metadata redaction and immutable store context, preserve deterministic ordering on create/get, and compensate cleanup on item-insert failure. Verified with Task 7 tests and full `pytest -v` (`90 passed, 2 skipped`).
+
+**Goal:** Freeze product/catalog context at campaign generation time.
+
+**Expected result:** A campaign can store and retrieve a catalog snapshot sourced from `shopify_resource_cache` or a future live Shopify sync.
+
+**Files:**
+
+- Create: `backend/app/schemas/catalog.py`
+- Create: `backend/app/db/repositories/campaign_catalog.py`
+- Create: `backend/app/services/banners/catalog_snapshot_service.py`
+- Create: `backend/app/api/v1/catalog.py`
+- Modify: `backend/app/api/v1/router.py`
+- Test: `backend/tests/unit/test_catalog_snapshot_service.py`
+- Test: `backend/tests/api/test_catalog_snapshot.py`
+
+**Endpoints:**
+
+- `POST /api/v1/campaigns/{campaign_id}/catalog-snapshot`
+- `GET /api/v1/campaigns/{campaign_id}/catalog-snapshot`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_catalog_snapshot_service.py -v
+pytest tests/api/test_catalog_snapshot.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:** none. Generation should not proceed without reproducible catalog context when product/SKU claims are used.
+
+---
+
+### Task 8: Implement art direction APIs
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added art-direction schemas, Supabase/in-memory repository, service, and `/api/v1/campaigns/{campaign_id}/art-direction` PUT/GET endpoints. The API validates background mode, fold percentage, metadata dictionaries, UUID paths, campaign existence in configured Supabase mode, and one art-direction record per campaign via upsert. Custom model/persona data is persisted as metadata-only per the Task 21 carry-over. Campaign status is intentionally not mutated in Task 8 because the current Supabase status constraint does not include `art_direction_ready`; generation/status transitions remain owned by later generation tasks. Verified with Task 8 tests and full `pytest -q` (`106 passed, 2 skipped`).
+
+**Goal:** Persist art-direction decisions from the frontend Art stage.
+
+**Expected result:** Campaign has a validated art direction record before generation starts.
+
+**Files:**
+
+- Create: `backend/app/schemas/art_direction.py`
+- Create: `backend/app/db/repositories/art_directions.py`
+- Create: `backend/app/services/banners/art_direction_service.py`
+- Create: `backend/app/api/v1/art_direction.py`
+- Modify: `backend/app/api/v1/router.py`
+- Test: `backend/tests/unit/test_art_direction_service.py`
+- Test: `backend/tests/api/test_art_direction.py`
+
+**Endpoints:**
+
+- `PUT /api/v1/campaigns/{campaign_id}/art-direction`
+- `GET /api/v1/campaigns/{campaign_id}/art-direction`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_art_direction_service.py -v
+pytest tests/api/test_art_direction.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Custom model/persona may be metadata-only.
+- Fix/decision point: Task 21; either implement for demo or label as non-MVP.
+
+---
+
+### Task 9: Implement Gemini text client and connect intake skill without breaking deterministic fallback
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Implemented an import-safe Gemini text client, opt-in `campaign-intake` Gemini provider path via `AIJOLOT_INTAKE_PROVIDER=gemini`, structured Pydantic extraction/JSON fallback, deterministic fallback for tests/dev and provider failures, and synchronous `campaign_store.intake()` wiring that preserves the existing SSE/API contract. Added regression coverage for deterministic default behavior, mocked Gemini success, Gemini-unavailable fallback, stale transcript preservation, noncanonical urgency normalization, empty Gemini strings not erasing current brief fields, and API-level Gemini fallback. Manual live Gemini/ADK credential verification was not run because credentials were not provided. Verified with Task 9 tests and full `pytest -q` (`114 passed, 2 skipped`).
+
+**Goal:** Convert the current deterministic intake seam into a real Gemini/ADK-compatible structured extraction path while keeping deterministic tests stable.
+
+**Expected result:** `campaign-intake` skill can return structured campaign data through Gemini in real mode and deterministic output in tests/fallback mode.
+
+**Files:**
+
+- Modify: `backend/app/agents/tools/gemini_text.py`
+- Modify: `backend/app/agents/skills/campaign-intake/impl.py`
+- Modify: `backend/app/services/campaign_store.py` or route service layer to use the skill behind a feature flag/provider.
+- Modify: `backend/adk_agents/banner_coordinator/agent.py` only if needed.
+- Test: `backend/tests/unit/agents/test_campaign_intake_skill.py`
+- Test: `backend/tests/api/test_intake.py`
+
+**Existing work to reuse:**
+
+- `backend/app/agents/prompts/intake.md`
+- `backend/adk_agents/banner_coordinator/agent.py`
+- deterministic `extract_into()` fallback
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/agents/test_campaign_intake_skill.py -v
+pytest tests/api/test_intake.py -v
+pytest -v
+```
+
+Manual with credentials:
+
+```bash
+cd backend
+. .venv/bin/activate
+export GOOGLE_API_KEY=<redacted>
+adk web --agents_dir adk_agents
+```
+
+**Carry-over bugs/gaps:**
+
+- Only intake needs to be truly wired after this task.
+- Remaining graph nodes are handled in Tasks 10-14.
+
+---
+
+### Task 10: Implement generation run tracking and 5-step frontend progress facade
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added generation run/event schemas, Supabase/in-memory repositories, generation run service, `/api/v1` generation endpoints, and workflow helpers mapping the 12 ADK graph nodes into five frontend progress steps (`intake_context`, `concept`, `image`, `render_audit`, `review_publish`). Task 10 creates deterministic succeeded runs and ordered started/succeeded events for all graph nodes without executing real provider work or mutating campaign status. Supabase-mode compatibility includes explicit event timestamps for deterministic ordering, jsonb summary responses, UUID `started_by` validation, direct run/event campaign-team verification, parent-run same-campaign validation, and stable latest-run tie ordering. Verified with Task 10 tests and full `pytest -q` (`130 passed, 2 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
+**Goal:** Persist generation runs/events and map the scaffolded 12-node graph to frontend-visible progress.
+
+**Expected result:** Frontend can start/poll a generation run and see the 5 visible steps.
+
+**Files:**
+
+- Create: `backend/app/schemas/generation.py`
+- Create: `backend/app/db/repositories/generation_runs.py`
+- Create: `backend/app/db/repositories/generation_events.py`
+- Create: `backend/app/services/banners/generation_run_service.py`
+- Create: `backend/app/api/v1/generation.py`
+- Modify: `backend/app/api/v1/router.py`
+- Modify: `backend/app/workflows/banner_creation.py`
+- Test: `backend/tests/unit/test_generation_run_service.py`
+- Test: `backend/tests/api/test_generation_runs.py`
+
+**Existing work to reuse:**
+
+- `backend/app/agents/graph.py`
+- `backend/app/agents/state.py`
+- `backend/app/workflows/banner_creation.py`
+
+**Endpoints:**
+
+- `POST /api/v1/campaigns/{campaign_id}/generation-runs`
+- `GET /api/v1/campaigns/{campaign_id}/generation-runs/latest`
+- `GET /api/v1/generation-runs/{run_id}`
+- `GET /api/v1/generation-runs/{run_id}/events`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_generation_run_service.py -v
+pytest tests/api/test_generation_runs.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Generation run can still use stubbed/deterministic node outputs after this task.
+- Real node outputs are implemented in Tasks 11-14.
+
+---
+
+### Task 11: Implement brand context, personalization, best-practices/KG, and concept draft skills
+
+**Status:** Completed on 2026-05-30 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Implemented deterministic, directly testable ADK skill functions for brand context loading, personalization variants, static best-practices/KG retrieval, concept drafting, and image prompt refinement. Added `kg_documents` repository adapter for the existing KG table with brand-id and vector validation. Brand loading supports Markdown/file fallback by `brand_id`; personalization always includes a default variant and caps total variants at four; KG retrieval is static/no-network and returns no irrelevant padding; concept drafting enforces prohibited words, required phrase preservation, palette token usage, and prompt-safe dynamic fragments; image prompt refinement produces a single 16:9, 60–120 word paragraph with sanitized dynamic inputs and no forbidden text/logo/UI/face-style terms. Verified with Task 11 tests and full `pytest -q` (`137 passed, 2 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
+**Goal:** Fill the first functional half of the scaffolded ADK graph.
+
+**Expected result:** Given campaign + brand + placement + catalog/art context, the workflow can produce a validated `Concept` and personalization variants.
+
+**Files:**
+
+- Modify: `backend/app/agents/skills/brand-context-load/impl.py`
+- Modify: `backend/app/agents/skills/user-personalization/impl.py`
+- Modify: `backend/app/agents/skills/best-practices-retrieve/impl.py`
+- Modify: `backend/app/agents/skills/banner-concept-draft/impl.py`
+- Modify: `backend/app/agents/skills/image-prompt-refine/impl.py`
+- Modify: `backend/app/agents/tools/kg.py`
+- Modify: `backend/app/agents/tools/brand_fs.py` only if still needed for Markdown fallback.
+- Create: `backend/app/db/repositories/kg_documents.py` if the existing DB schema includes KG tables; otherwise add an additive migration first.
+- Test: `backend/tests/unit/agents/test_context_and_concept_skills.py`
+
+**Do not redo:**
+
+- Do not create a parallel `agents/nodes/load_brand_context.py` unless replacing the skill scaffold intentionally.
+- Use existing skill directories as the implementation home.
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/agents/test_context_and_concept_skills.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- KG retrieval can start with static docs/deterministic retrieval.
+- If embeddings are not ready, Task 21 must either seed embeddings or mark KG as static for demo.
+
+---
+
+### Task 12: Implement image provider, image-generation skill, and usage soft guard
+
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added a typed image provider boundary with deterministic fake PNG provider as the safe default and optional explicit Gemini provider. Updated `nano_banana_image` and `nano-banana-image-generate` to return raw in-memory image bytes plus provider, prompt, usage, and soft-guard metadata for Task 13. Added a generation usage repository adapter and a per-user 15-minute soft guard that warns at the 20th image generation, records in memory for every call, and persists to Supabase only when valid UUID user/team context is available for current schema/RLS. Updated the internal skill contract. Verified with `pytest tests/unit/test_image_provider.py -v`, `pytest tests/unit/test_usage_guard_service.py -v`, and full `pytest -q` (`152 passed, 2 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
+**Goal:** Generate image bytes through a provider boundary and track image usage/cost.
+
+**Expected result:** `nano-banana-image-generate` can call a real or fake provider, and usage warning metadata triggers after 20 image generations per user per 15 minutes.
+
+**Files:**
+
+- Modify: `backend/app/agents/tools/nano_banana_image.py`
+- Modify: `backend/app/agents/skills/nano-banana-image-generate/impl.py`
+- Create: `backend/app/services/gemini/image_provider.py`
+- Create: `backend/app/services/gemini/fake_image_provider.py`
+- Create: `backend/app/db/repositories/generation_usage_events.py`
+- Create: `backend/app/services/banners/usage_guard_service.py`
+- Test: `backend/tests/unit/test_image_provider.py`
+- Test: `backend/tests/unit/test_usage_guard_service.py`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_image_provider.py -v
+pytest tests/unit/test_usage_guard_service.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Raw image bytes may not yet be optimized/uploaded.
+- Fix: Task 13.
+
+---
+
+### Task 13: Implement asset optimization and Supabase Storage upload
+
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added Pillow-based responsive image optimization with WebP/JPEG variants, optional AVIF generation, explicit `avif_skipped` metadata when unavailable, duplicate-small-breakpoint prevention, corrupt-image normalization, input byte/pixel limits, and deterministic reports. Added `BannerAssetService`, Supabase Storage adapter, `banner_assets`/`campaign_revisions` repositories, and updated `image_optim` plus `image-asset-optimize` to return durable asset records when campaign/revision context is supplied or memory locators without storage. Storage object paths are sanitized and include a variant/image asset group key to avoid same-revision collisions. Integration storage test is opt-in/skipped unless Supabase env and `RUN_SUPABASE_STORAGE_TESTS=1` are present. Verified with `pytest tests/unit/test_image_optimizer.py -v`, `pytest tests/unit/test_asset_service.py -v`, `pytest tests/integration/test_storage_uploads.py -v`, and full `pytest -q` (`163 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
+**Goal:** Convert raw generated images into responsive durable assets.
+
+**Expected result:** Optimized WebP/AVIF/JPG assets are stored in Supabase Storage and recorded in `banner_assets`.
+
+**Files:**
+
+- Modify: `backend/app/agents/tools/image_optim.py`
+- Modify: `backend/app/agents/skills/image-asset-optimize/impl.py`
+- Create: `backend/app/services/banners/image_optimizer.py`
+- Create: `backend/app/services/banners/asset_service.py`
+- Create: `backend/app/db/repositories/banner_assets.py`
+- Create: `backend/app/db/repositories/campaign_revisions.py`
+- Modify: `backend/app/services/supabase/client.py`
+- Test: `backend/tests/unit/test_image_optimizer.py`
+- Test: `backend/tests/unit/test_asset_service.py`
+- Test: `backend/tests/integration/test_storage_uploads.py`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_image_optimizer.py -v
+pytest tests/unit/test_asset_service.py -v
+pytest -v
+```
+
+With Supabase running:
+
+```bash
+pytest tests/integration/test_storage_uploads.py -v
+```
+
+**Carry-over bugs/gaps:**
+
+- AVIF may be skipped only if the audit report explicitly says `avif_skipped` and the carry-over ledger is updated.
+- Fix/decision point: Task 21.
+
+---
+
+### Task 14: Implement HTML/Liquid rendering and audit skills
+
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added escaped standalone HTML preview rendering, controlled Shopify OS 2.0 Liquid payload generation, deterministic W3C/schema/mock-manual Lighthouse audit tools, audit report/event repositories, and `/api/v1/campaigns/{campaign_id}/preview` plus `/api/v1/campaigns/{campaign_id}/audit-report` endpoints. Preview/audit endpoints require bearer-token RLS context and do not use service-role reads; preview responses include restrictive CSP. Audit propagates Task 13 `avif_skipped`, maps runtime `warn` safely into current DB status constraints, enriches returned audit rows with findings/schema/human-review metadata, and `run_to_audit` now renders HTML/Liquid and stops at HITL. Full Lighthouse remains mock/manual and labeled accordingly. Verified with `pytest tests/unit/test_html_renderer.py -v`, `pytest tests/unit/test_liquid_payload_builder.py -v`, `pytest tests/unit/agents/test_audit_skill.py -v`, and full `pytest -q` (`173 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
+**Goal:** Produce preview HTML, Shopify Liquid/config payloads, and audit reports.
+
+**Expected result:** The generation workflow can run through audit and stop at human review.
+
+**Files:**
+
+- Modify: `backend/app/agents/tools/html_render.py`
+- Modify: `backend/app/agents/tools/liquid_render.py`
+- Modify: `backend/app/agents/tools/audit_w3c.py`
+- Modify: `backend/app/agents/tools/audit_lighthouse.py`
+- Modify: `backend/app/agents/tools/audit_schema.py`
+- Modify: `backend/app/agents/tools/audit_log.py`
+- Modify: `backend/app/agents/skills/banner-html-seo-render/impl.py`
+- Modify: `backend/app/agents/skills/liquid-section-build/impl.py`
+- Modify: `backend/app/agents/skills/performance-audit/impl.py`
+- Create: `backend/app/services/banners/html_renderer.py`
+- Create: `backend/app/services/shopify/liquid_payload_builder.py`
+- Create: `backend/app/db/repositories/audit_reports.py`
+- Create: `backend/app/db/repositories/audit_events.py`
+- Create: `backend/app/api/v1/previews.py`
+- Test: `backend/tests/unit/test_html_renderer.py`
+- Test: `backend/tests/unit/test_liquid_payload_builder.py`
+- Test: `backend/tests/unit/agents/test_audit_skill.py`
+
+**Endpoints:**
+
+- `GET /api/v1/campaigns/{campaign_id}/preview`
+- `GET /api/v1/campaigns/{campaign_id}/audit-report`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_html_renderer.py -v
+pytest tests/unit/test_liquid_payload_builder.py -v
+pytest tests/unit/agents/test_audit_skill.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Full Lighthouse automation may be deferred only if metrics are labeled mock/manual.
+- Fix/decision point: Task 21.
+
+---
+
+### Task 15: Implement review canvas comments, refinement requests, and approval workflow
+
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added approval/comment/refinement schemas, Supabase-aligned repositories, `ApprovalService`, `CommentService`, and approval API routes for approval requests/state, pinned comments, comment resolution, approvals, change requests, and refinement request capture. The MVP enforces `all_members` approval policy: every assigned reviewer must approve before the campaign transitions to `approved`; duplicate reviewers are rejected, explicit revisions must belong to the campaign, and closed threads reject late approve/change actions. Real endpoints fail closed with 503 until Task 19 request-scoped auth/client wiring; tests use injected fakes and no live Supabase. Refinement requests are stored as queued without regeneration, as planned for Task 16. Verified with `pytest tests/unit/test_approval_service.py -v`, `pytest tests/api/test_approvals.py -v`, and full `pytest -q` (`189 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
+**Goal:** Power the frontend review canvas and all-reviewers approval policy.
+
+**Expected result:** Reviewers can add pinned comments, request changes, resolve comments, and approve. All assigned approvals transition the campaign to `approved`.
+
+**Files:**
+
+- Create: `backend/app/schemas/approvals.py`
+- Create: `backend/app/db/repositories/approval_threads.py`
+- Create: `backend/app/db/repositories/approval_reviewers.py`
+- Create: `backend/app/db/repositories/comments.py`
+- Create: `backend/app/db/repositories/refinement_requests.py`
+- Create: `backend/app/services/approvals/approval_service.py`
+- Create: `backend/app/services/approvals/comment_service.py`
+- Create: `backend/app/api/v1/approvals.py`
+- Modify: `backend/app/api/v1/router.py`
+- Test: `backend/tests/unit/test_approval_service.py`
+- Test: `backend/tests/api/test_approvals.py`
+
+**Endpoints:**
+
+- `POST /api/v1/campaigns/{campaign_id}/approval/request`
+- `GET /api/v1/campaigns/{campaign_id}/approval`
+- `POST /api/v1/approval-threads/{thread_id}/comments`
+- `PATCH /api/v1/comments/{comment_id}/resolve`
+- `POST /api/v1/approval-threads/{thread_id}/approve`
+- `POST /api/v1/approval-threads/{thread_id}/request-changes`
+- `POST /api/v1/campaigns/{campaign_id}/refinement-requests`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_approval_service.py -v
+pytest tests/api/test_approvals.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Refinement requests may initially be stored without regenerating output.
+- Fix: Task 16.
+
+---
+
+### Task 16: Implement regeneration/revision path
+
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added revision/regeneration service, banner layout/variant repositories, revision/variant selection/regeneration schemas, and API routes for selecting a variant, regenerating from a prompt or queued refinement request, and listing campaign revisions. Regeneration creates a new generation run and a new selected campaign revision, preserves old revisions, supersedes the previously selected revision, copies/falls back to deterministic A/B/C layout variants and banner variants, updates queued refinement requests to `succeeded`, and never calls Gemini/Shopify. Prompt text is normalized/length-limited and escaped before any HTML preview marker; new revisions do not reuse old preview storage paths. Revision service fails closed for service-role writes unless explicitly opted into with `AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES=1`; Task 19 still owns request-scoped auth. Verified with `pytest tests/unit/test_revision_service.py -v`, `pytest tests/api/test_regeneration.py -v`, and full `pytest -q` (`199 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`).
+
+**Goal:** Apply requested changes by creating new generation runs/revisions rather than mutating final assets silently.
+
+**Expected result:** A refinement request can trigger regeneration and preserve previous revisions.
+
+**Files:**
+
+- Create: `backend/app/db/repositories/banner_layout_variants.py`
+- Create: `backend/app/db/repositories/banner_variants.py`
+- Create: `backend/app/services/banners/revision_service.py`
+- Modify: `backend/app/workflows/banner_creation.py`
+- Modify: `backend/app/api/v1/generation.py`
+- Test: `backend/tests/unit/test_revision_service.py`
+- Test: `backend/tests/api/test_regeneration.py`
+
+**Endpoints:**
+
+- `POST /api/v1/campaigns/{campaign_id}/variants/{variant_id}/select`
+- `POST /api/v1/campaigns/{campaign_id}/regenerate`
+- `GET /api/v1/campaigns/{campaign_id}/revisions`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_revision_service.py -v
+pytest tests/api/test_regeneration.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- If only one layout variant is fully generated, the demo must say so or use deterministic A/B/C variants.
+- Fix/decision point: Task 21.
+
+---
+
+### Task 17: Implement scheduling and Shopify publishing
+
+**Status:** Completed on 2026-05-31 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added scheduling schemas/repositories/service and `/api/v1/campaigns/{campaign_id}/schedule` create/update/cancel endpoints; scheduling requires approved/scheduled campaigns, validates schedule windows, stores active date config, and is fail-closed behind `AIJOLOT_TRUSTED_DEMO_SERVICE_ROLE_WRITES=1` until Task 19 request-scoped auth. Added injectable Shopify client/theme/metafield/publisher services and `/api/v1/campaigns/{campaign_id}/publish` plus `/unpublish`; publish requires scheduled/published campaigns with a pending/active schedule, uses the scheduled revision, rejects search-result placement with a clear unsupported error, installs controlled Liquid files, merges/removes only the target campaign config in the shop metafield, records publish/unpublish jobs with sequential idempotency protection, and keeps live Shopify credentials fail-closed by default. Added internal skill/tool wiring and Task 17 unit/API tests. Verified with `pytest tests/unit/test_schedule_service.py -v`, `pytest tests/unit/test_shopify_publisher.py -v`, `pytest tests/api/test_schedules.py -v`, `pytest tests/api/test_publishing.py -v`, and full `pytest -q` (`217 passed, 3 skipped`, with two pre-existing Pydantic warnings in `app/agents/state.py`). Review follow-ups: DB idempotency is sequential-safe but not atomic under concurrent duplicate requests; live Shopify publishing still needs request-scoped credential/decryption injection in Task 19/demo wiring; controlled Liquid reads the default `aijolot.banner_campaigns` metafield path.
+
+**Goal:** Schedule approved campaigns and publish campaign config to Shopify through a controlled Liquid section.
+
+**Expected result:** Approved campaigns can be scheduled, theme files can be idempotently installed, campaign config can be published/unpublished, and publish jobs are recorded.
+
+**Files:**
+
+- Create: `backend/app/schemas/schedules.py`
+- Create: `backend/app/db/repositories/schedules.py`
+- Create: `backend/app/db/repositories/scheduled_banners.py`
+- Create: `backend/app/db/repositories/publish_jobs.py`
+- Create: `backend/app/services/banners/schedule_service.py`
+- Modify: `backend/app/agents/skills/schedule-or-publish-route/impl.py`
+- Modify: `backend/app/agents/tools/shopify.py`
+- Modify: `backend/app/agents/skills/shopify-theme-publish/impl.py`
+- Create: `backend/app/services/shopify/client.py`
+- Create: `backend/app/services/shopify/theme_files.py`
+- Create: `backend/app/services/shopify/metafields.py`
+- Create: `backend/app/services/shopify/publisher.py`
+- Create: `backend/app/api/v1/schedules.py`
+- Create: `backend/app/api/v1/publishing.py`
+- Modify: `backend/app/api/v1/router.py`
+- Optional migration: `supabase/migrations/<timestamp>_cron_due_publish.sql`
+- Test: `backend/tests/unit/test_schedule_service.py`
+- Test: `backend/tests/unit/test_shopify_publisher.py`
+- Test: `backend/tests/api/test_schedules.py`
+- Test: `backend/tests/api/test_publishing.py`
+
+**Endpoints:**
+
+- `POST /api/v1/campaigns/{campaign_id}/schedule`
+- `PATCH /api/v1/campaigns/{campaign_id}/schedule`
+- `POST /api/v1/campaigns/{campaign_id}/schedule/cancel`
+- `POST /api/v1/campaigns/{campaign_id}/publish`
+- `POST /api/v1/campaigns/{campaign_id}/unpublish`
+
+**Implementation notes:**
+
+- MVP default: publish active dates in config and let Shopify Liquid show/hide.
+- pg_cron due-publish is optional because local `pg_cron`/`pg_net` exist, but do not require cron for demo unless explicitly chosen.
+- Search-result placement must either publish correctly or return a clear unsupported error.
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_schedule_service.py -v
+pytest tests/unit/test_shopify_publisher.py -v
+pytest tests/api/test_schedules.py -v
+pytest tests/api/test_publishing.py -v
+pytest -v
+```
+
+Manual with Shopify credentials:
+
+- Install/update Liquid files.
+- Publish approved scheduled campaign.
+- Verify target Shopify page displays the banner.
+- Unpublish and verify rollback.
+
+**Carry-over bugs/gaps:**
+
+- No active pg_cron job is acceptable if theme-enforced dates are used.
+- If demo requires automatic due-publish, cron must be implemented here.
+
+---
+
+### Task 18: Integrate current static frontend with backend APIs
+
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added a reusable static frontend API layer in `frontend/lib.jsx` using `window.AIJOLOT_API_BASE || "http://localhost:8000"` and canonical `/api/v1` adapters for campaign patching, placement, art direction, generation, review fallback, scheduling, and publishing. Updated static prototype stages to carry backend campaign state through intake, placement, art, generation, and canvas controls while preserving visible amber fallback notices when the local/no-Supabase backend returns non-UUID prototype campaign ids or when approval/revision context is not available. Brand APIs now use `/api/v1/brands`; placement mapping uses seeded backend store/placement keys/slots/handles and validates against backend placement contracts; schedule/publish backend rejections no longer advance local scheduled/published UI state. Created `docs/architecture/frontend-backend-contract.md` documenting API base, endpoints, adapters, fallback behavior, and manual demo steps. Verified with full backend `pytest -q` (`217 passed, 3 skipped`, with two pre-existing Pydantic warnings), `git diff --check`, JSX/frontend sanity checks, local backend/frontend HTTP smoke checks, browser smoke showing Brand page `BRIDGE CONECTADO`, `/api/v1/placements/validate` checks for representative mapped placements, and final narrow review approval.
+
+**Goal:** Connect the existing prototype to real backend endpoints without doing the full Next.js migration.
+
+**Expected result:** The static frontend can exercise the demo flow against FastAPI.
+
+**Files:**
+
+- Modify: `frontend/lib.jsx`
+- Modify: `frontend/data.jsx` only where API-backed adapters replace static data.
+- Modify relevant frontend stage files only when necessary for API wiring.
+- Create: `docs/architecture/frontend-backend-contract.md`
+- Test/manual: browser flow.
+
+**Implementation notes:**
+
+- Use `window.AIJOLOT_API_BASE` defaulting to `http://localhost:8000`.
+- Preserve mock fallback only if visibly labeled.
+- Prefer `/api/v1` routes for new code.
+- Root compatibility routes can remain only while needed by the prototype.
+
+**Verification:**
+
+Terminal 1:
+
+```bash
+cd backend
+. .venv/bin/activate
+uvicorn app.main:app --reload --port 8000
+```
+
+Terminal 2:
+
+```bash
+python3 -m http.server 5500 --directory frontend
+```
+
+Manual:
+
+- Brand loads/saves.
+- Campaign intake works.
+- Placement saves.
+- Art direction saves.
+- Generation progress displays.
+- Review/approval works.
+- Schedule/publish controls respect backend status.
+
+**Carry-over bugs/gaps:**
+
+- Full Next.js migration remains frontend-owned.
+- Static adapters should be removed during migration, not by backend MVP work.
+
+---
+
+### Task 19: Auth/team context and RLS alignment
+
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added MVP `UserContext` parsing for explicit demo headers and `Bearer demo:<user>:<team>[:store]` tokens, with fail-closed 401 handling and token-safe errors. Canonical `/api/v1` campaign CRUD, intake, brands, stores, art direction, catalog, placement, generation/revision, scheduling, and publishing routes now require request context when using default service-backed paths; root prototype routes remain compatible. Request team context is used to construct Supabase/service-role-backed services for campaign, brand, store/resource, art, catalog, placement, generation/revision, and schedule paths. No-Supabase local fallbacks are partitioned by request team for campaigns and generation runs/events; brand seed fallback is restricted to the demo team and non-demo teams use isolated empty runtime dirs. Publishing remains auth-required and fail-closed until a request-scoped Shopify publisher adapter is injected. Added auth boundary/unit tests for missing/malformed context, token non-leakage, cross-team campaign/run isolation, scoped default service construction, and v1 fail-closed behavior. Verified with focused auth/brand/store tests and full backend `pytest -q` (`243 passed, 3 skipped`, with two pre-existing Pydantic warnings), `git diff --check`, secret/unsafe-code greps, and final narrow review approval.
+
+**Goal:** Add enough user/team scoping for MVP without exposing service role secrets.
+
+**Expected result:** Backend can associate records to a user/team and enforce no cross-team leakage through API responses.
+
+**Files:**
+
+- Create: `backend/app/core/auth.py`
+- Create: `backend/app/services/auth/user_context.py`
+- Modify: `backend/app/api/v1/*.py`
+- Optional migration: `supabase/migrations/<timestamp>_rls_policy_refinement.sql`
+- Test: `backend/tests/unit/test_auth_context.py`
+- Test: `backend/tests/api/test_auth_boundaries.py`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_auth_context.py -v
+pytest tests/api/test_auth_boundaries.py -v
+pytest -v
+cd ..
+supabase db reset
+```
+
+**Carry-over bugs/gaps:**
+
+- Fully polished login UX is frontend-owned.
+- No backend leakage of service role keys or cross-team data is allowed.
+
+---
+
+### Task 20: Performance/evolutionary memory API
+
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added schema-backed performance/evolutionary memory API under `/api/v1`: `GET /campaigns/{campaign_id}/performance`, `POST /campaigns/{campaign_id}/performance/snapshots`, and `POST /campaigns/{campaign_id}/optimization-proposals`. Responses carry explicit provenance (`live_analytics`, data source labels, and non-live metrics notes) so MVP manual/mock/seed/agent data is not presented as live analytics. Added Supabase repository wrappers for performance snapshots, optimization insights, and optimization proposals; added a Task 20 migration so non-live snapshot sources (`mock`, `seed`, `agent`) align with existing DB constraints. The service validates request team ownership through campaign lookup, validates revision IDs belong to the same campaign before writes, derives bounded rates, rejects inconsistent counts, and keeps no-Supabase fallback repositories team-isolated. Verified with focused performance unit/API tests and full backend `pytest -q` (`254 passed, 3 skipped`, with two pre-existing Pydantic warnings), `git diff --check`, secret/unsafe-code greps, and final narrow review approval.
+
+**Goal:** Power the prototype's performance screen with schema-backed mock/manual metrics.
+
+**Expected result:** Performance snapshots, optimization insights, and proposed V2 campaigns can be displayed without claiming live analytics.
+
+**Files:**
+
+- Create: `backend/app/schemas/performance.py`
+- Create: `backend/app/db/repositories/performance_snapshots.py`
+- Create: `backend/app/db/repositories/optimization_insights.py`
+- Create: `backend/app/db/repositories/optimization_proposals.py`
+- Create: `backend/app/services/banners/performance_service.py`
+- Create: `backend/app/api/v1/performance.py`
+- Modify: `backend/app/api/v1/router.py`
+- Test: `backend/tests/unit/test_performance_service.py`
+- Test: `backend/tests/api/test_performance.py`
+
+**Verification:**
+
+```bash
+cd backend
+pytest tests/unit/test_performance_service.py -v
+pytest tests/api/test_performance.py -v
+pytest -v
+```
+
+**Carry-over bugs/gaps:**
+
+- Live Shopify/analytics ingestion is non-MVP unless the team changes scope.
+
+---
+
+### Task 21: Demo hardening and carry-over gap closure
+
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Added a constrained demo script, three demo scenarios, an idempotent local/Supabase-aware reset script, and an offline deterministic smoke script that exercises `/api/v1` with demo auth headers via FastAPI TestClient. The chosen demo path is explicitly locked to seeded resources and deterministic fallback unless real provider credentials are deliberately enabled. Demo constraints are now documented: PDF/Figma/brandbook partial/mock only, live Shopify resource sync seeded-locked unless explicitly run, custom model/persona non-MVP, AVIF audit-labeled skipped when unavailable, Lighthouse mock/manual only, A/B/C deterministic/demo-labeled variants, and static deterministic KG retrieval for smoke. Verified with `supabase db reset`, `pytest -v` (`257 passed, 3 skipped`), and `python3 scripts/smoke-demo-flow.py` twice.
+
+**Goal:** Remove or explicitly constrain every gap that could break the hackathon demo.
+
+**Expected result:** The chosen demo path can run twice after reset with real providers or deterministic fallback.
+
+**Files:**
+
+- Create: `docs/demo-script.md`
+- Create: `demo/scenarios/avocado-black-friday.md`
+- Create: `demo/scenarios/onboarding-scheduled.md`
+- Create: `demo/scenarios/apparel-vip-product-launch.md`
+- Create: `scripts/reset-demo-data.sh` or `scripts/reset-demo-data.py`
+- Create: `scripts/smoke-demo-flow.py`
+- Modify: `supabase/seed.sql` if needed.
+- Modify: this plan if any gap changes.
+
+**Must decide/fix here:**
+
+- PDF/Figma/brandbook import: real extraction or clearly labeled partial/mock.
+- Live Shopify resource sync: real sync or demo locked to seeded resources.
+- Custom model/persona: real support or explicitly non-MVP.
+- AVIF: enabled or audit-labeled skipped.
+- Lighthouse: real automation or labeled mock/manual metrics.
+- A/B/C layout variants: real generated variants or deterministic/demo-labeled variants.
+- KG retrieval: embeddings or static deterministic retrieval.
+
+**Verification:**
+
+```bash
+supabase db reset
+cd backend
+pytest -v
+cd ..
+python3 scripts/smoke-demo-flow.py
+```
+
+Manual:
+
+- Run complete demo flow twice.
+- Verify Shopify publish/unpublish if credentials are available.
+
+**Carry-over bugs/gaps:** none allowed for the chosen demo path.
+
+---
+
+### Task 22: Documentation cleanup and handoff
+
+**Status:** Completed on 2026-06-01 in branch `feature/backend-mvp-implementation`.
+
+**Completion note:** Updated README, API contract, frontend-backend contract, and project-structure docs to match the implemented backend/static-frontend state: canonical `/api/v1` with demo auth context for callers, root unauthenticated compatibility routes, deterministic offline smoke path, seeded placement/resource fixtures, Supabase migration/seed reality, static React frontend/no Next.js migration, fail-closed Shopify publishing, current approval-service availability caveat, and explicit non-live/manual labels for performance/Lighthouse/Shopify sync/PDF-Figma/custom persona/AVIF/A-B-C/KG constraints. Verification performed for docs plus backend test/smoke/Supabase commands; exact results must be reported in handoff. Manual browser/API-doc/demo checks are only complete if explicitly run by the operator.
+
+**Goal:** Keep docs accurate after implementation.
+
+**Expected result:** README, API docs, frontend contract, and this plan match real behavior.
+
+**Files:**
+
+- Modify: `README.md`
+- Modify: `docs/architecture/api-contract.md`
+- Modify: `docs/architecture/frontend-backend-contract.md`
+- Modify: `docs/architecture/project-structure.md`
+- Modify: `docs/plans/2026-05-28-banner-creator-mvp.md`
+
+**Verification:**
+
+```bash
+git status --short
+cd backend
+pytest -v
+cd ..
+supabase db reset
+```
+
+Manual:
+
+- Follow README from fresh setup.
+- Open backend API docs.
+- Open static frontend.
+- Complete documented demo path.
+
+**Carry-over bugs/gaps:** none in docs. If a feature is incomplete, docs must say so.
+
+---
+
+## 6. API Surface Summary
+
+Canonical target API base:
+
+```text
+/api/v1
+```
+
+Temporary root-level routes currently exist for prototype compatibility:
+
+- `GET /brands`
+- `POST /brands/import`
+- `GET /brands/{brand_id}`
+- `PUT /brands/{brand_id}`
+- `POST /campaigns`
+- `GET /campaigns`
+- `POST /campaigns/intake`
+- `GET /campaigns/{campaign_id}`
+- `PATCH /campaigns/{campaign_id}`
+
+New implementation should prefer `/api/v1`. Canonical `/api/v1` callers should send demo auth context through explicit demo headers or bearer format `Bearer demo:<user_id>:<team_id>[:<store_id>]`. Most protected v1 routes return 401 without context; approval/comment/refinement routes may currently return 503 first when their backing service is unavailable.
+
+Implemented canonical endpoints:
+
+- `GET /health`
+- `GET /api/v1/brands`
+- `GET /api/v1/brands/{brand_id}`
+- `PUT /api/v1/brands/{brand_id}`
+- `POST /api/v1/brands/import`
+- `GET /api/v1/stores`
+- `GET /api/v1/stores/{store_id}`
+- `GET /api/v1/stores/{store_id}/shopify/resources`
+- `GET /api/v1/stores/{store_id}/placement-types`
+- `GET /api/v1/stores/{store_id}/placement-types/{placement_type_key}/targets`
+- `POST /api/v1/placements/validate`
+- `POST /api/v1/campaigns`
+- `GET /api/v1/campaigns`
+- `GET /api/v1/campaigns/{campaign_id}`
+- `PATCH /api/v1/campaigns/{campaign_id}`
+- `POST /api/v1/campaigns/intake`
+- `POST /api/v1/campaigns/{campaign_id}/placement`
+- `GET /api/v1/campaigns/{campaign_id}/placement`
+- `POST /api/v1/campaigns/{campaign_id}/catalog-snapshot`
+- `GET /api/v1/campaigns/{campaign_id}/catalog-snapshot`
+- `PUT /api/v1/campaigns/{campaign_id}/art-direction`
+- `GET /api/v1/campaigns/{campaign_id}/art-direction`
+- `POST /api/v1/campaigns/{campaign_id}/generation-runs`
+- `GET /api/v1/campaigns/{campaign_id}/generation-runs/latest`
+- `GET /api/v1/generation-runs/{run_id}`
+- `GET /api/v1/generation-runs/{run_id}/events`
+- `GET /api/v1/campaigns/{campaign_id}/preview`
+- `GET /api/v1/campaigns/{campaign_id}/audit-report`
+- `POST /api/v1/campaigns/{campaign_id}/approval/request`
+- `GET /api/v1/campaigns/{campaign_id}/approval`
+- `POST /api/v1/approval-threads/{thread_id}/comments`
+- `PATCH /api/v1/comments/{comment_id}/resolve`
+- `POST /api/v1/approval-threads/{thread_id}/approve`
+- `POST /api/v1/approval-threads/{thread_id}/request-changes`
+- `POST /api/v1/campaigns/{campaign_id}/refinement-requests`
+- `POST /api/v1/campaigns/{campaign_id}/variants/{variant_id}/select`
+- `POST /api/v1/campaigns/{campaign_id}/regenerate`
+- `GET /api/v1/campaigns/{campaign_id}/revisions`
+- `POST /api/v1/campaigns/{campaign_id}/schedule`
+- `PATCH /api/v1/campaigns/{campaign_id}/schedule`
+- `POST /api/v1/campaigns/{campaign_id}/schedule/cancel`
+- `POST /api/v1/campaigns/{campaign_id}/publish`
+- `POST /api/v1/campaigns/{campaign_id}/unpublish`
+- `GET /api/v1/campaigns/{campaign_id}/performance`
+- `POST /api/v1/campaigns/{campaign_id}/performance/snapshots`
+- `POST /api/v1/campaigns/{campaign_id}/optimization-proposals`
+
+---
+
+## 7. Verification Gates
+
+### Per task
+
+```bash
+cd backend
+. .venv/bin/activate
+pytest -v
+```
+
+If a task touches Supabase schema/seed:
+
+```bash
+cd ..
+supabase db reset
+```
+
+If a task touches frontend integration:
+
+```bash
+python3 -m http.server 5500 --directory frontend
+```
+
+### Before demo
+
+```bash
+supabase db reset
+cd backend
+. .venv/bin/activate
+pytest -v
+cd ..
+python3 scripts/smoke-demo-flow.py
+```
+
+Manual demo checklist:
+
+- Backend starts.
+- Static frontend opens.
+- Brand context loads.
+- Campaign intake works.
+- Campaign persists across backend restart.
+- Placement saves.
+- Catalog snapshot saves.
+- Art direction saves.
+- Generation run reaches audit/HITL.
+- Preview loads.
+- Pinned comments work.
+- All-reviewer approval unlocks scheduling.
+- Schedule saves.
+- Publish succeeds or deterministic fallback is explicitly labeled.
+- Shopify storefront shows banner in selected placement if credentials are available.
+- Unpublish/rollback works if publishing is demonstrated.
+
+---
+
+## 8. Carry-Over Bug/Gaps Ledger
+
+Task 22 documentation has no hidden carry-over. Remaining limitations are documented constraints, not undocumented bugs:
+
+| Constraint | Current documented behavior |
+| --- | --- |
+| Root compatibility routes still exist | Kept intentionally for prototype compatibility; `/api/v1` is canonical. |
+| Static frontend adapters still exist | Accepted until future frontend-owned Next.js/Tailwind migration. |
+| Deterministic/fake providers are used by default for smoke/tests | Real Gemini/image providers are opt-in and must be explicitly configured. |
+| Live Shopify resource sync | Non-MVP/manual; demo path uses seeded resource cache. |
+| Live analytics ingestion | Non-MVP/manual; performance data is manual/mock/seed/agent unless labeled live. |
+| PDF/Figma/brandbook extraction | Partial/mock outside Markdown import and not part of the smoke path. |
+| Custom model/persona | Metadata-only/non-MVP for the hackathon demo. |
+| AVIF | Optional; skipped must be audit-labeled when unavailable. |
+| Lighthouse | Mock/manual unless manually run and labeled. |
+| A/B/C variants | Deterministic/demo-labeled in smoke; not live model exploration. |
+| KG retrieval | Static deterministic retrieval is enough for smoke; embeddings/vector RAG are not required for chosen demo path. |
+| pg_cron due-publish | Not required for MVP demo because scheduling is theme/date-config enforced. |
+
+---
+
+## 9. Handoff Next Steps
+
+1. Do not commit from this task unless the parent agent explicitly requests it.
+2. Review `git diff` for the five documentation files changed by Task 22.
+3. Re-run verification in the target environment before demo handoff:
+   - `cd backend && pytest -v`
+   - `cd .. && python3 scripts/smoke-demo-flow.py`
+   - `supabase db reset` when Docker/Supabase CLI are available
+4. For browser rehearsal, start backend and static frontend, open `http://localhost:8000/docs` and `http://localhost:5500`, and report exactly which manual checks were actually performed.
+5. For any real-provider demo, follow `docs/demo-script.md` and never print or commit secrets.

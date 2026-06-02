@@ -1,21 +1,26 @@
-"""Campaign intake store + rule-based brief extractor (GH-27).
+"""Campaign intake service facade + rule-based brief extractor.
 
-In-memory campaign store (mirrors the ``campaigns`` / ``campaign_messages``
-tables) plus a deterministic, rule-based "intake agent" that extracts a
-StructuredBrief from free text. This is the seam where a real Gemini Flash call
-plugs in later — :func:`extract_into` would be replaced by a model call, the
-rest of the plumbing (store, messages, SSE) stays the same.
+Runtime storage is Supabase-backed when the required Supabase/team/store
+settings are configured. In local tests/dev with no Supabase configuration, the
+service falls back to an in-memory store while preserving the existing SSE
+contract and deterministic extraction seam.
 """
 
 from __future__ import annotations
 
-import itertools
+import asyncio
+import importlib.util
+import os
 import re
+from pathlib import Path
+from typing import Any
 
-from app.schemas.campaign import Campaign, CampaignMessage, StructuredBrief
-
-_campaigns: dict[str, Campaign] = {}
-_ids = itertools.count(1)
+from app.core.auth import UserContext
+from app.core.settings import MissingSettingsError, Settings
+from app.schemas.campaign import Campaign, StructuredBrief
+from app.services.banners.campaign_service import CampaignNotEditable, CampaignService
+from app.services.banners.status_machine import can_patch_brief
+from app.services.supabase.client import SupabaseClientFactory
 
 FIELD_LABELS_ES = {
     "goal": "objetivo de la campaña",
@@ -144,44 +149,209 @@ def _agent_reply(brief: StructuredBrief) -> str:
     return f"{pre}Para cerrar el brief me falta: {need}. ¿Me lo confirmas?"
 
 
-# ---- store ----
-def create_campaign() -> Campaign:
-    cid = f"cmp_{next(_ids):04d}"
-    c = Campaign(id=cid)
-    _campaigns[cid] = c
-    return c
+# ---- store/service facade ----
+_service: CampaignService | None = None
+_context_services: dict[tuple[str, str | None], CampaignService] = {}
+_campaign_intake_skill: Any | None = None
+
+
+def _gemini_intake_enabled() -> bool:
+    return os.getenv("AIJOLOT_INTAKE_PROVIDER", "").strip().lower() == "gemini"
+
+
+def _load_campaign_intake_skill() -> Any:
+    """Load the hyphenated skill package implementation by path."""
+
+    global _campaign_intake_skill
+    if _campaign_intake_skill is not None:
+        return _campaign_intake_skill
+    path = Path(__file__).resolve().parents[1] / "agents" / "skills" / "campaign-intake" / "impl.py"
+    spec = importlib.util.spec_from_file_location("app.agents.skills.campaign_intake_impl", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("campaign-intake skill could not be loaded")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _campaign_intake_skill = module
+    return module
+
+
+def _run_campaign_intake_skill_sync(
+    *,
+    messages: list[dict[str, Any]],
+    current_brief: StructuredBrief,
+    brand_context: Any = None,
+) -> Any | None:
+    """Run the async intake skill only when this sync facade owns the loop.
+
+    Async callers should call the skill's async ``run`` function directly. This
+    sync facade returns ``None`` when a loop is already running so callers fall
+    back deterministically instead of attempting unsafe nested event loops.
+    """
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        module = _load_campaign_intake_skill()
+        return asyncio.run(module.run(messages, brand_context=brand_context, current_brief=current_brief))
+    return None
+
+
+def _configured_service() -> CampaignService:
+    settings = Settings.from_env()
+    has_supabase_signal = any(
+        (
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+            settings.supabase_team_id,
+            settings.supabase_store_id,
+        )
+    )
+    has_supabase = settings.supabase_url is not None and settings.supabase_service_role_key is not None
+    team_id = settings.supabase_team_id
+    store_id = settings.supabase_store_id or os.getenv("CAMPAIGN_STORE_ID")
+    if not has_supabase_signal:
+        return CampaignService()
+    if not has_supabase:
+        raise MissingSettingsError(("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"))
+    if not team_id:
+        raise MissingSettingsError(("SUPABASE_TEAM_ID",))
+
+    client = SupabaseClientFactory(settings).service_role_client()
+    if not store_id:
+        from app.db.repositories.campaigns import CampaignRepository
+
+        store_id = CampaignRepository(client).first_store_id(team_id=team_id)
+    if not store_id:
+        raise MissingSettingsError(("SUPABASE_STORE_ID",))
+    return CampaignService.from_supabase_client(client, team_id=team_id, store_id=store_id)
+
+
+def _configured_service_for_context(context: UserContext) -> CampaignService:
+    settings = Settings.from_env()
+    has_supabase_signal = any(
+        (
+            settings.supabase_url,
+            settings.supabase_service_role_key,
+            settings.supabase_team_id,
+            settings.supabase_store_id,
+        )
+    )
+    if not has_supabase_signal:
+        key = (context.team_id, context.store_id)
+        if key not in _context_services:
+            _context_services[key] = CampaignService(team_id=context.team_id, store_id=context.store_id)
+        return _context_services[key]
+    if settings.supabase_url is None or settings.supabase_service_role_key is None:
+        raise MissingSettingsError(("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"))
+    client = SupabaseClientFactory(settings).service_role_client()
+    store_id = context.store_id or settings.supabase_store_id or os.getenv("CAMPAIGN_STORE_ID")
+    if not store_id:
+        from app.db.repositories.campaigns import CampaignRepository
+
+        store_id = CampaignRepository(client).first_store_id(team_id=context.team_id)
+    if not store_id:
+        raise MissingSettingsError(("SUPABASE_STORE_ID",))
+    return CampaignService.from_supabase_client(client, team_id=context.team_id, store_id=store_id)
+
+
+def get_service() -> CampaignService:
+    global _service
+    if _service is None:
+        _service = _configured_service()
+    return _service
+
+
+def get_service_for_context(context: UserContext) -> CampaignService:
+    return _configured_service_for_context(context)
+
+
+def set_service(service: CampaignService | None) -> None:
+    """Override the runtime service in tests; pass None to rebuild from env."""
+
+    global _service
+    _service = service
+    _context_services.clear()
+
+
+def list_campaigns(limit: int = 100) -> list[Campaign]:
+    return get_service().list_campaigns(limit=limit)
+
+
+def create_campaign(title: str = "", raw_brief: str = "") -> Campaign:
+    return get_service().create_campaign(title=title, raw_brief=raw_brief)
 
 
 def get_campaign(cid: str) -> Campaign | None:
-    return _campaigns.get(cid)
+    return get_service().get_campaign(cid)
 
 
 def apply_patch(cid: str, fields: dict) -> Campaign | None:
     """Apply a partial brief update (GH-28). Returns None if campaign unknown."""
-    c = _campaigns.get(cid)
-    if not c:
-        return None
-    brief = c.structured_brief.model_dump()
-    for k in ("goal", "audience", "cta", "tone", "urgency", "placement", "deadline"):
-        if k in fields and fields[k] is not None:
-            brief[k] = fields[k]
-    c.structured_brief = StructuredBrief(**brief)
-    if fields.get("title"):
-        c.title = fields["title"]
-    _campaigns[c.id] = c
-    return c
+
+    return get_service().apply_patch(cid, fields)
+
+
+def _intake_with_service(service: CampaignService, message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+    """Process one user turn using the supplied service."""
+
+    if _gemini_intake_enabled():
+        existing = service.get_campaign(campaign_id) if campaign_id else None
+        if existing is not None and not can_patch_brief(existing.status):
+            # Let the service raise the canonical CampaignNotEditable exception.
+            return service.intake(
+                message,
+                campaign_id,
+                extractor=extract_into,
+                title_builder=_title,
+                reply_builder=_agent_reply,
+            )
+        transcript = [m.model_dump() for m in (existing.messages if existing else [])]
+        transcript.append({"author_type": "user", "body": message})
+        skill_brief: StructuredBrief | None = None
+        skill_question: str | None = None
+        try:
+            result = _run_campaign_intake_skill_sync(
+                messages=transcript,
+                current_brief=existing.structured_brief if existing else StructuredBrief(),
+            )
+            if result is not None:
+                skill_brief = result.structured_brief
+                skill_question = result.question
+        except CampaignNotEditable:
+            raise
+        except Exception:
+            pass
+        if skill_brief is not None:
+            def skill_extractor(_brief: StructuredBrief, _message: str) -> StructuredBrief:
+                return skill_brief
+
+            def skill_reply_builder(brief: StructuredBrief) -> str:
+                return skill_question or _agent_reply(brief)
+
+            return service.intake(
+                message,
+                campaign_id,
+                extractor=skill_extractor,
+                title_builder=_title,
+                reply_builder=skill_reply_builder,
+            )
+
+    return service.intake(
+        message,
+        campaign_id,
+        extractor=extract_into,
+        title_builder=_title,
+        reply_builder=_agent_reply,
+    )
 
 
 def intake(message: str, campaign_id: str | None) -> tuple[Campaign, str]:
     """Process one user turn. Returns (campaign, agent_reply_text)."""
-    c = (_campaigns.get(campaign_id) if campaign_id else None) or create_campaign()
-    c.messages.append(CampaignMessage(author_type="user", body=message))
-    if not c.raw_brief:
-        c.raw_brief = message
-    c.structured_brief = extract_into(c.structured_brief, message)
-    if not c.title:
-        c.title = _title(c.structured_brief, message)
-    reply = _agent_reply(c.structured_brief)
-    c.messages.append(CampaignMessage(author_type="agent", body=reply))
-    _campaigns[c.id] = c
-    return c, reply
+
+    return _intake_with_service(get_service(), message, campaign_id)
+
+
+def intake_for_context(context: UserContext, message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+    """Process one user turn with a request-scoped campaign service."""
+
+    return _intake_with_service(get_service_for_context(context), message, campaign_id)

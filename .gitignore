@@ -29,9 +29,11 @@ pnpm-debug.log*
 .idea/
 .vscode/
 
-# Generated media
+# Generated media and local demo runtime artifacts
 storage/
 tmp/
+demo/.runtime/
+.aijolot-demo-smoke.json
 
 # Python packaging
 *.egg-info/

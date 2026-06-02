@@ -270,30 +270,25 @@ const BRAND_SEEDS = [
   },
 ];
 
-// Bridge client (GH-17). Falls back to in-memory seeds when the bridge is down,
-// so BrandContext stays usable offline (per GH-17 fallback principle).
-const API_BASE = window.AIJOLOT_API_BASE || "http://localhost:8000";
+// Brand adapter. Uses canonical /api/v1 routes and visibly falls back to
+// in-memory seeds only when the local backend is unreachable.
+const API_BASE = window.API_BASE || window.AIJOLOT_API_BASE || "http://localhost:8000";
 const _clone = (o) => JSON.parse(JSON.stringify(o));
 const _mem = _clone(BRAND_SEEDS);
 
 const BrandAPI = {
-  online: null, // null = unknown, true = bridge reachable, false = fallback
-  async _json(path, opts) {
-    const r = await fetch(API_BASE + path, opts);
-    if (!r.ok) { const e = new Error("HTTP " + r.status); e.status = r.status; e.body = await r.text().catch(() => ""); throw e; }
-    return r.json();
-  },
+  online: null, // null = unknown, true = backend reachable, false = labeled fallback
   async list() {
-    try { const d = await this._json("/brands"); this.online = true; return d; }
+    try { const d = await AijolotApi.get(AijolotApi.v1("/brands")); this.online = true; return d; }
     catch (e) { if (e.status) throw e; this.online = false; return _mem.map((b) => ({ id: b.id, name: b.name, palette: b.palette })); }
   },
   async get(id) {
-    try { const d = await this._json("/brands/" + id); this.online = true; return d; }
+    try { const d = await AijolotApi.get(AijolotApi.v1("/brands/" + id)); this.online = true; return d; }
     catch (e) { if (e.status) throw e; this.online = false; const b = _mem.find((x) => x.id === id); if (!b) throw new Error("not found: " + id); return _clone(b); }
   },
   async put(id, brand) {
     try {
-      const d = await this._json("/brands/" + id, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(brand) });
+      const d = await AijolotApi.put(AijolotApi.v1("/brands/" + id), brand);
       this.online = true; return d;
     } catch (e) {
       if (e.status) throw e; // real validation/server error — surface it

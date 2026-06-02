@@ -1,14 +1,19 @@
-"""ADK Tool: Shopify Liquid Section render with conditional variants.
-
-Lands in GH-15. Generates `sections/banner-{slug}.liquid` with `customer.tags`
-case blocks + a `banner-block.liquid` snippet per variant.
-"""
+"""ADK Tool: Shopify Liquid Section render with conditional variants."""
 
 from __future__ import annotations
 
-from app.agents.state import Concept, Variant
+from typing import Any
+
+from app.agents.state import BannerAssets, Concept, Variant
+from app.services.shopify.liquid_payload_builder import build_liquid_payload
 
 
-async def render(concept: Concept, variants: list[Variant], *, brand) -> dict[str, str]:
-    """Return {'section': '<liquid>', 'block_snippet': '<liquid>'}."""
-    raise NotImplementedError("Lands in services/banners/liquid_renderer.py + GH-15.")
+async def render(
+    concept: Concept,
+    variants: list[Variant],
+    *,
+    brand,
+    assets: BannerAssets | None = None,
+    placement: str | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return build_liquid_payload(concept, variants, brand=brand, assets=assets, placement=placement).as_dict()
