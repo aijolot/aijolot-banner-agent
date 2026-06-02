@@ -1,7 +1,8 @@
 /* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, Banner,
-   ApprovalPanel, CommentsPanel, SEGMENTS, SEGMENT_ORDER, VARIANTS, COMMENTS_SEED, APPROVERS_SEED, ReviewApi */
+   ApprovalPanel, CommentsPanel, SEGMENTS, SEGMENT_ORDER, VARIANTS, COMMENTS_SEED, APPROVERS_SEED,
+   ReviewApi, GenerationApi, errorText, layoutCells, BannerLayout, UUID_RE, AIJOLOT_DEMO_IDS */
 // Aijolot Banner Agent — Stage 3: collaborative canvas (Modules 4, 6, 7).
-const { useState: useStateCV, useRef: useRefCV } = React;
+const { useState: useStateCV, useRef: useRefCV, useEffect: useEffectCV } = React;
 
 const DEVICES = [
   { id: "desktop", icon: "monitor", w: "100%", label: "1440px" },
@@ -27,6 +28,42 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const [published, setPublished] = useStateCV(false);
   const [scheduled, setScheduled] = useStateCV(false);
   const stageRef = useRefCV(null);
+  // Backend revision/thread context resolved on mount (fail-closed if absent).
+  const [revision, setRevision] = useStateCV(null);
+  const [layoutVariantIds, setLayoutVariantIds] = useStateCV({}); // { A,B,C -> variant uuid }
+  const [segmentVariantIds, setSegmentVariantIds] = useStateCV({}); // { segment_key -> variant uuid }
+  const [threadId, setThreadId] = useStateCV(null);
+  const backendLoaded = useRefCV(false);
+
+  useEffectCV(() => {
+    if (backendLoaded.current || typeof GenerationApi === "undefined") return;
+    let alive = true;
+    (async () => {
+      try {
+        const rev = await GenerationApi.latestRevision(campaign);
+        if (!alive) return;
+        if (!rev.fallback && rev.data) {
+          backendLoaded.current = true;
+          setRevision(rev.data);
+          const lmap = {};
+          (rev.data.layout_variants || []).forEach((lv) => { if (lv.key) lmap[lv.key] = lv.id; });
+          setLayoutVariantIds(lmap);
+          const smap = {};
+          (rev.data.variants || []).forEach((v) => { if (v.segment_key) smap[v.segment_key] = v.id; });
+          setSegmentVariantIds(smap);
+          const th = await ReviewApi.ensureThread(campaign, rev.data.id);
+          if (!alive) return;
+          if (!th.fallback && th.data) setThreadId(th.data.id);
+          else onNotice && onNotice({ tone: "amber", text: th.reason || "Aprobación backend no disponible; controles locales." });
+        } else {
+          onNotice && onNotice({ tone: "amber", text: rev.reason || "Sin revisiones backend; lienzo en modo prototipo local." });
+        }
+      } catch (e) {
+        if (alive) onNotice && onNotice({ tone: "amber", text: "Lienzo sin backend: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) });
+      }
+    })();
+    return () => { alive = false; };
+  }, [campaign && campaign.id]);
 
   const seg = SEGMENTS[segId];
   const approvedCount = approvers.filter((a) => a.status === "approved").length;
@@ -41,14 +78,34 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
 
   async function setApprover(id, status) {
     setApprovers((arr) => arr.map((a) => a.id === id ? { ...a, status, note: status === "approved" ? "Aprobado." : "Solicita ajustes." } : a));
-    try {
-      const r = await ReviewApi.approveLocal(campaign, id, status);
-      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Aprobación guardada en backend" });
-    } catch (e) {
-      onNotice && onNotice({ tone: "amber", text: "No se pudo sincronizar aprobación: " + (e.message || e.status || "error") });
+    const r = status === "approved"
+      ? await ReviewApi.approve(threadId)
+      : await ReviewApi.requestChangesThread(threadId, "Solicita ajustes.");
+    onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: status === "approved" ? "Aprobación registrada en backend" : "Cambios solicitados en backend" });
+  }
+  // Backend variant selection: local tab switch always happens; if a real
+  // variant uuid resolves, persist the choice. Fail-closed otherwise.
+  async function selectLayoutVariant(key) {
+    setVariant(key);
+    const variantId = layoutVariantIds[key];
+    if (!variantId) return;
+    const r = await GenerationApi.selectVariant(campaign, variantId);
+    onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: `Variante ${key} seleccionada en backend` });
+  }
+  async function selectSegment(id) {
+    setSegId(id);
+    const variantId = segmentVariantIds[id];
+    if (!variantId) return;
+    const r = await GenerationApi.selectVariant(campaign, variantId);
+    onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: `Segmento ${id} seleccionado en backend` });
+  }
+  async function resolveComment(id) {
+    setComments((arr) => arr.map((c) => c.id === id ? { ...c, resolved: true } : c));
+    if (UUID_RE.test(id || "")) {
+      const r = await ReviewApi.resolveCommentSafe(id);
+      if (r.fallback) onNotice && onNotice({ tone: "amber", text: r.reason });
     }
   }
-  function resolveComment(id) { setComments((arr) => arr.map((c) => c.id === id ? { ...c, resolved: true } : c)); }
 
   function addComment(e) {
     if (!commentMode || !stageRef.current) return;
@@ -60,9 +117,22 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     setEditingId(id);
     setCommentMode(false);
   }
-  function saveDraft(id, text) {
+  async function saveDraft(id, text) {
+    const pin = comments.find((c) => c.id === id);
     setComments((arr) => arr.map((c) => c.id === id ? { ...c, text, _new: false } : c));
     setEditingId(null);
+    const r = await ReviewApi.addComment(threadId, {
+      author_id: AIJOLOT_DEMO_IDS.user,
+      body: text,
+      pin_x: pin ? pin.x : null,
+      pin_y: pin ? pin.y : null,
+      device_key: device,
+    });
+    if (r.fallback) onNotice && onNotice({ tone: "amber", text: r.reason });
+    else {
+      onNotice && onNotice({ tone: "green", text: "Comentario guardado en backend" });
+      if (r.data && r.data.id) setComments((arr) => arr.map((c) => c.id === id ? { ...c, id: r.data.id } : c));
+    }
   }
   function cancelDraft(id) {
     setComments((arr) => arr.filter((c) => !(c.id === id && c._new)));
@@ -74,7 +144,11 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     const t = text.toLowerCase();
     setRefining(true);
     setRefineInput("");
-    setTimeout(() => {
+    // Fire the backend regeneration in parallel with the local visual feedback,
+    // so the canvas stays responsive but the notice reflects backend truth.
+    const backend = GenerationApi.regenerate(campaign, { prompt: text, source_revision_id: revision && revision.id, requested_by: AIJOLOT_DEMO_IDS.user })
+      .catch((e) => ({ ok: true, fallback: true, reason: "Backend no aceptó el refinamiento (" + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) + ").", data: null }));
+    setTimeout(async () => {
       const next = { ...applied };
       const acks = [];
       if (/bril|luz|clar|ilumin/.test(t)) { next.brighter = true; acks.push("subí el brillo del fondo"); }
@@ -87,7 +161,17 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
         if (!c.resolved && ((/bril|luz/.test(t) && /bril|luz/.test(ct)) || (/bot|cta|contrast|resalt/.test(t) && /bot|cta|contrast|resalt/.test(ct)))) return { ...c, resolved: true };
         return c;
       }));
-      setRefineMsg(acks.length ? "Listo: " + acks.join(" y ") + "." : "Apliqué el ajuste y recompilé el banner.");
+      const base = acks.length ? "Listo: " + acks.join(" y ") + "." : "Apliqué el ajuste y recompilé el banner.";
+      const r = await backend;
+      if (r && !r.fallback) {
+        setRefineMsg(base);
+        onNotice && onNotice({ tone: "green", text: "Refinamiento enviado al backend" });
+        const rev = await GenerationApi.latestRevision(campaign);
+        if (rev && !rev.fallback && rev.data) setRevision(rev.data);
+      } else {
+        setRefineMsg(base + " (local, sin backend)");
+        onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "Refinamiento aplicado solo localmente." });
+      }
       setRefining(false);
     }, 1500);
   }
@@ -96,8 +180,12 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     let canAdvance = false;
     try {
       const r = await ReviewApi.publish(campaign);
-      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Publicación enviada al backend" });
-      canAdvance = true;
+      if (r.fallback) {
+        onNotice && onNotice({ tone: "amber", text: r.reason });
+      } else {
+        onNotice && onNotice({ tone: "green", text: "Publicación enviada al backend" });
+        canAdvance = true;
+      }
     } catch (e) {
       onNotice && onNotice({ tone: "amber", text: "Backend no publicó aún: " + (e.message || e.status || "error") });
     }
@@ -107,8 +195,12 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     let accepted = false;
     try {
       const r = await ReviewApi.schedule(campaign, s);
-      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Agenda guardada en backend" });
-      accepted = true;
+      if (r.fallback) {
+        onNotice && onNotice({ tone: "amber", text: r.reason });
+      } else {
+        onNotice && onNotice({ tone: "green", text: "Agenda guardada en backend" });
+        accepted = true;
+      }
     } catch (e) {
       onNotice && onNotice({ tone: "amber", text: "Backend no aceptó la agenda: " + (e.message || e.status || "error") });
     }
@@ -142,7 +234,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
           <GlassCard style={{ padding: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: 2, background: "rgba(248,250,252,0.8)", borderRadius: 11, padding: 3 }}>
               {VARIANTS.map((v) => (
-                <TabBtn key={v.id} active={layoutVariant === v.id} onClick={() => !locked && setVariant(v.id)} title={locked ? "Layout fijado en Tweaks" : v.desc}>
+                <TabBtn key={v.id} active={layoutVariant === v.id} onClick={() => !locked && selectLayoutVariant(v.id)} title={locked ? "Layout fijado en Tweaks" : v.desc}>
                   {v.id === "A" ? "Spotlight" : v.id === "B" ? "Split" : "Minimal"}
                   {v.recommended && layoutVariant === v.id && <Icon name="sparkles" size={12} />}
                 </TabBtn>
@@ -214,7 +306,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
               {SEGMENT_ORDER.map((id) => {
                 const s = SEGMENTS[id]; const on = segId === id;
                 return (
-                  <button key={id} onClick={() => setSegId(id)} style={{
+                  <button key={id} onClick={() => selectSegment(id)} style={{
                     display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, cursor: "pointer", textAlign: "left",
                     border: `1.5px solid ${on ? "#22D3EE" : "#EEF2F6"}`, background: on ? "rgba(34,211,238,.08)" : "rgba(248,250,252,0.7)", transition: "all .15s",
                   }}>

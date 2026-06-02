@@ -131,26 +131,63 @@ function Avatar({ initials, gradient = "linear-gradient(135deg,#F72585,#8B5CF6)"
 }
 
 // --- Backend API client/adapters ---
-// Static prototype integration point. New backend calls use /api/v1 and default to
-// http://localhost:8000 unless the hosting page defines window.AIJOLOT_API_BASE.
-window.API_BASE = window.AIJOLOT_API_BASE || window.API_BASE || "http://localhost:8000";
+// Static prototype integration point. Canonical calls use exactly one /api/v1,
+// send demo auth/team context, and default to http://localhost:8000 unless the
+// hosting page defines window.AIJOLOT_API_BASE.
+function normalizeApiOrigin(origin) {
+  return (origin || "http://localhost:8000").replace(/\/+$/, "").replace(/\/api\/v1$/i, "");
+}
+window.API_BASE = normalizeApiOrigin(window.AIJOLOT_API_BASE || window.API_BASE || "http://localhost:8000");
 const API_V1 = "/api/v1";
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const AIJOLOT_DEMO_IDS = {
+  user: window.AIJOLOT_USER_ID || "00000000-0000-0000-0000-000000000601",
+  team: window.AIJOLOT_TEAM_ID || "00000000-0000-0000-0000-000000000001",
+  store: window.AIJOLOT_STORE_ID || "00000000-0000-0000-0000-000000000101",
+};
+const AIJOLOT_DEMO_AUTH_HEADERS = {
+  "X-Aijolot-User-Id": AIJOLOT_DEMO_IDS.user,
+  "X-Aijolot-Team-Id": AIJOLOT_DEMO_IDS.team,
+  "X-Aijolot-Store-Id": AIJOLOT_DEMO_IDS.store,
+  "Authorization": `Bearer demo:${AIJOLOT_DEMO_IDS.user}:${AIJOLOT_DEMO_IDS.team}:${AIJOLOT_DEMO_IDS.store}`,
+};
 
 function isApiCampaign(campaign) { return !!(campaign && UUID_RE.test(campaign.id || "")); }
 function localId(prefix) {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 function fallbackResult(reason, data) { return { ok: true, fallback: true, reason: reason || "mock/local fallback", data }; }
+function apiPath(path) { return (path || "").startsWith("/") ? path : `/${path || ""}`; }
+function apiV1Path(path) {
+  const normalized = apiPath(path);
+  return normalized === API_V1 || normalized.startsWith(API_V1 + "/") ? normalized : API_V1 + normalized;
+}
+function isV1Path(path) { const normalized = apiPath(path); return normalized === API_V1 || normalized.startsWith(API_V1 + "/"); }
+function errorText(e) {
+  if (!e) return "error";
+  if (typeof e.body === "string") return e.body;
+  if (e.body && e.body.detail) return typeof e.body.detail === "string" ? e.body.detail : JSON.stringify(e.body.detail);
+  return e.message || e.status || "error";
+}
 
 const AijolotApi = {
   base: window.API_BASE,
-  v1(path) { return API_V1 + path; },
+  demoAuthHeaders: AIJOLOT_DEMO_AUTH_HEADERS,
+  path: apiPath,
+  v1: apiV1Path,
+  isV1Path,
   async request(path, options) {
-    const resp = await fetch(this.base + path, {
-      ...options,
-      headers: { "Accept": "application/json", ...(options && options.headers ? options.headers : {}) },
-    });
+    const normalizedPath = apiPath(path);
+    const opts = options || {};
+    const hasBody = opts.body != null;
+    const authHeaders = isV1Path(normalizedPath) ? AIJOLOT_DEMO_AUTH_HEADERS : {};
+    const headers = {
+      Accept: "application/json",
+      ...(hasBody && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
+      ...authHeaders,
+      ...(opts.headers || {}),
+    };
+    const resp = await fetch(this.base + normalizedPath, { ...opts, headers });
     const text = await resp.text();
     let body = null;
     try { body = text ? JSON.parse(text) : null; } catch (_) { body = text; }
@@ -160,10 +197,44 @@ const AijolotApi = {
     }
     return body;
   },
+  async text(path, options) {
+    const normalizedPath = apiPath(path);
+    const opts = options || {};
+    const headers = { ...(isV1Path(normalizedPath) ? AIJOLOT_DEMO_AUTH_HEADERS : {}), ...(opts.headers || {}) };
+    const resp = await fetch(this.base + normalizedPath, { ...opts, headers });
+    const text = await resp.text();
+    if (!resp.ok) { const err = new Error(text || `HTTP ${resp.status}`); err.status = resp.status; err.body = text; throw err; }
+    return text;
+  },
   get(path) { return this.request(path); },
-  post(path, body) { return this.request(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); },
-  put(path, body) { return this.request(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); },
-  patch(path, body) { return this.request(path, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) }); },
+  post(path, body) { return this.request(path, { method: "POST", body: body == null ? undefined : JSON.stringify(body) }); },
+  put(path, body) { return this.request(path, { method: "PUT", body: JSON.stringify(body || {}) }); },
+  patch(path, body) { return this.request(path, { method: "PATCH", body: body == null ? undefined : JSON.stringify(body) }); },
+  async streamIntakeEvents(message, campaignId, onEvent) {
+    const resp = await fetch(this.base + this.v1("/campaigns/intake"), {
+      method: "POST",
+      headers: { Accept: "text/event-stream", "Content-Type": "application/json", ...AIJOLOT_DEMO_AUTH_HEADERS },
+      body: JSON.stringify({ message, campaign_id: campaignId || null }),
+    });
+    if (!resp.ok || !resp.body) throw new Error(`intake failed: ${resp.status} ${await resp.text()}`);
+    const reader = resp.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      let boundary = buffer.indexOf("\n\n");
+      while (boundary >= 0) {
+        const chunk = buffer.slice(0, boundary).trim();
+        buffer = buffer.slice(boundary + 2);
+        const line = chunk.split("\n").find((l) => l.startsWith("data: "));
+        if (line) onEvent(JSON.parse(line.slice(6)));
+        boundary = buffer.indexOf("\n\n");
+      }
+      if (done) break;
+    }
+    const tail = buffer.trim();
+    if (tail.startsWith("data: ")) onEvent(JSON.parse(tail.slice(6)));
+  },
 };
 
 function placementPayloadFromPrototype(placement) {
@@ -203,19 +274,56 @@ function placementPayloadFromPrototype(placement) {
 }
 
 const CampaignApi = {
+  async create(input) { return AijolotApi.post(AijolotApi.v1("/campaigns"), input || {}); },
   async list() { return AijolotApi.get(AijolotApi.v1("/campaigns")); },
+  async get(id) { return AijolotApi.get(AijolotApi.v1(`/campaigns/${id}`)); },
   async patch(id, fields) { return AijolotApi.patch(AijolotApi.v1(`/campaigns/${id}`), fields); },
 };
 
+const StoreApi = {
+  async list() { return AijolotApi.get(AijolotApi.v1("/stores")); },
+  async get(storeId) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}`)); },
+  async resources(storeId, resourceType) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/shopify/resources?resource_type=${encodeURIComponent(resourceType || "collection")}`)); },
+  async placementTypes(storeId) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/placement-types`)); },
+  async placementTargets(storeId, placementTypeKey) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/placement-types/${placementTypeKey}/targets`)); },
+};
+
 const PlacementApi = {
+  payloadFromPrototype: placementPayloadFromPrototype,
+  async validate(placement) { return AijolotApi.post(AijolotApi.v1("/placements/validate"), placement); },
+  async get(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend placement lookup.", null);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/placement`));
+    return { ok: true, fallback: false, data };
+  },
   async save(campaign, placement) {
     if (!isApiCampaign(campaign)) return fallbackResult("Backend placement API requires a UUID campaign; local intake uses prototype ids unless Supabase is configured.", placement);
-    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), placementPayloadFromPrototype(placement));
+    const payload = placementPayloadFromPrototype(placement);
+    await this.validate(payload);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), payload);
+    return { ok: true, fallback: false, data };
+  },
+};
+
+const CatalogApi = {
+  async createSnapshot(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend catalog snapshot requires a UUID campaign.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/catalog-snapshot`), input || { store_id: AIJOLOT_DEMO_IDS.store, resource_types: ["collection", "product"], limit: 5 });
+    return { ok: true, fallback: false, data };
+  },
+  async getSnapshot(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend catalog snapshot lookup.", null);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/catalog-snapshot`));
     return { ok: true, fallback: false, data };
   },
 };
 
 const ArtDirectionApi = {
+  async get(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend art-direction lookup.", null);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`));
+    return { ok: true, fallback: false, data };
+  },
   async save(campaign, art, placement) {
     if (!isApiCampaign(campaign)) return fallbackResult("Backend art-direction API requires a UUID campaign; saved locally in prototype state.", art);
     const payload = {
@@ -242,14 +350,116 @@ const GenerationApi = {
     const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/generation-runs/latest`));
     return { ok: true, fallback: false, data };
   },
+  async get(runId) { return AijolotApi.get(AijolotApi.v1(`/generation-runs/${runId}`)); },
+  async events(runId) { return AijolotApi.get(AijolotApi.v1(`/generation-runs/${runId}/events`)); },
+  async preview(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend preview lookup.", "");
+    const data = await AijolotApi.text(AijolotApi.v1(`/campaigns/${campaign.id}/preview`), { headers: { Accept: "text/html" } });
+    return { ok: true, fallback: false, data };
+  },
+  async audit(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend audit lookup.", null);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/audit-report`));
+    return { ok: true, fallback: false, data };
+  },
+  async revisions(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend revision lookup.", []);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/revisions`));
+    return { ok: true, fallback: false, data };
+  },
+  // Resolve the most recent backend revision so canvas/performance can map
+  // layout (A|B|C) + audience (segment_key) selections to real variant UUIDs.
+  async latestRevision(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend revision lookup.", null);
+    const list = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/revisions`));
+    const rows = Array.isArray(list) ? list : [];
+    if (!rows.length) return fallbackResult("Backend has no revisions yet for this campaign.", null);
+    const latest = rows.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a));
+    return { ok: true, fallback: false, data: latest };
+  },
+  async selectVariant(campaign, variantId) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend variant selection.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/variants/${variantId}/select`));
+    return { ok: true, fallback: false, data };
+  },
+  async regenerate(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend regeneration.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/regenerate`), input || {});
+    return { ok: true, fallback: false, data };
+  },
 };
 
 const ReviewApi = {
-  async approveLocal(campaign, approverId, status) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend approval API requires generated revisions/reviewer UUIDs; using visible prototype approval state.", { approverId, status });
-    // Full backend approval requires revision and reviewer UUIDs created by the generation pipeline.
-    // The static prototype keeps the reviewer UX local until the Next.js migration owns auth/team identity.
-    return fallbackResult("Static prototype approval controls are local; backend approval needs revision and reviewer UUID context.", { approverId, status });
+  async requestApproval(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend approval requires a UUID campaign and generated revision.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/approval/request`), input || {});
+    return { ok: true, fallback: false, data };
+  },
+  async approval(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend approval lookup.", null);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/approval`));
+    return { ok: true, fallback: false, data };
+  },
+  // Lazily resolve (or create) the approval thread for a campaign revision.
+  // Returns the {ok,fallback,reason,data} envelope; approval/comment services
+  // fail closed with 503 in the local no-Supabase demo, surfaced as fallback.
+  async ensureThread(campaign, revisionId) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend approval requires a UUID campaign and generated revision.", null);
+    try {
+      const state = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/approval`));
+      const existing = state && (state.thread || state.approval_thread || (state.thread_id ? state : null));
+      const threadId = (existing && (existing.id || existing.thread_id)) || state.thread_id || (state.thread && state.thread.id);
+      if (threadId) return { ok: true, fallback: false, data: { ...state, id: threadId } };
+    } catch (e) {
+      if (e.status && e.status !== 404) return fallbackResult("Servicio de aprobación no disponible (" + errorText(e) + ").", null);
+    }
+    try {
+      const thread = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/approval/request`), {
+        revision_id: revisionId || null,
+        requested_by: AIJOLOT_DEMO_IDS.user,
+        reviewers: [AIJOLOT_DEMO_IDS.user],
+      });
+      return { ok: true, fallback: false, data: thread };
+    } catch (e) {
+      return fallbackResult("Servicio de aprobación no disponible (" + errorText(e) + ").", null);
+    }
+  },
+  async approve(threadId, note) {
+    if (!threadId) return fallbackResult("No hay hilo de aprobación de backend; aprobación local.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/approve`), { user_id: AIJOLOT_DEMO_IDS.user, note: note || null });
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no registró la aprobación (" + errorText(e) + ").", null); }
+  },
+  async requestChangesThread(threadId, note) {
+    if (!threadId) return fallbackResult("No hay hilo de aprobación de backend; cambios locales.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/request-changes`), { user_id: AIJOLOT_DEMO_IDS.user, note: note || null });
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no registró la solicitud de cambios (" + errorText(e) + ").", null); }
+  },
+  async addComment(threadId, input) {
+    if (!threadId) return fallbackResult("No hay hilo de aprobación de backend; comentario local.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/comments`), input);
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no guardó el comentario (" + errorText(e) + ").", null); }
+  },
+  async resolveCommentSafe(commentId, input) {
+    try {
+      const data = await AijolotApi.patch(AijolotApi.v1(`/comments/${commentId}/resolve`), input || {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no resolvió el comentario (" + errorText(e) + ").", null); }
+  },
+  // Raw passthroughs kept for callers that handle their own error envelope.
+  async comment(threadId, input) { return AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/comments`), input); },
+  async resolveComment(commentId, input) { return AijolotApi.patch(AijolotApi.v1(`/comments/${commentId}/resolve`), input || {}); },
+  async approveThread(threadId, input) { return AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/approve`), input); },
+  async requestChanges(threadId, input) { return AijolotApi.post(AijolotApi.v1(`/approval-threads/${threadId}/request-changes`), input); },
+  async refinement(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend refinement requires a UUID campaign.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/refinement-requests`), input);
+    return { ok: true, fallback: false, data };
   },
   async schedule(campaign, schedule) {
     if (!isApiCampaign(campaign)) return fallbackResult("Backend scheduling requires an approved UUID campaign; using visible prototype schedule state.", schedule);
@@ -258,11 +468,49 @@ const ReviewApi = {
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/schedule`), { starts_at: startsAt, ends_at: endsAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", auto_unpublish: !!schedule.auto });
     return { ok: true, fallback: false, data };
   },
+  async updateSchedule(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend schedule update requires a UUID campaign.", null);
+    const data = await AijolotApi.patch(AijolotApi.v1(`/campaigns/${campaign.id}/schedule`), input || {});
+    return { ok: true, fallback: false, data };
+  },
+  async cancelSchedule(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend schedule cancel requires a UUID campaign.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/schedule/cancel`));
+    return { ok: true, fallback: false, data };
+  },
   async publish(campaign) {
     if (!isApiCampaign(campaign)) return fallbackResult("Backend publishing requires a scheduled UUID campaign; using visible prototype publish state.", null);
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/publish`));
     return { ok: true, fallback: false, data };
   },
+  async unpublish(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend unpublish requires a UUID campaign.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/unpublish`));
+    return { ok: true, fallback: false, data };
+  },
 };
 
-Object.assign(window, { Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar, AijolotApi, CampaignApi, PlacementApi, ArtDirectionApi, GenerationApi, ReviewApi, API_V1, UUID_RE, isApiCampaign });
+const PerformanceApi = {
+  async get(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend performance lookup; showing labeled non-live prototype metrics.", null);
+    const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/performance`));
+    return { ok: true, fallback: false, data };
+  },
+  async snapshot(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend performance snapshot.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/performance/snapshots`), input || { source: "manual" });
+    return { ok: true, fallback: false, data };
+  },
+  async proposal(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend optimization proposal.", null);
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/optimization-proposals`), input);
+    return { ok: true, fallback: false, data };
+  },
+};
+
+Object.assign(window, {
+  Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar,
+  AijolotApi, CampaignApi, StoreApi, PlacementApi, CatalogApi, ArtDirectionApi,
+  GenerationApi, ReviewApi, PerformanceApi, API_V1, UUID_RE, isApiCampaign,
+  AIJOLOT_DEMO_IDS, AIJOLOT_DEMO_AUTH_HEADERS, apiPath, apiV1Path, normalizeApiOrigin, errorText,
+});

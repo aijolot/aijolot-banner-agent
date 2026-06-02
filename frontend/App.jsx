@@ -79,12 +79,12 @@ function App() {
     body = <CampaignsView onNew={() => setStage("placement")} onResume={() => setStage("canvas")} onPerf={() => setStage("performance")} />;
   } else {
     let view;
-    if (stage === "placement") view = <PlacementStage onNext={(p) => { setPlacement(p); setApiNotice(null); setStage("brief"); }} />;
+    if (stage === "placement") view = <PlacementStage onNotice={setApiNotice} onNext={(p) => { setPlacement(p); setStage("brief"); }} />;
     else if (stage === "brief") view = <BriefStage onGenerate={(c) => { setCampaign(c); setStage("art"); }} onCampaignReady={onCampaignReady} placement={placement} />;
     else if (stage === "art") view = <ArtStage campaign={campaign} placement={placement} onNotice={setApiNotice} onAssemble={(a) => { setArt(a); setStage("generate"); }} />;
     else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} onNotice={setApiNotice} onDone={() => setStage("canvas")} />;
     else if (stage === "canvas") view = <CanvasStage campaign={campaign} tweaks={t} placement={placement} art={art} onNotice={setApiNotice} onPublish={() => setStage("performance")} />;
-    else view = <PerformanceStage tweaks={t} onBack={() => setStage("canvas")} />;
+    else view = <PerformanceStage campaign={campaign} tweaks={t} onNotice={setApiNotice} onBack={() => setStage("canvas")} />;
     body = <><Stepper stage={stage} goTo={setStage} />{apiNotice ? <div style={{ marginBottom: 12 }}><Badge tone={apiNotice.tone || "slate"} icon={apiNotice.tone === "green" ? "wifi" : "wifi-off"}>{apiNotice.text}</Badge></div> : null}{view}</>;
   }
 

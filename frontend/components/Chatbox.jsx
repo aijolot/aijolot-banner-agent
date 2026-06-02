@@ -6,8 +6,6 @@
 // rule-based intake when the bridge is unreachable.
 const { useState: useStateCB, useRef: useRefCB, useEffect: useEffectCB } = React;
 
-const _BASE = window.API_BASE || "http://localhost:8000";
-
 const SUGGEST = [
   "Banner de Black Friday, 50% off audífonos, a mujeres 25-40, urgencia alta, en la home hero",
   "Promo 10% en perfumes para clientes VIP, tono premium",
@@ -78,27 +76,11 @@ function Chatbox({ onCampaign }) {
   }
 
   async function streamFromBridge(text) {
-    const resp = await fetch(_BASE + (typeof AijolotApi !== "undefined" ? AijolotApi.v1("/campaigns/intake") : "/api/v1/campaigns/intake"), {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message: text, campaign_id: campaignId.current }),
+    if (typeof AijolotApi === "undefined" || !AijolotApi.streamIntakeEvents) throw new Error("api client unavailable");
+    await AijolotApi.streamIntakeEvents(text, campaignId.current, (evt) => {
+      if (evt.type === "token") pushAgentToken(evt.text);
+      else if (evt.type === "done") finish(evt.campaign, evt.complete, evt.missing);
     });
-    if (!resp.ok || !resp.body) throw new Error("bridge " + resp.status);
-    const reader = resp.body.getReader(), dec = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const line = buf.slice(0, i).split("\n").find((l) => l.startsWith("data: "));
-        buf = buf.slice(i + 2);
-        if (!line) continue;
-        const evt = JSON.parse(line.slice(6));
-        if (evt.type === "token") pushAgentToken(evt.text);
-        else if (evt.type === "done") finish(evt.campaign, evt.complete, evt.missing);
-      }
-    }
   }
 
   async function fallbackLocal(text) {

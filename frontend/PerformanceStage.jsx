@@ -1,6 +1,7 @@
-/* global React, Icon, GlassCard, Button, Badge, Kicker, Spinner, Banner, SEGMENTS, METRICS, SEG_PERF, CTR_TREND, MEMORY */
+/* global React, Icon, GlassCard, Button, Badge, Kicker, Spinner, Banner, SEGMENTS, METRICS, SEG_PERF, CTR_TREND, MEMORY,
+   PerformanceApi, GenerationApi, errorText */
 // Aijolot Banner Agent — Stage 4: performance loop & self-optimization (Module 8).
-const { useState: useStateP } = React;
+const { useState: useStateP, useEffect: useEffectP } = React;
 
 function Sparkline({ data, w = 320, h = 70, color = "#22D3EE" }) {
   const min = Math.min(...data), max = Math.max(...data);
@@ -26,8 +27,80 @@ function Sparkline({ data, w = 320, h = 70, color = "#22D3EE" }) {
   );
 }
 
-function PerformanceStage({ tweaks, onBack }) {
+function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   const [v2, setV2] = useStateP("idle"); // idle | building | ready
+  const [backendPerf, setBackendPerf] = useStateP(null);
+  const [perfNotice, setPerfNotice] = useStateP("Datos demo etiquetados como manual/mock/seed/agent; no son analítica live de Shopify.");
+  const [revisionId, setRevisionId] = useStateP(null);
+  const [snapBusy, setSnapBusy] = useStateP(false);
+  const [proposalState, setProposalState] = useStateP("idle"); // idle | sending | sent
+
+  useEffectP(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const r = await PerformanceApi.get(campaign);
+        if (!alive) return;
+        if (r.fallback) setPerfNotice(r.reason);
+        else {
+          setBackendPerf(r.data);
+          const label = r.data && (r.data.data_source_label || (r.data.live_analytics ? "live" : "manual/mock/seed/agent"));
+          setPerfNotice(`Backend performance conectado · fuente: ${label || "manual/mock/seed/agent"}`);
+        }
+      } catch (e) {
+        if (alive) setPerfNotice("Performance backend no disponible: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) + ". Se muestran métricas demo no-live.");
+      }
+      if (typeof GenerationApi !== "undefined") {
+        const rev = await GenerationApi.latestRevision(campaign);
+        if (alive && rev && !rev.fallback && rev.data) setRevisionId(rev.data.id);
+      }
+    })();
+    return () => { alive = false; };
+  }, [campaign && campaign.id]);
+
+  // Record a manual (non-live) performance snapshot against the backend.
+  async function registerSnapshot() {
+    if (snapBusy) return;
+    setSnapBusy(true);
+    try {
+      const r = await PerformanceApi.snapshot(campaign, { source: "manual", revision_id: revisionId, impressions: 12840, clicks: 591, conversions: 96 });
+      if (r.fallback) onNotice && onNotice({ tone: "amber", text: r.reason });
+      else {
+        const label = r.data && (r.data.data_source_label || (r.data.live_analytics ? "live" : "manual"));
+        onNotice && onNotice({ tone: "green", text: `Snapshot manual registrado en backend · fuente: ${label || "manual"}` });
+        setPerfNotice(`Backend performance conectado · fuente: ${label || "manual"} (snapshot manual)`);
+      }
+    } catch (e) {
+      onNotice && onNotice({ tone: "amber", text: "Backend no registró el snapshot: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) });
+    } finally {
+      setSnapBusy(false);
+    }
+  }
+
+  // V2 optimization: keep the local build animation, but send a real proposal.
+  async function sendProposal() {
+    if (proposalState === "sending") return;
+    setProposalState("sending");
+    if (!revisionId) {
+      onNotice && onNotice({ tone: "amber", text: "Sin revisión backend; la propuesta V2 queda en estado prototipo local." });
+      setProposalState("sent");
+      return;
+    }
+    try {
+      const r = await PerformanceApi.proposal(campaign, {
+        source_revision_id: revisionId,
+        segment_key: "femenino",
+        rationale: "Femenino tiene alto volumen pero CTR bajo; botón flotante contraste + layout minimal.",
+        projected_lift: { ctr: "+18%", segment: "femenino" },
+        status: "sent_to_approval",
+      });
+      onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Propuesta V2 enviada a aprobación en backend" });
+    } catch (e) {
+      onNotice && onNotice({ tone: "amber", text: "Backend no aceptó la propuesta V2: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) });
+    } finally {
+      setProposalState("sent");
+    }
+  }
 
   function buildV2() {
     setV2("building");
@@ -40,10 +113,17 @@ function PerformanceStage({ tweaks, onBack }) {
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <Kicker>Paso 6 de 6 · Performance</Kicker>
-          <h2 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 26, color: "#002B57", margin: 0 }}>Resultados en vivo</h2>
+          <h2 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 26, color: "#002B57", margin: 0 }}>Resultados no-live</h2>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <Badge tone="slate" icon="database-zap">{perfNotice}</Badge>
+            {backendPerf ? <Badge tone="cyan" icon="wifi">{(backendPerf.snapshots || []).length} snapshots backend</Badge> : null}
+          </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <Badge tone="green" icon="check-circle-2">Publicado en Shopify</Badge>
+          <Badge tone="slate" icon="check-circle-2">Demo no-live</Badge>
+          <Button variant="secondary" icon={snapBusy ? null : "database"} onClick={registerSnapshot} disabled={snapBusy} title="Registra un snapshot manual (no-live) en el backend">
+            {snapBusy ? <><span style={{ display: "inline-flex", marginRight: 6 }}><Spinner size={13} /></span>Registrando…</> : "Registrar snapshot"}
+          </Button>
           <Button variant="outline" icon="arrow-left" onClick={onBack}>Volver al lienzo</Button>
         </div>
       </div>
@@ -118,7 +198,7 @@ function PerformanceStage({ tweaks, onBack }) {
             <div style={{ marginTop: 16 }}>
               {v2 === "idle" && <Button variant="navy" icon="wand-sparkles" onClick={buildV2}>Generar Versión 2</Button>}
               {v2 === "building" && <Button variant="navy" disabled icon="loader"><span style={{ display: "inline-flex", marginRight: 4 }}><Spinner size={13} color="#fff" /></span>Recompilando…</Button>}
-              {v2 === "ready" && <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><Button variant="shine" icon="git-pull-request-arrow">Enviar a aprobación</Button><Button variant="ghost" icon="x" onClick={() => setV2("idle")}>Descartar</Button></div>}
+              {v2 === "ready" && <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}><Button variant="shine" icon={proposalState === "sending" ? null : "git-pull-request-arrow"} onClick={sendProposal} disabled={proposalState === "sending"}>{proposalState === "sending" ? <><span style={{ display: "inline-flex", marginRight: 6 }}><Spinner size={13} color="#fff" /></span>Enviando…</> : proposalState === "sent" ? "Reenviar a aprobación" : "Enviar a aprobación"}</Button><Button variant="ghost" icon="x" onClick={() => { setV2("idle"); setProposalState("idle"); }}>Descartar</Button></div>}
             </div>
           </div>
         </div>
