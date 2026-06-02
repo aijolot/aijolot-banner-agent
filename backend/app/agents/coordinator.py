@@ -20,9 +20,22 @@ COORDINATOR_MODEL = os.getenv("GEMINI_MODEL_PRO", "gemini-3.1-pro")
 
 
 def build_coordinator():
-    """Return the ADK root Agent.
+    """Return the pre-review ADK Workflow as the coordinator.
 
-    Wiring lands in GH-5 (skeleton) and is extended per ticket as each node
-    becomes available.
+    The coordinator is a Workflow that runs nodes 1, 3-9 with a
+    conditional retry loop. Post-HITL nodes 11-12 are invoked
+    separately via build_post_review_coordinator().
     """
-    raise NotImplementedError("Coordinator wiring lands in GH-5 + per-node tickets.")
+    from app.agents.pipeline import build_pre_review_pipeline
+
+    return build_pre_review_pipeline()
+
+
+def build_post_review_coordinator():
+    """Return the post-review ADK Workflow.
+
+    Runs nodes 11-12 after HITL approval.
+    """
+    from app.agents.pipeline import build_post_review_pipeline
+
+    return build_post_review_pipeline()
