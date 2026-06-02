@@ -52,11 +52,24 @@ NODES: list[NodeSpec] = [
 ]
 
 
-def build_graph() -> Callable[[BannerSessionState], BannerSessionState]:
-    """Return the compiled ADK runnable.
+def build_graph():
+    """Return the pre-review ADK Workflow (nodes 1, 3-9).
 
-    Implementation deferred to GH-5 (skeleton) + per-node tickets.
-    This function exists so callers (workflows, API) can depend on a stable
-    factory signature.
+    The pipeline runs from brand load through audit with a conditional
+    retry loop. Node 2 (intake) is multi-turn and handled by the API
+    SSE endpoint. Nodes 11-12 (post-HITL) are in build_post_review_graph().
     """
-    raise NotImplementedError("Graph wiring lands in GH-5 + per-node tickets (GH-8..GH-19).")
+    from app.agents.pipeline import build_pre_review_pipeline
+
+    return build_pre_review_pipeline()
+
+
+def build_post_review_graph():
+    """Return the post-review ADK Workflow (nodes 11-12).
+
+    Runs after HITL approval. Expects session.state to have
+    hitl_decision populated.
+    """
+    from app.agents.pipeline import build_post_review_pipeline
+
+    return build_post_review_pipeline()
