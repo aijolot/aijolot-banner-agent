@@ -12,7 +12,10 @@ const CAMPAIGN = {
   brief: "Necesito un banner para la home: 10% de descuento en perfumes Hugo Boss, del 2 al 9 de junio. Que se vea premium, elegante, y que destaque el frasco. Personalizar por género del cliente.",
 };
 
-// ---- Module 1: Smart Querying — catalog auto-pulled from Shopify ----
+// ---- Module 1: Smart Querying — local fallback catalog only ----
+// ArtStage now hydrates the authoritative catalog from backend catalog snapshots
+// / Shopify resource cache. This array is retained only for visible no-backend
+// fallback/demo rendering.
 const CATALOG = [
   { sku: "HB-BOTTLED-100", name: "Boss Bottled EDP 100ml", seg: "masculino", price: 138, sale: 124.2, stock: 64, img: "frasco azul oscuro" },
   { sku: "HB-SCENT-100", name: "Boss The Scent EDT 100ml", seg: "masculino", price: 118, sale: 106.2, stock: 38, img: "frasco ámbar" },
@@ -116,7 +119,10 @@ const COMMENTS_SEED = [
   { id: "c2", x: 70, y: 64, author: "Diego Salas", initials: "DS", grad: "linear-gradient(135deg,#22D3EE,#0891B2)", text: "El botón debería resaltar más, probemos tono contraste.", resolved: false, time: "hace 3 min" },
 ];
 
-// ---- Module 8: Performance metrics ----
+// ---- Module 8: Performance fallback/demo metrics only ----
+// PerformanceStage hydrates real backend snapshots, insights, and proposals from
+// /api/v1/campaigns/{id}/performance. These constants are retained only as a
+// visibly labeled fallback when no UUID campaign/backend performance data exists.
 const METRICS = [
   { id: "impr", icon: "eye", label: "Impresiones", value: "128,400", delta: "+18.2%", up: true },
   { id: "load", icon: "zap", label: "Carga real (p75)", value: "0.6 s", delta: "−72% peso", up: true },
@@ -124,24 +130,26 @@ const METRICS = [
   { id: "conv", icon: "shopping-bag", label: "Conversiones", value: "612", delta: "+24%", up: true },
 ];
 
-// segment performance split
+// fallback segment performance split
 const SEG_PERF = [
   { seg: "Masculino", ctr: 5.2, conv: 281, color: "#28C7F0" },
   { seg: "Femenino", ctr: 4.9, conv: 246, color: "#F6B3CE" },
   { seg: "VIP", ctr: 7.1, conv: 85, color: "#E7C76B" },
 ];
 
-// 14-day CTR trend (for sparkline)
+// fallback 14-day CTR trend (for sparkline)
 const CTR_TREND = [3.1, 3.4, 3.2, 3.8, 4.0, 3.7, 4.3, 4.6, 4.4, 4.9, 5.1, 4.8, 5.3, 4.8];
 
-// ---- Evolutionary memory (Module 8) ----
+// ---- Evolutionary memory fallback/demo (backend insights/proposals preferred) ----
 const MEMORY = [
   { tag: "Calzado · primavera", text: "Estructuras minimalistas + botón flotante en color contraste convirtieron 24% más.", lift: "+24%" },
   { tag: "Perfumes · día de la madre", text: "Frasco centrado con halo superó al layout split en mobile.", lift: "+11%" },
   { tag: "VIP · histórico", text: "Copys de exclusividad elevan CTR en segmento VIP.", lift: "+37%" },
 ];
 
-// ---- Store template pages + placements (where the banner is embedded) ----
+// ---- Store template pages + placements (explicit fallback only)
+// Backend hydration in PlacementStage uses StoreApi resources/placement types first.
+// These STORE_PAGES are retained as labeled visual fallback when backend data is unreachable.
 const STORE_PAGES = [
   {
     id: "home", label: "Inicio", url: "maison-store.myshopify.com",
@@ -203,7 +211,10 @@ const SCOPE_OPTS = {
 const BRANDS = ["Hugo Boss", "Dior", "Chanel", "Carolina Herrera"];
 const COLLECTIONS = ["Fragancias", "Hombre", "Mujer", "Novedades", "Sets de regalo"];
 
-// ---- Art direction: hero-shot styles, model bank, banner-grid options ----
+// ---- Art direction local UI presets ----
+// Backend persists selected hero_style_key/model_key/custom_model through
+// ArtDirectionApi, but it has no list endpoints for hero styles or model bank.
+// These options are therefore local presets, not backend-provided data.
 const HERO_STYLES = [
   { id: "rocks", name: "Rocas húmedas", desc: "Destellos · premium", grad: "linear-gradient(135deg,#0b1622,#1f3a52)" },
   { id: "marble", name: "Mármol minimal", desc: "Limpio · editorial", grad: "linear-gradient(135deg,#2a2622,#4a443a)" },

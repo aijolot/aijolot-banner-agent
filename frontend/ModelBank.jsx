@@ -21,7 +21,7 @@ function ModelCard({ m, on, onClick }) {
   );
 }
 
-function ModelBank({ models, selected, onSelect, onCreate }) {
+function ModelBank({ models, selected, onSelect, onCreate, localPresetNotice }) {
   const [open, setOpen] = useStateMB(false);
   const [prompt, setPrompt] = useStateMB("");
   const [gen, setGen] = useStateMB("");
@@ -38,6 +38,11 @@ function ModelBank({ models, selected, onSelect, onCreate }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {localPresetNotice ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: "Inter", fontSize: 11.5, color: "#B45309", background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.20)", borderRadius: 9, padding: "7px 9px" }}>
+          <Icon name="info" size={13} /> {localPresetNotice}
+        </div>
+      ) : null}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
         {models.map((m) => <ModelCard key={m.id} m={m} on={selected === m.id} onClick={() => onSelect(m.id)} />)}
         <button onClick={() => setOpen((o) => !o)} style={{

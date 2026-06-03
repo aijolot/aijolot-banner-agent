@@ -59,11 +59,13 @@ function InsertZone({ id, ins }) {
   );
 }
 
-function StoreHeader({ pageId, onNav }) {
-  const NAV = [["Inicio", "home"], ["Fragancias", "collection"], ["Hombre", "collection"], ["Mujer", "collection"]];
+function StoreHeader({ pageId, onNav, store, resources }) {
+  const storeName = (store && (store.name || store.shop_domain)) || "Maison";
+  const navCollection = ((resources && resources.collection) || [])[0];
+  const NAV = [["Inicio", "home"], [(navCollection && (navCollection.title || navCollection.handle)) || "Fragancias", "collection"], ["Hombre", "collection"], ["Mujer", "collection"]];
   return (
     <div style={{ height: 52, display: "flex", alignItems: "center", gap: 16, padding: "0 22px", borderBottom: "1px solid #EEF2F6", flexShrink: 0 }}>
-      <span onClick={() => onNav("home")} style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 16, color: "#0F172A", letterSpacing: ".02em", cursor: "pointer" }}>MAISON</span>
+      <span onClick={() => onNav("home")} style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 16, color: "#0F172A", letterSpacing: ".02em", cursor: "pointer" }}>{String(storeName).toUpperCase()}</span>
       <div style={{ display: "flex", gap: 16, marginLeft: 8 }}>
         {NAV.map(([n, pg], i) => {
           const on = (pg === "collection" && pageId === "collection") || (pg === "home" && pageId === "home");
@@ -94,17 +96,18 @@ const Footer = (sp) => (
   </div>
 );
 
-function HomeMock({ sp, onNav, ins }) {
+function HomeMock({ sp, onNav, ins, store, resources }) {
+  const collection = ((resources && resources.collection) || [])[0];
   return (
     <div style={{ fontFamily: "Inter", background: "#fff" }}>
       {Announce(sp)}
-      <StoreHeader pageId="home" onNav={onNav} />
+      <StoreHeader pageId="home" onNav={onNav} store={store} resources={resources} />
       <InsertZone id="top" ins={ins} />
       <div style={{ padding: 16 }}>
         <Slot id="hero" label="Colocar hero" {...sp}>
           <div style={{ height: 150, borderRadius: 8, background: "linear-gradient(120deg,#1E293B,#334155)", display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 26px", gap: 9 }}>
             <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 22, color: "#fff" }}>Nueva colección</span>
-            <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)", maxWidth: 230 }}>Descubre las fragancias de la temporada.</span>
+            <span style={{ fontSize: 12, color: "rgba(255,255,255,.7)", maxWidth: 230 }}>Descubre {(collection && (collection.title || collection.handle)) || "las fragancias"} de la temporada.</span>
             <span style={{ marginTop: 4, alignSelf: "flex-start", fontSize: 11, fontWeight: 600, color: "#0F172A", background: "#fff", padding: "7px 14px", borderRadius: 9999 }}>Comprar</span>
           </div>
         </Slot>
@@ -138,18 +141,20 @@ function HomeMock({ sp, onNav, ins }) {
   );
 }
 
-function CollectionMock({ sp, onNav, ins }) {
+function CollectionMock({ sp, onNav, ins, store, resources }) {
+  const collection = ((resources && resources.collection) || [])[0];
+  const products = ((resources && resources.product) || []);
   return (
     <div style={{ fontFamily: "Inter", background: "#fff" }}>
       {Announce(sp)}
-      <StoreHeader pageId="collection" onNav={onNav} />
+      <StoreHeader pageId="collection" onNav={onNav} store={store} resources={resources} />
       <InsertZone id="top" ins={ins} />
-      <div style={{ padding: "12px 16px 8px", fontSize: 10.5, color: "#94A3B8" }}>Inicio › Fragancias</div>
+      <div style={{ padding: "12px 16px 8px", fontSize: 10.5, color: "#94A3B8" }}>Inicio › {(collection && (collection.title || collection.handle)) || "Fragancias"}</div>
       <div style={{ padding: "0 16px 14px" }}>
         <Slot id="coll_top" label="Colocar cabecera" {...sp}>
           <div style={{ height: 96, borderRadius: 8, background: "linear-gradient(120deg,#0F172A,#475569)", display: "flex", flexDirection: "column", justifyContent: "center", padding: "0 24px", gap: 6 }}>
-            <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 19, color: "#fff" }}>Fragancias</span>
-            <span style={{ fontSize: 11, color: "rgba(255,255,255,.7)" }}>42 productos</span>
+            <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 19, color: "#fff" }}>{(collection && (collection.title || collection.handle)) || "Fragancias"}</span>
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,.7)" }}>{products.length || 42} productos</span>
           </div>
         </Slot>
       </div>
@@ -186,17 +191,19 @@ function CollectionMock({ sp, onNav, ins }) {
   );
 }
 
-function ProductMock({ sp, onNav, ins }) {
+function ProductMock({ sp, onNav, ins, store, resources }) {
+  const product = ((resources && resources.product) || [])[0];
+  const productTitle = (product && (product.title || product.handle)) || "Boss Bottled EDP";
   return (
     <div style={{ fontFamily: "Inter", background: "#fff" }}>
       {Announce(sp)}
-      <StoreHeader pageId="product" onNav={onNav} />
+      <StoreHeader pageId="product" onNav={onNav} store={store} resources={resources} />
       <InsertZone id="top" ins={ins} />
-      <div style={{ padding: "12px 16px 8px", fontSize: 10.5, color: "#94A3B8" }}>Inicio › Fragancias › Boss Bottled</div>
+      <div style={{ padding: "12px 16px 8px", fontSize: 10.5, color: "#94A3B8" }}>Inicio › Producto › {productTitle}</div>
       <div style={{ padding: "0 16px 16px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
         <Block h={196}><Icon name="image" size={26} color="#CBD5E1" /></Block>
         <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-          <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 17, color: "#0F172A" }}>Boss Bottled EDP</span>
+          <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 17, color: "#0F172A" }}>{productTitle}</span>
           <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
             <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 18, color: "#0F172A" }}>$124.20</span>
             <span style={{ fontSize: 11, color: "#CBD5E1", textDecoration: "line-through" }}>$138.00</span>
@@ -225,23 +232,26 @@ function ProductMock({ sp, onNav, ins }) {
   );
 }
 
-function SearchMock({ sp, onNav, ins }) {
+function SearchMock({ sp, onNav, ins, store, resources }) {
+  const search = ((resources && resources.search) || [])[0];
+  const searchLabel = (search && (search.title || search.handle)) || "hugo boss";
+  const products = ((resources && resources.product) || []);
   return (
     <div style={{ fontFamily: "Inter", background: "#fff" }}>
       {Announce(sp)}
-      <StoreHeader pageId="search" onNav={onNav} />
+      <StoreHeader pageId="search" onNav={onNav} store={store} resources={resources} />
       <InsertZone id="top" ins={ins} />
       <div style={{ padding: "14px 16px 6px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, height: 36, border: "1px solid #E2E8F0", borderRadius: 9999, padding: "0 14px", background: "#F8FAFC" }}>
           <Icon name="search" size={14} color="#94A3B8" />
-          <span style={{ fontSize: 12.5, color: "#0F172A", fontWeight: 500 }}>hugo boss</span>
-          <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#94A3B8" }}>24 resultados</span>
+          <span style={{ fontSize: 12.5, color: "#0F172A", fontWeight: 500 }}>{searchLabel}</span>
+          <span style={{ marginLeft: "auto", fontSize: 10.5, color: "#94A3B8" }}>{products.length || 24} resultados</span>
         </div>
       </div>
       <div style={{ padding: "8px 16px 14px" }}>
         <Slot id="search_top" label="Colocar banner" {...sp}>
           <div style={{ height: 72, borderRadius: 8, background: "linear-gradient(120deg,#1E293B,#334155)", display: "flex", alignItems: "center", padding: "0 22px" }}>
-            <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 15, color: "#fff" }}>Resultados para “hugo boss”</span>
+            <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 15, color: "#fff" }}>Resultados para “{searchLabel}”</span>
           </div>
         </Slot>
       </div>

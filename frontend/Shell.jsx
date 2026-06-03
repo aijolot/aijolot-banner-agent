@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, CAMPAIGN */
+/* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, CAMPAIGN, CampaignApi */
 // Aijolot Banner Agent — app shell (icon sidebar + topbar) and Campaigns landing.
 
 const NAV = [
@@ -83,12 +83,56 @@ const KPIS = [
 ];
 
 const RECENT = [
-  { id: CAMPAIGN.id, title: CAMPAIGN.title, promo: CAMPAIGN.promo, window: CAMPAIGN.window, status: "draft", tone: "amber", statusLabel: "En revisión · 1/3", action: "Continuar" },
-  { id: "CMP-0188", title: "Calzado primavera", promo: "20% OFF", window: "12 — 19 may 2026", status: "live", tone: "green", statusLabel: "Publicado", action: "Ver performance" },
-  { id: "CMP-0185", title: "Skincare — Día Madre", promo: "2x1", window: "1 — 10 may 2026", status: "live", tone: "green", statusLabel: "Publicado", action: "Ver performance" },
+  { id: CAMPAIGN.id, title: CAMPAIGN.title, promo: CAMPAIGN.promo, window: CAMPAIGN.window, status: "draft", tone: "amber", statusLabel: "Demo/prototipo · En revisión", action: "Continuar", source: "demo" },
+  { id: "CMP-0188", title: "Calzado primavera", promo: "20% OFF", window: "12 — 19 may 2026", status: "live", tone: "green", statusLabel: "Demo/prototipo · Publicado", action: "Ver performance", source: "demo" },
+  { id: "CMP-0185", title: "Skincare — Día Madre", promo: "2x1", window: "1 — 10 may 2026", status: "live", tone: "green", statusLabel: "Demo/prototipo · Publicado", action: "Ver performance", source: "demo" },
 ];
 
+function isDraftish(status) {
+  return ["draft", "intake", "generating", "review", "failed"].includes(status || "draft");
+}
+
+function CampaignRow({ r, index, onResume, onPerf }) {
+  const draft = isDraftish(r.status);
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 16, padding: "15px 0", borderTop: index ? "1px solid #F1F5F9" : "none" }}>
+      <div style={{ width: 42, height: 42, borderRadius: 12, background: r.source === "backend" ? "rgba(34,211,238,0.1)" : "rgba(245,158,11,0.11)", display: "flex", alignItems: "center", justifyContent: "center", color: r.source === "backend" ? "#0891B2" : "#B45309", flexShrink: 0 }}>
+        <Icon name={r.source === "backend" ? "database" : "flask-conical"} size={19} />
+      </div>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
+          <span style={{ fontFamily: "Inter", fontSize: 14, fontWeight: 600, color: "#002B57" }}>{r.title}</span>
+          <Badge tone={r.source === "backend" ? "cyan" : "amber"}>{r.source === "backend" ? r.promo : "Demo/fallback"}</Badge>
+        </div>
+        <div style={{ fontFamily: "Space Grotesk", fontSize: 11.5, color: "#94A3B8", marginTop: 3 }}>{r.id} · {r.window}</div>
+      </div>
+      <Badge tone={r.tone}>{r.statusLabel}</Badge>
+      <Button variant={draft ? "default" : "secondary"} icon={draft ? "arrow-right" : "bar-chart-3"}
+        onClick={() => (draft ? onResume(r.campaign || r) : onPerf(r.campaign || r))}>{r.action}</Button>
+    </div>
+  );
+}
+
 function CampaignsView({ onNew, onResume, onPerf }) {
+  const [backendCards, setBackendCards] = React.useState([]);
+  const [loading, setLoading] = React.useState(true);
+  const [apiError, setApiError] = React.useState("");
+
+  React.useEffect(() => {
+    let live = true;
+    async function loadCampaigns() {
+      setLoading(true);
+      setApiError("");
+      const result = await CampaignApi.listSafe();
+      if (!live) return;
+      setBackendCards((result.data || []).map((c) => CampaignApi.toRecentCard(c)));
+      setApiError(result.fallback ? result.reason || "No se pudo cargar campañas del backend." : "");
+      setLoading(false);
+    }
+    loadCampaigns();
+    return () => { live = false; };
+  }, []);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
@@ -114,26 +158,30 @@ function CampaignsView({ onNew, onResume, onPerf }) {
       <GlassCard style={{ padding: 22 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
           <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 18, color: "#002B57" }}>Campañas recientes</div>
-          <span style={{ fontFamily: "Inter", fontSize: 12.5, color: "#94A3B8" }}>Sincronizado con Shopify</span>
+          <span style={{ fontFamily: "Inter", fontSize: 12.5, color: backendCards.length ? "#0891B2" : "#94A3B8" }}>{backendCards.length ? "Datos de backend /api/v1" : "Esperando campañas backend"}</span>
         </div>
+        {loading ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 0", fontFamily: "Inter", fontSize: 13, color: "#68737D" }}><Spinner size={14} /> Cargando campañas del backend…</div>
+        ) : null}
+        {apiError ? (
+          <div style={{ margin: "12px 0", padding: "10px 12px", borderRadius: 12, background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)", color: "#92400E", fontFamily: "Inter", fontSize: 12.5, display: "flex", gap: 8, alignItems: "center" }}>
+            <Icon name="wifi-off" size={15} /> No se pudo cargar campañas reales: {apiError}. Mostrando Demo/fallback explícito.
+          </div>
+        ) : null}
         <div style={{ display: "flex", flexDirection: "column" }}>
-          {RECENT.map((r, i) => (
-            <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 16, padding: "15px 0", borderTop: i ? "1px solid #F1F5F9" : "none" }}>
-              <div style={{ width: 42, height: 42, borderRadius: 12, background: "rgba(34,211,238,0.1)", display: "flex", alignItems: "center", justifyContent: "center", color: "#0891B2", flexShrink: 0 }}>
-                <Icon name="image" size={19} />
-              </div>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" }}>
-                  <span style={{ fontFamily: "Inter", fontSize: 14, fontWeight: 600, color: "#002B57" }}>{r.title}</span>
-                  <Badge tone="cyan">{r.promo}</Badge>
-                </div>
-                <div style={{ fontFamily: "Space Grotesk", fontSize: 11.5, color: "#94A3B8", marginTop: 3 }}>{r.id} · {r.window}</div>
-              </div>
-              <Badge tone={r.tone}>{r.statusLabel}</Badge>
-              <Button variant={r.status === "draft" ? "default" : "secondary"} icon={r.status === "draft" ? "arrow-right" : "bar-chart-3"}
-                onClick={() => (r.status === "draft" ? onResume() : onPerf())}>{r.action}</Button>
+          {backendCards.map((r, i) => <CampaignRow key={r.id} r={r} index={i} onResume={onResume} onPerf={onPerf} />)}
+          {!loading && !backendCards.length && !apiError ? (
+            <div style={{ padding: "18px 0 12px", fontFamily: "Inter", color: "#475569" }}>
+              <div style={{ fontWeight: 600, color: "#002B57", marginBottom: 4 }}>No hay campañas creadas aún</div>
+              <div style={{ fontSize: 13 }}>Crea una campaña con intake o CampaignApi.create; aparecerá aquí después de refrescar.</div>
             </div>
-          ))}
+          ) : null}
+          {!loading && !backendCards.length ? (
+            <div style={{ marginTop: 10, paddingTop: 12, borderTop: "1px solid #F1F5F9" }}>
+              <div style={{ fontFamily: "Inter", fontSize: 11.5, fontWeight: 700, color: "#B45309", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 2 }}>Demo/fallback · prototipo local</div>
+              {RECENT.map((r, i) => <CampaignRow key={r.id} r={r} index={i} onResume={onResume} onPerf={onPerf} />)}
+            </div>
+          ) : null}
         </div>
       </GlassCard>
     </div>

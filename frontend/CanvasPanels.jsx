@@ -8,7 +8,7 @@ const STATUS_META = {
   changes: { tone: "pink", label: "Cambios", icon: "rotate-ccw" },
 };
 
-function ApprovalPanel({ approvers, onSet, published }) {
+function ApprovalPanel({ approvers, onSet, published, mode = "local", threadStatus }) {
   const approved = approvers.filter((a) => a.status === "approved").length;
   const all = approved === approvers.length;
   return (
@@ -16,11 +16,19 @@ function ApprovalPanel({ approvers, onSet, published }) {
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <Icon name="shield-check" size={17} color="#0891B2" />
         <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 15, color: "#002B57" }}>Aprobaciones</span>
+        <Badge tone={mode === "backend" ? "green" : "amber"} icon={mode === "backend" ? "database" : "flask-conical"}>{mode === "backend" ? `Backend ${threadStatus || "open"}` : "Locales/prototipo"}</Badge>
         <span style={{ marginLeft: "auto", fontFamily: "Space Grotesk", fontSize: 12.5, fontWeight: 600, color: all ? "#16A34A" : "#B45309" }}>{approved}/{approvers.length}</span>
       </div>
       <div style={{ height: 6, borderRadius: 9999, background: "#EEF2F6", overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${(approved / approvers.length) * 100}%`, background: all ? "#10B981" : "linear-gradient(90deg,#22D3EE,#0891B2)", borderRadius: 9999, transition: "width .4s ease" }} />
       </div>
+
+      {mode !== "backend" && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 7, padding: "9px 11px", borderRadius: 10, background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)", fontFamily: "Inter", fontSize: 11.5, color: "#B45309", lineHeight: 1.35 }}>
+          <Icon name="triangle-alert" size={13} />
+          <span>Estas aprobaciones son locales/prototipo. No habilitan programación ni publicación backend hasta que exista hilo aprobado en backend.</span>
+        </div>
+      )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {approvers.map((a) => {
@@ -243,11 +251,19 @@ function DateField({ label, value, onChange, disabled, align = "left" }) {
   );
 }
 
-function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow, onSchedule, onEditSchedule, onView }) {
+function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow, onSchedule, onEditSchedule, onView,
+  backendScheduleReady = false, backendPublishReady = false, scheduleGuardReason = "", publishGuardReason = "",
+  approvalMode = "local", backendStatus = "draft" }) {
   const [mode, setMode] = useStateCP("schedule");
   const [start, setStart] = useStateCP("2026-06-02T09:00");
   const [end, setEnd] = useStateCP("2026-06-09T23:59");
   const [auto, setAuto] = useStateCP(true);
+  const activeReady = mode === "now" ? backendPublishReady : backendScheduleReady;
+  const activeReason = mode === "now" ? publishGuardReason : scheduleGuardReason;
+  const primaryLabel = !activeReady
+    ? (mode === "now" ? "Publicación backend no disponible" : "Programación bloqueada")
+    : mode === "now" ? "Publicar en backend" : "Programar publicación";
+  const primaryIcon = activeReady ? (mode === "now" ? "rocket" : "calendar-check") : "lock";
 
   return (
     <GlassCard style={{ padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
@@ -257,6 +273,12 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
         {scheduled && !published && <span style={{ marginLeft: "auto" }}><Badge tone="purple" icon="clock">Programada</Badge></span>}
         {published && <span style={{ marginLeft: "auto" }}><Badge tone="green" icon="check">En vivo</Badge></span>}
       </div>
+      {!published && !scheduled && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 7, padding: "9px 11px", borderRadius: 10, background: activeReady ? "rgba(16,185,129,0.08)" : "rgba(245,158,11,0.08)", border: `1px solid ${activeReady ? "rgba(16,185,129,0.25)" : "rgba(245,158,11,0.25)"}`, fontFamily: "Inter", fontSize: 11.5, color: activeReady ? "#16A34A" : "#B45309", lineHeight: 1.35 }}>
+          <Icon name={activeReady ? "shield-check" : "triangle-alert"} size={13} />
+          <span>{activeReady ? `Guardrails backend OK · estado ${backendStatus}` : (activeReason || `Guardrails backend pendientes · estado ${backendStatus} · aprobaciones ${approvalMode}`)}</span>
+        </div>
+      )}
 
       {published ? (
         <>
@@ -295,7 +317,7 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
       ) : (
         <>
           <div style={{ display: "flex", gap: 3, background: "rgba(248,250,252,0.9)", borderRadius: 11, padding: 3 }}>
-            {[["now", "Publicar ahora", "rocket"], ["schedule", "Programar", "calendar"]].map(([id, label, ic]) => (
+            {[["now", backendPublishReady ? "Publicar ahora" : "Publicar no disponible", "rocket"], ["schedule", "Programar", "calendar"]].map(([id, label, ic]) => (
               <button key={id} onClick={() => setMode(id)} style={{
                 flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 10px", borderRadius: 9, cursor: "pointer",
                 border: `1px solid ${mode === id ? "rgba(34,211,238,.5)" : "transparent"}`, background: mode === id ? "rgba(34,211,238,.14)" : "transparent",
@@ -307,11 +329,11 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
           {mode === "schedule" && (
             <>
               <div style={{ display: "flex", gap: 10 }}>
-                <DateField label="Inicio (publica)" value={start} onChange={setStart} disabled={!allApproved} />
-                <DateField label="Fin (despublica)" value={end} onChange={setEnd} disabled={!allApproved || !auto} align="right" />
+                <DateField label="Inicio (publica)" value={start} onChange={setStart} disabled={!backendScheduleReady} />
+                <DateField label="Fin (despublica)" value={end} onChange={setEnd} disabled={!backendScheduleReady || !auto} align="right" />
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: 10, background: "rgba(248,250,252,0.8)", border: "1px solid #EEF2F6" }}>
-                <MiniSwitch on={auto} onToggle={setAuto} disabled={!allApproved} />
+                <MiniSwitch on={auto} onToggle={setAuto} disabled={!backendScheduleReady} />
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>Despublicar automáticamente</div>
                   <div style={{ fontFamily: "Inter", fontSize: 11, color: "#94A3B8" }}>Al terminar la ventana, el agente retira el banner.</div>
@@ -320,12 +342,12 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
             </>
           )}
 
-          <Button variant={allApproved ? "shine" : "secondary"} icon={allApproved ? (mode === "now" ? "rocket" : "calendar-check") : "lock"} disabled={!allApproved}
+          <Button variant={activeReady ? "shine" : "secondary"} icon={primaryIcon}
             onClick={() => mode === "now" ? onPublishNow() : onSchedule({ start, end, auto })} style={{ justifyContent: "center" }}>
-            {!allApproved ? `Faltan ${missing} aprobaciones` : mode === "now" ? "Publicar en Shopify" : "Programar publicación"}
+            {primaryLabel}
           </Button>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 11, color: "#94A3B8" }}>
-            <Icon name="lock" size={11} /> Guardrail: publicar o programar requiere el 100% de aprobaciones.
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 6, fontFamily: "Inter", fontSize: 11, color: activeReady ? "#16A34A" : "#B45309" }}>
+            <Icon name={activeReady ? "shield-check" : "lock"} size={11} /> {activeReady ? "Backend aceptará la acción si el endpoint responde OK." : (activeReason || "Acción fail-closed: no se marcará como programada/publicada localmente.")}
           </div>
         </>
       )}

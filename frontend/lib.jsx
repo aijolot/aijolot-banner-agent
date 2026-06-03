@@ -241,10 +241,10 @@ function placementPayloadFromPrototype(placement) {
   const id = placement && placement.id || "hero";
   const page = (placement && placement.page || "Inicio").toLowerCase();
   const isNew = placement && placement.layout && placement.layout.mode === "new";
-  const pageTarget = page.includes("cole") ? "collection" : page.includes("producto") ? "product" : page.includes("búsqueda") || page.includes("busqueda") ? "search" : "home";
+  const pageTarget = page.includes("cole") ? "collection" : page.includes("producto") ? "product" : page.includes("búsqueda") || page.includes("busqueda") ? "search" : page.includes("página") || page.includes("pagina") ? "page" : "home";
   const map = {
     announce: { key: "announcement_bar", slot: "announce", target: pageTarget === "search" ? "store" : pageTarget },
-    hero: { key: "hero_main", slot: "hero", target: pageTarget === "collection" ? "collection" : "home" },
+    hero: { key: "hero_main", slot: "hero", target: pageTarget === "collection" ? "collection" : pageTarget === "page" ? "page" : "home" },
     promo_l: { key: "promo_card", slot: "promo_l", target: pageTarget === "collection" ? "collection" : "home" },
     promo_r: { key: "promo_card", slot: "promo_r", target: pageTarget === "collection" ? "collection" : "home" },
     coll_top: { key: "collection_header", slot: "coll_top", target: "collection" },
@@ -255,19 +255,24 @@ function placementPayloadFromPrototype(placement) {
     search_top: { key: "search_results_banner", slot: "search_top", target: "search" },
   };
   const cfg = map[id] || map.hero;
-  const targetHandle = cfg.target === "collection" ? "fragancias" : cfg.target === "product" ? "boss-bottled-edp-100ml" : null;
+  const backend = (placement && placement.backend) || {};
+  const target = backend.target_type || cfg.target;
+  const targetResource = backend.target_resource || null;
+  const targetHandle = backend.target_handle || (targetResource && targetResource.handle) || (target === "collection" ? "fragancias" : target === "product" ? "boss-bottled-edp-100ml" : target === "search" ? "search" : null);
+  const targetTitle = backend.target_title || (targetResource && targetResource.title) || (target === "collection" ? "Fragancias" : target === "product" ? "Boss Bottled EDP 100ml" : (placement && placement.page || "Inicio"));
   return {
-    store_id: window.AIJOLOT_STORE_ID || "00000000-0000-0000-0000-000000000101",
-    placement_type_key: cfg.key,
+    store_id: backend.store_id || window.AIJOLOT_STORE_ID || "00000000-0000-0000-0000-000000000101",
+    placement_type_key: backend.placement_type_key || cfg.key,
     mode: isNew ? "new_section" : "existing_section",
-    target_type: cfg.target,
+    target_type: target,
+    target_resource_gid: backend.target_resource_gid || (targetResource && targetResource.shopify_gid) || null,
     target_handle: targetHandle,
-    target_title: cfg.target === "collection" ? "Fragancias" : cfg.target === "product" ? "Boss Bottled EDP 100ml" : (placement && placement.page || "Inicio"),
-    existing_placement_key: isNew ? null : cfg.slot,
-    existing_placement_label: isNew ? null : (placement && placement.name || "Hero principal"),
-    existing_placement_size: placement && placement.size || null,
-    slot: isNew ? (placement.layout.dropAt || cfg.slot) : cfg.slot,
-    slot_order: 0,
+    target_title: targetTitle,
+    existing_placement_key: isNew ? null : (backend.existing_placement_key || cfg.slot),
+    existing_placement_label: isNew ? null : (backend.existing_placement_label || (placement && placement.name || "Hero principal")),
+    existing_placement_size: backend.existing_placement_size || (placement && placement.size) || null,
+    slot: isNew ? ((placement.layout && placement.layout.dropAt) || backend.slot || cfg.slot) : (backend.slot || cfg.slot),
+    slot_order: backend.slot_order || 0,
     scope_rule: (placement && placement.scope) || {},
     layout_json: (placement && placement.layout) || { cols: [{ rows: 1, w: 1, align: "center" }] },
   };
@@ -276,8 +281,37 @@ function placementPayloadFromPrototype(placement) {
 const CampaignApi = {
   async create(input) { return AijolotApi.post(AijolotApi.v1("/campaigns"), input || {}); },
   async list() { return AijolotApi.get(AijolotApi.v1("/campaigns")); },
+  async listSafe() {
+    try {
+      const data = await this.list();
+      return { ok: true, fallback: false, data: Array.isArray(data) ? data : [] };
+    } catch (e) {
+      return { ok: false, fallback: true, reason: errorText(e), data: [] };
+    }
+  },
   async get(id) { return AijolotApi.get(AijolotApi.v1(`/campaigns/${id}`)); },
   async patch(id, fields) { return AijolotApi.patch(AijolotApi.v1(`/campaigns/${id}`), fields); },
+  toRecentCard(campaign) {
+    const brief = campaign && campaign.structured_brief || {};
+    const status = (campaign && campaign.status) || "draft";
+    const isDraft = ["draft", "intake", "generating", "review", "failed"].includes(status);
+    const tone = status === "published" || status === "live" ? "green" : status === "approved" ? "cyan" : status === "scheduled" ? "purple" : status === "failed" ? "red" : "amber";
+    const labels = { draft: "Borrador backend", intake: "Brief backend", generating: "Generando", review: "En revisión", approved: "Aprobada", scheduled: "Programada", published: "Publicada", live: "Publicada", failed: "Error" };
+    const promo = brief.cta || brief.urgency || "Backend";
+    const windowLabel = brief.deadline ? `Deadline ${brief.deadline}` : (brief.placement || "Sin deadline");
+    return {
+      id: campaign && campaign.id,
+      title: (campaign && campaign.title) || brief.goal || "Campaña sin título",
+      promo,
+      window: windowLabel,
+      status,
+      tone,
+      statusLabel: labels[status] || status || "Backend",
+      action: isDraft ? "Continuar" : "Ver performance",
+      campaign,
+      source: "backend",
+    };
+  },
 };
 
 const StoreApi = {
@@ -285,7 +319,27 @@ const StoreApi = {
   async get(storeId) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}`)); },
   async resources(storeId, resourceType) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/shopify/resources?resource_type=${encodeURIComponent(resourceType || "collection")}`)); },
   async placementTypes(storeId) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/placement-types`)); },
-  async placementTargets(storeId, placementTypeKey) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/placement-types/${placementTypeKey}/targets`)); },
+  async placementTargets(storeId, placementTypeKey) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/placement-types/${encodeURIComponent(placementTypeKey)}/targets`)); },
+  async listSafe() {
+    try { return { ok: true, fallback: false, data: await this.list() }; }
+    catch (e) { return { ok: false, fallback: true, reason: errorText(e), data: [] }; }
+  },
+  async getSafe(storeId) {
+    try { return { ok: true, fallback: false, data: await this.get(storeId) }; }
+    catch (e) { return { ok: false, fallback: true, reason: errorText(e), data: null }; }
+  },
+  async resourcesSafe(storeId, resourceType) {
+    try { return { ok: true, fallback: false, data: await this.resources(storeId, resourceType) }; }
+    catch (e) { return { ok: false, fallback: true, reason: errorText(e), data: [] }; }
+  },
+  async placementTypesSafe(storeId) {
+    try { return { ok: true, fallback: false, data: await this.placementTypes(storeId) }; }
+    catch (e) { return { ok: false, fallback: true, reason: errorText(e), data: [] }; }
+  },
+  async placementTargetsSafe(storeId, placementTypeKey) {
+    try { return { ok: true, fallback: false, data: await this.placementTargets(storeId, placementTypeKey) }; }
+    catch (e) { return { ok: false, fallback: true, reason: errorText(e), data: null }; }
+  },
 };
 
 const PlacementApi = {
@@ -462,7 +516,7 @@ const ReviewApi = {
     return { ok: true, fallback: false, data };
   },
   async schedule(campaign, schedule) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend scheduling requires an approved UUID campaign; using visible prototype schedule state.", schedule);
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend scheduling requires an approved UUID campaign and backend revision; local/prototype campaigns cannot be marked scheduled.", null);
     const startsAt = new Date(schedule.start).toISOString();
     const endsAt = schedule.auto && schedule.end ? new Date(schedule.end).toISOString() : null;
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/schedule`), { starts_at: startsAt, ends_at: endsAt, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", auto_unpublish: !!schedule.auto });
@@ -479,7 +533,7 @@ const ReviewApi = {
     return { ok: true, fallback: false, data };
   },
   async publish(campaign) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend publishing requires a scheduled UUID campaign; using visible prototype publish state.", null);
+    if (!isApiCampaign(campaign)) return fallbackResult("Backend publishing requires a scheduled UUID campaign; local/prototype publish is unavailable/fail-closed.", null);
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/publish`));
     return { ok: true, fallback: false, data };
   },

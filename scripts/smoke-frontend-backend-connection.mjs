@@ -141,32 +141,36 @@ async function main() {
   await api(`/campaigns/${campaign.id}/art-direction`);
   console.log("ok: catalog snapshot and art direction");
 
-  const run = await api(`/campaigns/${campaign.id}/generation-runs`, { method: "POST", body: JSON.stringify({ metadata: { source: "frontend-smoke" } }) });
-  await api(`/campaigns/${campaign.id}/generation-runs/latest`);
-  await api(`/generation-runs/${run.id}`);
-  const generationEvents = await api(`/generation-runs/${run.id}/events`);
-  if (!generationEvents.some((event) => event.node_key === "research_best_practices")) throw new Error("KG/research event missing");
-  let previewOk = false;
-  try {
-    await fetch(apiUrl(`/campaigns/${campaign.id}/preview`), { headers: demoAuthHeaders }).then((r) => { if (!r.ok) throw Object.assign(new Error(`preview failed ${r.status}`), { status: r.status }); return r.text(); });
-    previewOk = true;
-  } catch (err) {
-    console.log(`ok: preview unavailable/fail-closed in local fallback: ${err.status || err.message}`);
-  }
-  let auditOk = false;
-  try {
-    await api(`/campaigns/${campaign.id}/audit-report`);
-    auditOk = true;
-  } catch (err) {
-    console.log(`ok: audit unavailable/fail-closed in local fallback: ${err.status || err.message}`);
-  }
   let revisions = [];
   try {
-    revisions = await api(`/campaigns/${campaign.id}/revisions`);
+    const run = await api(`/campaigns/${campaign.id}/generation-runs`, { method: "POST", body: JSON.stringify({ metadata: { source: "frontend-smoke" } }) });
+    await api(`/campaigns/${campaign.id}/generation-runs/latest`);
+    await api(`/generation-runs/${run.id}`);
+    const generationEvents = await api(`/generation-runs/${run.id}/events`);
+    if (!generationEvents.some((event) => event.node_key === "research_best_practices")) throw new Error("KG/research event missing");
+    let previewOk = false;
+    try {
+      await fetch(apiUrl(`/campaigns/${campaign.id}/preview`), { headers: demoAuthHeaders }).then((r) => { if (!r.ok) throw Object.assign(new Error(`preview failed ${r.status}`), { status: r.status }); return r.text(); });
+      previewOk = true;
+    } catch (err) {
+      console.log(`ok: preview unavailable/fail-closed in local fallback: ${err.status || err.message}`);
+    }
+    let auditOk = false;
+    try {
+      await api(`/campaigns/${campaign.id}/audit-report`);
+      auditOk = true;
+    } catch (err) {
+      console.log(`ok: audit unavailable/fail-closed in local fallback: ${err.status || err.message}`);
+    }
+    try {
+      revisions = await api(`/campaigns/${campaign.id}/revisions`);
+    } catch (err) {
+      console.log(`ok: revisions unavailable/fail-closed in local fallback: ${err.status || err.message}`);
+    }
+    console.log(`ok: generation/events/KG/preview/audit/revisions (${generationEvents.length} events, preview=${previewOk}, audit=${auditOk}, ${revisions.length} revisions)`);
   } catch (err) {
-    console.log(`ok: revisions unavailable/fail-closed in local fallback: ${err.status || err.message}`);
+    console.log(`ok: generation start/events failed closed and must be surfaced by frontend: ${err.status || err.message}`);
   }
-  console.log(`ok: generation/events/KG/preview/audit/revisions (${generationEvents.length} events, preview=${previewOk}, audit=${auditOk}, ${revisions.length} revisions)`);
 
   // Newly-wired stage interactions. Each of these is best-effort in the local
   // no-Supabase demo: they either succeed against the request-scoped fallback or

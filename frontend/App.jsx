@@ -1,6 +1,6 @@
 /* global React, useTweaks, TweaksPanel, TweakSection, TweakSelect, TweakRadio,
    Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, ArtStage, GenerateStage,
-   CanvasStage, PerformanceStage, Icon, Badge, PlacementApi */
+   CanvasStage, PerformanceStage, Icon, Badge, PlacementApi, CampaignApi, isApiCampaign */
 // Aijolot Banner Agent — app orchestrator.
 const { useState: useStateA } = React;
 
@@ -58,12 +58,48 @@ function App() {
   const [apiNotice, setApiNotice] = useStateA(null);
 
   function onNav(id) { setNav(id); }
-  async function onCampaignReady(c) {
+  async function handleNewCampaign() {
+    setApiNotice(null);
+    try {
+      const c = await CampaignApi.create({ title: "Nueva campaña", raw_brief: "" });
+      setCampaign(c);
+      setApiNotice({ tone: "green", text: "Campaña backend creada: " + c.id });
+    } catch (e) {
+      setCampaign(null);
+      setApiNotice({ tone: "amber", text: "No se pudo crear campaña backend; continuarás en modo prototipo hasta completar intake: " + (e.message || e.status || "error") });
+    }
+    setStage("placement");
+  }
+  async function handlePlacementNext(p) {
+    setPlacement(p);
+    if (isApiCampaign(campaign)) {
+      try {
+        const r = await PlacementApi.save(campaign, p);
+        if (!r.fallback && PlacementApi.get) await PlacementApi.get(campaign);
+        setApiNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Ubicación guardada y recuperable en backend" });
+      } catch (e) {
+        setApiNotice({ tone: "amber", text: "No se pudo guardar ubicación en backend: " + (e.message || e.status || "error") });
+      }
+    }
+    setStage("brief");
+  }
+  function hydrateCampaignSelection(c, nextStage) {
+    if (c) setCampaign({ ...c, structured_brief: c.structured_brief || {} });
+    setApiNotice(c && isApiCampaign(c) ? { tone: "green", text: "Campaña backend activa: " + c.id } : { tone: "amber", text: "Campaña demo/prototipo activa; las APIs durables requieren UUID backend." });
+    setStage(nextStage);
+  }
+  async function onCampaignReady(c, opts) {
     setCampaign(c);
+    if (!isApiCampaign(c)) {
+      setApiNotice({ tone: "amber", text: "Campaña local/prototipo activa; crea o recupera una campaña backend UUID para persistir y avanzar." });
+      return;
+    }
+    if (opts && opts.localOnly) return;
     if (!placement) return;
     try {
       const r = await PlacementApi.save(c, placement);
-      setApiNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Ubicación guardada en backend" });
+      if (!r.fallback && PlacementApi.get) await PlacementApi.get(c);
+      setApiNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Ubicación guardada y recuperable en backend" });
     } catch (e) {
       setApiNotice({ tone: "amber", text: "No se pudo guardar ubicación en backend: " + (e.message || e.status || "error") });
     }
@@ -76,11 +112,11 @@ function App() {
     const labels = { dashboard: "Dashboard", orders: "Pedidos", products: "Productos", analytics: "Analítica" };
     body = <ModulePlaceholder label={labels[nav]} />;
   } else if (stage === "campaigns") {
-    body = <CampaignsView onNew={() => setStage("placement")} onResume={() => setStage("canvas")} onPerf={() => setStage("performance")} />;
+    body = <CampaignsView onNew={handleNewCampaign} onResume={(c) => hydrateCampaignSelection(c, "canvas")} onPerf={(c) => hydrateCampaignSelection(c, "performance")} />;
   } else {
     let view;
-    if (stage === "placement") view = <PlacementStage onNotice={setApiNotice} onNext={(p) => { setPlacement(p); setStage("brief"); }} />;
-    else if (stage === "brief") view = <BriefStage onGenerate={(c) => { setCampaign(c); setStage("art"); }} onCampaignReady={onCampaignReady} placement={placement} />;
+    if (stage === "placement") view = <PlacementStage onNotice={setApiNotice} onNext={handlePlacementNext} />;
+    else if (stage === "brief") view = <BriefStage campaign={campaign} onGenerate={(c) => { setCampaign(c); setStage("art"); }} onCampaignReady={onCampaignReady} onNotice={setApiNotice} placement={placement} />;
     else if (stage === "art") view = <ArtStage campaign={campaign} placement={placement} onNotice={setApiNotice} onAssemble={(a) => { setArt(a); setStage("generate"); }} />;
     else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} onNotice={setApiNotice} onDone={() => setStage("canvas")} />;
     else if (stage === "canvas") view = <CanvasStage campaign={campaign} tweaks={t} placement={placement} art={art} onNotice={setApiNotice} onPublish={() => setStage("performance")} />;

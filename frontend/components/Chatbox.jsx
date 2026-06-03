@@ -48,7 +48,7 @@ function Bubble({ role, children }) {
   );
 }
 
-function Chatbox({ onCampaign }) {
+function Chatbox({ campaign, onCampaign, onNotice }) {
   const [msgs, setMsgs] = useStateCB([{ role: "agent", text: "Hola. Cuéntame la campaña que quieres lanzar — promo, producto, audiencia y dónde irá. Yo armo el brief." }]);
   const [val, setVal] = useStateCB("");
   const [streaming, setStreaming] = useStateCB(false);
@@ -58,6 +58,11 @@ function Chatbox({ onCampaign }) {
   const scroller = useRefCB(null);
 
   useEffectCB(() => { if (scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight; }, [msgs, streaming]);
+  useEffectCB(() => {
+    if (!campaign) return;
+    if (campaign.id) campaignId.current = campaign.id;
+    if (campaign.structured_brief) brief.current = campaign.structured_brief;
+  }, [campaign]);
 
   function pushAgentToken(text) {
     setMsgs((m) => {
@@ -83,6 +88,11 @@ function Chatbox({ onCampaign }) {
     });
   }
 
+  function isOfflineFallbackError(e) {
+    const msg = (e && (e.message || String(e))) || "";
+    return /api client unavailable|failed to fetch|networkerror|load failed|could not connect|connection refused/i.test(msg);
+  }
+
   async function fallbackLocal(text) {
     const updated = localExtract(brief.current, text);
     const missing = missingOf(updated);
@@ -102,7 +112,18 @@ function Chatbox({ onCampaign }) {
     setMsgs((m) => [...m, { role: "user", text: t }]);
     setVal(""); setStreaming(true); setError("");
     try { await streamFromBridge(t); }
-    catch (e) { setError("Bridge no disponible — usando modo offline."); await fallbackLocal(t); }
+    catch (e) {
+      const msg = e && (e.message || e.status) || "error";
+      if (!isOfflineFallbackError(e)) {
+        sealAgent();
+        setError("Intake backend falló: " + msg);
+        onNotice && onNotice({ tone: "amber", text: "No se pudo guardar intake en backend: " + msg });
+        return;
+      }
+      setError("Bridge no disponible — usando modo offline explícito.");
+      onNotice && onNotice({ tone: "amber", text: "Backend no disponible; usando extractor local solo como fallback offline." });
+      await fallbackLocal(t);
+    }
     finally { setStreaming(false); }
   }
 
@@ -114,7 +135,7 @@ function Chatbox({ onCampaign }) {
           <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 15, color: "#002B57" }}>Brief con el agente</div>
           <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8" }}>Describe la campaña en lenguaje natural</div>
         </div>
-        {error ? <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "Inter", fontSize: 11, color: "#B45309" }}><Icon name="wifi-off" size={13} /> offline</span> : null}
+        {error ? <span title={error} style={{ display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "Inter", fontSize: 11, color: "#B45309" }}><Icon name="wifi-off" size={13} /> {error.includes("offline") ? "offline" : "error backend"}</span> : null}
       </div>
 
       <div ref={scroller} style={{ flex: 1, overflowY: "auto", padding: 18, display: "flex", flexDirection: "column", gap: 13, maxHeight: 380 }}>
