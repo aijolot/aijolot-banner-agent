@@ -26,7 +26,7 @@ class ApprovalRequestCreate(BaseModel):
     revision_id: str | None = Field(default=None, pattern=UUID_PATTERN)
     requested_by: str | None = Field(default=None, pattern=UUID_PATTERN)
     approval_policy: Literal["all_members"] = "all_members"
-    reviewers: list[ReviewerAssignment] = Field(default_factory=list, min_length=1)
+    reviewers: list[ReviewerAssignment] = Field(default_factory=list)
 
 
 class ApprovalActionCreate(BaseModel):

@@ -375,6 +375,10 @@ Coordinator note: Implemented by fresh subagent and reviewed/fixed by coordinato
 
 **Commit:** `feat: enable supabase-backed demo approvals`
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented by fresh subagent with multiple security/spec review loops. Changed `backend/app/api/v1/approvals.py`, `backend/app/schemas/approvals.py`, `backend/app/services/approvals/approval_service.py`, `backend/app/services/approvals/comment_service.py`, `backend/tests/api/test_approvals.py`, `backend/tests/unit/test_approval_service.py`, and `supabase/seed.sql`. Default approval/comment endpoints now require request context, are gated to local/test APP_ENV for service-role demo use, bind actor fields (`requested_by`, `author_id`, `resolved_by`, `user_id`) to request context, use team-scoped Supabase-backed repositories when configured, derive deterministic demo reviewers for the seeded demo team, require selected/explicit revisions for approval/refinement, persist threads/reviewers/comments/refinement requests, transition all-reviewer approval to `approved`, and keep no-auth/no-Supabase paths fail-closed. Review fixes addressed spoofable service-role concerns, body actor impersonation, refinement latest-revision fallback, empty thread-create 500s, and wrong-team comment resolve 500s. Validation: approval API/unit tests passed (25 passed, 1 existing warning); backend API tests passed (107 passed, 1 warning); final reviewer ran full backend suite (312 passed, 3 skipped, 1 warning); `python3 scripts/smoke-demo-flow.py`, `node scripts/smoke-frontend-backend-connection.mjs`, and `git diff --check` passed. Note: no-Supabase smoke still shows approval/refinement fail-closed, which is expected without configured Supabase artifact/repository access.
+
 ---
 
 ## Phase 5: Complete Schedule Happy Path

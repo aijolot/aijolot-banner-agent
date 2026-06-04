@@ -15,8 +15,10 @@ from app.schemas.approvals import (
 from app.services.approvals.approval_service import (
     ApprovalReviewerNotFound,
     ApprovalService,
+    ApprovalServiceUnavailable,
     ApprovalThreadClosed,
     CampaignRevisionMismatch,
+    CampaignRevisionNotFound,
     DuplicateReviewer,
 )
 from app.services.approvals.comment_service import CommentService
@@ -187,6 +189,47 @@ def test_request_approval_creates_thread_reviewers_and_sets_needs_review(service
     assert campaigns.rows[CAMPAIGN_ID]["status"] == "needs_review"
 
 
+def test_request_approval_requires_selected_revision(services) -> None:
+    approval, _comment, campaigns, _refinements = services
+    campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] = None
+
+    with pytest.raises(CampaignRevisionNotFound):
+        approval.request_approval(CAMPAIGN_ID, ApprovalRequestCreate(reviewers=[ReviewerAssignment(user_id=USER_1)]))
+
+
+def test_request_approval_derives_configured_demo_reviewers(services) -> None:
+    approval, _comment, _campaigns, _refinements = services
+    approval.default_reviewers = [
+        {"user_id": USER_1, "role_label": "Owner"},
+        {"user_id": USER_2, "role_label": "Marketing"},
+    ]
+
+    thread = approval.request_approval(CAMPAIGN_ID, ApprovalRequestCreate())
+
+    assert [reviewer.user_id for reviewer in thread.reviewers] == [USER_1, USER_2]
+    assert [reviewer.role_label for reviewer in thread.reviewers] == ["Owner", "Marketing"]
+
+
+def test_request_approval_without_reviewers_fails_closed(services) -> None:
+    approval, _comment, _campaigns, _refinements = services
+
+    with pytest.raises(ApprovalServiceUnavailable):
+        approval.request_approval(CAMPAIGN_ID, ApprovalRequestCreate())
+
+
+def test_empty_thread_create_result_fails_closed(services) -> None:
+    approval, _comment, _campaigns, _refinements = services
+
+    class EmptyThreadCreate(InMemoryThreads):
+        def create(self, *, data: dict):
+            return {}
+
+    approval.threads = EmptyThreadCreate()
+
+    with pytest.raises(ApprovalServiceUnavailable):
+        approval.request_approval(CAMPAIGN_ID, ApprovalRequestCreate(reviewers=[ReviewerAssignment(user_id=USER_1)]))
+
+
 def test_all_reviewers_must_approve_before_campaign_is_approved(services) -> None:
     approval, _comment, campaigns, _refinements = services
     _request_thread(approval)
@@ -254,6 +297,17 @@ def test_create_refinement_request_stores_without_regeneration(services) -> None
     assert row.result_revision_id is None
     assert len(refinements.rows) == 1
     assert campaigns.rows[CAMPAIGN_ID]["status"] == "changes_requested"
+
+
+def test_create_refinement_request_requires_selected_or_explicit_revision(services) -> None:
+    approval, _comment, campaigns, _refinements = services
+    campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] = None
+
+    with pytest.raises(CampaignRevisionNotFound):
+        approval.create_refinement_request(
+            CAMPAIGN_ID,
+            RefinementRequestCreate(requested_by=USER_1, prompt="Try warmer colors", addressed_comment_ids=[]),
+        )
 
 
 def test_revision_must_belong_to_campaign_for_approval_and_refinement(services) -> None:

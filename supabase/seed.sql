@@ -85,10 +85,54 @@ on conflict (key) do update set
   config_schema = excluded.config_schema,
   is_active = true;
 
--- Demo team/store/brand without users. The app can attach authenticated users later.
+-- Demo team/store/brand with deterministic local reviewers for approval flows.
+insert into auth.users (id, instance_id, aud, role, email, email_confirmed_at, raw_user_meta_data, created_at, updated_at)
+values
+  (
+    '00000000-0000-0000-0000-000000000601',
+    '00000000-0000-0000-0000-000000000000',
+    'authenticated',
+    'authenticated',
+    'owner@aijolot-demo.local',
+    now(),
+    '{"full_name":"Demo Owner"}',
+    now(),
+    now()
+  ),
+  (
+    '00000000-0000-0000-0000-000000000602',
+    '00000000-0000-0000-0000-000000000000',
+    'authenticated',
+    'authenticated',
+    'marketing@aijolot-demo.local',
+    now(),
+    '{"full_name":"Demo Marketing"}',
+    now(),
+    now()
+  )
+on conflict (id) do update set
+  email = excluded.email,
+  raw_user_meta_data = excluded.raw_user_meta_data,
+  updated_at = now();
+
+insert into public.profiles (id, full_name, initials, role_title)
+values
+  ('00000000-0000-0000-0000-000000000601', 'Demo Owner', 'DO', 'Owner'),
+  ('00000000-0000-0000-0000-000000000602', 'Demo Marketing', 'DM', 'Marketing Reviewer')
+on conflict (id) do update set
+  full_name = excluded.full_name,
+  initials = excluded.initials,
+  role_title = excluded.role_title;
+
 insert into public.teams (id, name, slug)
 values ('00000000-0000-0000-0000-000000000001', 'Aijolot Demo Team', 'aijolot-demo')
 on conflict (slug) do update set name = excluded.name;
+
+insert into public.team_members (team_id, user_id, role)
+values
+  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000601', 'owner'),
+  ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000602', 'reviewer')
+on conflict (team_id, user_id) do update set role = excluded.role;
 
 insert into public.stores
   (id, team_id, shop_domain, display_name, shopify_api_version, theme_id, status)

@@ -24,6 +24,8 @@ client = TestClient(app)
 UNKNOWN_CAMPAIGN_ID = "00000000-0000-0000-0000-000000000999"
 UNKNOWN_THREAD_ID = "00000000-0000-0000-0000-000000000998"
 UNKNOWN_COMMENT_ID = "00000000-0000-0000-0000-000000000997"
+DEMO_TEAM_ID = "00000000-0000-0000-0000-000000000001"
+DEMO_HEADERS = {"x-aijolot-user-id": USER_1, "x-aijolot-team-id": DEMO_TEAM_ID}
 
 
 class FakeStack:
@@ -179,3 +181,89 @@ def test_default_unconfigured_endpoints_return_503(monkeypatch) -> None:
 
     assert response.status_code == 503
     assert comment.status_code == 503
+
+
+def test_default_approval_endpoints_require_request_context(monkeypatch) -> None:
+    from app.api.v1 import approvals
+
+    monkeypatch.setattr(approvals, "_approval_service", approvals._DEFAULT_APPROVAL_SERVICE_FACTORY)
+    monkeypatch.setattr(approvals, "_comment_service", approvals._DEFAULT_COMMENT_SERVICE_FACTORY)
+
+    assert client.get(f"/api/v1/campaigns/{CAMPAIGN_ID}/approval").status_code == 401
+
+
+def test_default_approval_endpoints_fail_closed_without_supabase(monkeypatch) -> None:
+    from app.api.v1 import approvals
+
+    monkeypatch.setattr(approvals, "_approval_service", approvals._DEFAULT_APPROVAL_SERVICE_FACTORY)
+    monkeypatch.setattr(approvals, "_comment_service", approvals._DEFAULT_COMMENT_SERVICE_FACTORY)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_ROLE_KEY", raising=False)
+
+    response = client.get(
+        f"/api/v1/campaigns/{CAMPAIGN_ID}/approval",
+        headers=DEMO_HEADERS,
+    )
+
+    assert response.status_code == 503
+
+
+def test_default_comment_routes_fail_closed_for_untrusted_demo_context(monkeypatch) -> None:
+    from app.api.v1 import approvals
+
+    monkeypatch.setattr(approvals, "_comment_service", approvals._DEFAULT_COMMENT_SERVICE_FACTORY)
+    monkeypatch.setenv("APP_ENV", "production")
+    production = client.post(
+        f"/api/v1/approval-threads/{THREAD_ID}/comments",
+        headers=DEMO_HEADERS,
+        json={"body": "x"},
+    )
+    monkeypatch.setenv("APP_ENV", "test")
+    wrong_team = client.post(
+        f"/api/v1/approval-threads/{THREAD_ID}/comments",
+        headers={"x-aijolot-user-id": USER_1, "x-aijolot-team-id": "00000000-0000-0000-0000-000000000099"},
+        json={"body": "x"},
+    )
+    wrong_team_resolve = client.patch(
+        f"/api/v1/comments/{COMMENT_ID}/resolve",
+        headers={"x-aijolot-user-id": USER_1, "x-aijolot-team-id": "00000000-0000-0000-0000-000000000099"},
+        json={},
+    )
+
+    assert production.status_code == 503
+    assert wrong_team.status_code == 404
+    assert wrong_team_resolve.status_code == 404
+
+
+def test_default_approval_routes_bind_actor_fields_to_request_context(monkeypatch) -> None:
+    from app.api.v1 import approvals
+
+    stack = FakeStack()
+    stack.approval.default_reviewers = [{"user_id": USER_1, "role_label": None}]
+    monkeypatch.setattr(approvals, "_approval_service", approvals._DEFAULT_APPROVAL_SERVICE_FACTORY)
+    monkeypatch.setattr(approvals, "_comment_service", approvals._DEFAULT_COMMENT_SERVICE_FACTORY)
+    monkeypatch.setattr(approvals, "configured_approval_service_for_team", lambda _team_id: stack.approval)
+    monkeypatch.setattr(approvals, "configured_comment_service_for_team", lambda _team_id: stack.comment)
+
+    thread = client.post(
+        f"/api/v1/campaigns/{CAMPAIGN_ID}/approval/request",
+        headers=DEMO_HEADERS,
+        json={"requested_by": USER_2, "reviewers": [{"user_id": USER_1, "role_label": "Owner"}]},
+    )
+    comment = client.post(
+        f"/api/v1/approval-threads/{THREAD_ID}/comments",
+        headers=DEMO_HEADERS,
+        json={"author_id": USER_2, "body": "Use backend actor"},
+    )
+    approve = client.post(
+        f"/api/v1/approval-threads/{THREAD_ID}/approve",
+        headers=DEMO_HEADERS,
+        json={"user_id": USER_2, "note": "approve as request user"},
+    )
+
+    assert thread.status_code == 200
+    assert comment.status_code == 200
+    assert comment.json()["author_id"] == USER_1
+    assert approve.status_code == 200
+    assert approve.json()["reviewers"][0]["user_id"] == USER_1
+    assert approve.json()["reviewers"][0]["status"] == "approved"
