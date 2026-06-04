@@ -284,6 +284,10 @@ Coordinator note: Implemented and reviewed through fresh subagents plus coordina
 
 **Commit:** `feat: run deterministic agentic generation adapter`
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented by fresh subagent and independently reviewed. Changed `backend/app/agents/pipeline_runner.py`, `backend/app/services/banners/generation_run_service.py`, `backend/tests/unit/agents/test_pipeline.py`, and `backend/tests/unit/test_generation_run_service.py`. Added `AgenticGenerationAdapter` with deterministic-demo mode that runs existing runtime skills directly (brand context, personalization, static KG, concept draft, prompt refine, fake image generation, image optimization, HTML render, Liquid build, deterministic audit) and preserves `adk_pipeline` as explicit future/feature-gated mode. Generation now persists adapter bundle concept/copy, refined prompt, fake image/optimized asset metadata, HTML preview, Liquid payload, audit output, skill-chain events, and provenance labels (`agent_mode`, `image_provider`, `kg_provider`, `audit_provider`, `shopify_provider`). Review confirmed no live Gemini/Shopify/vector KG/external calls, no duplicate topology, and existing ADK graph preserved. Coordinator fixed minor robustness findings around runtime skill caching/validation and malformed `structured_brief`. Validation: `cd backend && . .venv/bin/activate && pytest tests/unit/agents tests/unit/test_generation_run_service.py -q` passed (67 passed, 1 existing warning); additional phase review ran full backend suite (298 passed, 3 skipped, 1 warning), smoke scripts, and `git diff --check` successfully.
+
 ---
 
 ## Phase 3: Make Preview, Audit, and Canvas Backend-Backed

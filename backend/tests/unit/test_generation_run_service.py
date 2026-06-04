@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.db.repositories.audit_reports import AuditReportRepository
@@ -272,6 +274,70 @@ def test_start_generation_run_persists_mvp_artifacts_and_selects_new_revision() 
     assert audit["schema_report"] == {"valid": True}
     assert audit["human_review_required"] is True
     assert audit["avif_skipped"] is True
+
+
+class RecordingGenerationAdapter:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            agent_mode="deterministic_demo",
+            concept={"copy": {"headline": "Agentic headline", "subheadline": "Agentic subcopy", "cta": "Shop now"}, "layout": "agentic layout"},
+            refined_image_prompt="Agentic refined prompt",
+            image_asset={"provider": "fake", "model": "fake-nano-banana-v1", "metadata": {"deterministic_seed": "abc"}},
+            optimized_asset={"webp": {1280: "memory://optimized/1280w.webp"}, "total_weight_kb_1280_webp": 12.3},
+            html_preview="<!doctype html><section class='aijolot-banner'>Agentic headline</section>",
+            liquid_payload={"section": "{% comment %} aijolot-banner {% endcomment %}", "config": {"safe_to_publish": False}},
+            audit_result={"status": "warn", "schema_report": {"valid": True}, "human_review_required": True, "avif_skipped": False, "findings": []},
+            events=[
+                {"node_key": "load_brand_context", "frontend_step": "intake_context", "status": "started", "input_summary": {"summary": "agent start"}, "output_summary": {}, "duration_ms": 0, "cost_usd": 0.0},
+                {"node_key": "load_brand_context", "frontend_step": "intake_context", "status": "succeeded", "input_summary": {}, "output_summary": {"summary": "agent done"}, "duration_ms": 1, "cost_usd": 0.0},
+            ],
+            provenance={"agent_mode": "deterministic_demo", "image_provider": "fake", "kg_provider": "static", "audit_provider": "deterministic_local", "shopify_provider": "not_called"},
+        )
+
+
+def test_generation_run_uses_agentic_adapter_and_persists_bundle_contents() -> None:
+    campaigns = FakeCampaignRepository()
+    revisions = InMemoryArtifactRepository()
+    layout_variants = InMemoryChildArtifactRepository()
+    variants = InMemoryChildArtifactRepository()
+    audit_reports = InMemoryAuditReportRepository()
+    adapter = RecordingGenerationAdapter()
+    service = GenerationRunService(
+        run_repository=InMemoryGenerationRunRepository(),
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns,
+        revision_repository=revisions,
+        layout_variant_repository=layout_variants,
+        variant_repository=variants,
+        audit_report_repository=audit_reports,
+        generation_adapter=adapter,
+        team_id="team-1",
+    )
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+    revision_id = campaigns.rows[CAMPAIGN_ID]["selected_revision_id"]
+    revision = revisions.rows[revision_id]
+    audit = audit_reports.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+    events = service.list_events(run.id)
+
+    assert adapter.calls and adapter.calls[0]["campaign_id"] == CAMPAIGN_ID
+    assert run.metadata["agent_mode"] == "deterministic_demo"
+    assert run.metadata["image_provider"] == "fake"
+    assert run.metadata["kg_provider"] == "static"
+    assert run.metadata["audit_provider"] == "deterministic_local"
+    assert revision["concept"]["copy"]["headline"] == "Agentic headline"
+    assert revision["concept"]["refined_image_prompt"] == "Agentic refined prompt"
+    assert revision["liquid_config"]["section"] == "{% comment %} aijolot-banner {% endcomment %}"
+    assert revision["liquid_config"]["image_provider"] == "fake"
+    assert "Agentic headline" in revision["html_preview"]
+    assert audit is not None
+    assert audit["schema_report"] == {"valid": True}
+    assert audit["avif_skipped"] is False
+    assert [(event.node_key, event.output_summary) for event in events if event.status == "succeeded"] == [("load_brand_context", {"summary": "agent done"})]
 
 
 def test_audit_report_normalization_preserves_deterministic_runtime_fields() -> None:

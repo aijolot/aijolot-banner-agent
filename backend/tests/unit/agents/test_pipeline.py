@@ -8,6 +8,8 @@ this test suite is the authoritative coverage for the ADK Workflow pipeline.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from google.adk.workflow import FunctionNode, JoinNode, Workflow
@@ -50,6 +52,54 @@ class TestPipelineConstruction:
         node_names = {n.name for n in pipeline.graph.nodes}
         assert "schedule_route" in node_names
         assert "shopify_publish" in node_names
+
+    def test_agentic_generation_adapter_demo_runs_skill_chain_without_live_providers(self, monkeypatch):
+        monkeypatch.delenv("IMAGE_GENERATION_PROVIDER", raising=False)
+        from app.agents.pipeline_runner import AgenticGenerationAdapter
+        from app.workflows.banner_creation import ordered_node_keys
+
+        campaign = {
+            "id": "campaign-1",
+            "title": "Black Friday VIP",
+            "promo_label": "30% off",
+            "raw_brief": "Premium Black Friday hero for VIP customers",
+            "structured_brief": {
+                "goal": "Black Friday 30% off premium apparel",
+                "audience": "VIP customers",
+                "cta": "Shop now",
+                "tone": "Premium",
+                "urgency": "high",
+                "placement": "home_hero",
+            },
+        }
+
+        bundle = asyncio.run(
+            AgenticGenerationAdapter(mode="deterministic_demo").generate(
+                campaign=campaign,
+                campaign_id="campaign-1",
+                run_id="run-1",
+                trace_id="trace-1",
+                team_id="team-1",
+            )
+        )
+
+        assert bundle.agent_mode == "deterministic_demo"
+        assert bundle.provenance == {
+            "agent_mode": "deterministic_demo",
+            "image_provider": "fake",
+            "kg_provider": "static",
+            "audit_provider": "deterministic_local",
+            "shopify_provider": "not_called",
+        }
+        assert bundle.concept["copy"]["headline"]
+        assert "Create a 16:9 ecommerce banner background" in bundle.refined_image_prompt
+        assert bundle.image_asset["provider"] == "fake"
+        assert bundle.optimized_asset["webp"]
+        assert "<!doctype html>" in bundle.html_preview
+        assert "aijolot-banner" in bundle.liquid_payload["section"]
+        assert bundle.audit_result["human_review_required"] is True
+        assert [event["node_key"] for event in bundle.events if event["status"] == "succeeded"] == ordered_node_keys()
+        assert any(event["output_summary"].get("substeps") for event in bundle.events if event["node_key"] == "draft_banner_concept")
 
     def test_render_join_is_join_node(self):
         from app.agents.pipeline import render_join

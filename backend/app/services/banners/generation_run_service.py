@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
+from app.agents.pipeline_runner import AgenticArtifactBundle, AgenticGenerationAdapter
 from app.core.settings import MissingSettingsError, Settings
 from app.db.repositories.audit_reports import AuditReportRepository
 from app.db.repositories.banner_layout_variants import BannerLayoutVariantRepository
@@ -80,6 +82,10 @@ class ChildArtifactRepositoryProtocol(Protocol):
 
 class AuditReportRepositoryProtocol(Protocol):
     def create(self, *, data: dict[str, Any]) -> dict[str, Any]: ...
+
+
+class AgenticGenerationAdapterProtocol(Protocol):
+    async def generate(self, **kwargs: Any) -> AgenticArtifactBundle: ...
 
 
 class InMemoryGenerationRunRepository:
@@ -162,6 +168,7 @@ class GenerationRunService:
         layout_variant_repository: ChildArtifactRepositoryProtocol | None = None,
         variant_repository: ChildArtifactRepositoryProtocol | None = None,
         audit_report_repository: AuditReportRepositoryProtocol | None = None,
+        generation_adapter: AgenticGenerationAdapterProtocol | None = None,
         team_id: str | None = None,
     ) -> None:
         self.run_repository = run_repository or _LOCAL_RUN_REPOSITORY
@@ -171,6 +178,7 @@ class GenerationRunService:
         self.layout_variant_repository = layout_variant_repository
         self.variant_repository = variant_repository
         self.audit_report_repository = audit_report_repository
+        self.generation_adapter = generation_adapter or AgenticGenerationAdapter(mode="deterministic_demo")
         self.team_id = team_id
 
     @classmethod
@@ -196,7 +204,11 @@ class GenerationRunService:
         metadata = {
             **request.metadata,
             "facade_version": "task-10-deterministic",
-            "artifact_version": "phase-1-mvp-deterministic",
+            "artifact_version": "phase-2-agentic-deterministic",
+            "agent_mode": "deterministic_demo",
+            "image_provider": "fake",
+            "kg_provider": "static",
+            "audit_provider": "deterministic_local",
             "layout_variants": list(DETERMINISTIC_LAYOUT_VARIANT_KEYS),
         }
         row = self.run_repository.create(
@@ -214,8 +226,18 @@ class GenerationRunService:
         )
         run_id = str(row["id"])
         try:
-            self.event_repository.create_many(events=self._deterministic_events(run_id=run_id))
-            self._persist_mvp_artifacts(campaign_id=campaign_id, campaign=campaign or {"id": campaign_id}, run_id=run_id)
+            artifact_bundle = _run_agentic_adapter(
+                self.generation_adapter,
+                campaign=campaign or {"id": campaign_id},
+                campaign_id=campaign_id,
+                run_id=run_id,
+                trace_id=trace_id,
+                team_id=self.team_id,
+                started_by=request.started_by,
+            )
+            metadata = {**metadata, **artifact_bundle.provenance}
+            self.event_repository.create_many(events=self._events_from_bundle(run_id=run_id, bundle=artifact_bundle))
+            self._persist_mvp_artifacts(campaign_id=campaign_id, campaign=campaign or {"id": campaign_id}, run_id=run_id, bundle=artifact_bundle)
             succeeded = self.run_repository.update(
                 run_id=run_id,
                 data={
@@ -223,6 +245,7 @@ class GenerationRunService:
                     "frontend_step": "review_publish",
                     "finished_at": _utc_now_iso(),
                     "error_message": None,
+                    "metadata": metadata,
                 },
             )
             if succeeded is None:
@@ -304,7 +327,29 @@ class GenerationRunService:
             )
         return events
 
-    def _persist_mvp_artifacts(self, *, campaign_id: str, campaign: dict[str, Any], run_id: str) -> None:
+    def _events_from_bundle(self, *, run_id: str, bundle: AgenticArtifactBundle) -> list[dict[str, Any]]:
+        if not bundle.events:
+            return self._deterministic_events(run_id=run_id)
+        events: list[dict[str, Any]] = []
+        base_created_at = datetime.now(timezone.utc)
+        for index, event in enumerate(bundle.events):
+            node_key = str(event["node_key"])
+            events.append(
+                {
+                    "generation_run_id": run_id,
+                    "node_key": node_key,
+                    "frontend_step": event.get("frontend_step") or frontend_step_for_node(node_key),
+                    "status": event.get("status") or "succeeded",
+                    "input_summary": _dict_or_wrapped_value(event.get("input_summary")) or {},
+                    "output_summary": _dict_or_wrapped_value(event.get("output_summary")) or {},
+                    "duration_ms": int(event.get("duration_ms") or 0),
+                    "cost_usd": float(event.get("cost_usd") or 0.0),
+                    "created_at": event.get("created_at") or _utc_iso(base_created_at + timedelta(microseconds=index)),
+                }
+            )
+        return events
+
+    def _persist_mvp_artifacts(self, *, campaign_id: str, campaign: dict[str, Any], run_id: str, bundle: AgenticArtifactBundle | None = None) -> None:
         if not all(
             (
                 self.campaign_repository,
@@ -330,13 +375,14 @@ class GenerationRunService:
                 "generation_run_id": run_id,
                 "revision_number": revision_number,
                 "status": "draft",
-                "concept": _deterministic_concept(campaign=campaign, revision_number=revision_number),
-                "liquid_config": _deterministic_liquid_config(
+                "concept": _concept_from_bundle(bundle=bundle, campaign=campaign, revision_number=revision_number),
+                "liquid_config": _liquid_config_from_bundle(
+                    bundle=bundle,
                     campaign_id=campaign_id,
                     run_id=run_id,
                     revision_number=revision_number,
                 ),
-                "html_preview": render_deterministic_mvp_preview(campaign=campaign, revision_number=revision_number),
+                "html_preview": bundle.html_preview if bundle else render_deterministic_mvp_preview(campaign=campaign, revision_number=revision_number),
                 "preview_storage_path": None,
             }
         )
@@ -344,7 +390,7 @@ class GenerationRunService:
         self.layout_variant_repository.create_many(variants=_default_layout_variants(revision_id))
         self.variant_repository.create_many(variants=_default_segment_variants(revision_id))
         self.audit_report_repository.create(
-            data=deterministic_mvp_audit_report(campaign_id=campaign_id, revision_id=revision_id, generation_run_id=run_id)
+            data=_audit_report_from_bundle(bundle=bundle, campaign_id=campaign_id, revision_id=revision_id, generation_run_id=run_id)
         )
         selected_revision = self.revision_repository.update(revision_id=revision_id, data={"status": "selected"})
         if selected_revision is None:
@@ -450,6 +496,74 @@ def configured_service() -> GenerationRunService:
 
 def configured_service_for_team(team_id: str) -> GenerationRunService:
     return _configured_service_for_team(team_id)
+
+
+def _run_agentic_adapter(adapter: AgenticGenerationAdapterProtocol, **kwargs: Any) -> AgenticArtifactBundle:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(adapter.generate(**kwargs))
+    raise RuntimeError("GenerationRunService.start_generation_run cannot synchronously run the agentic adapter inside an active event loop")
+
+
+def _concept_from_bundle(*, bundle: AgenticArtifactBundle | None, campaign: dict[str, Any], revision_number: int) -> dict[str, Any]:
+    if bundle is None:
+        return _deterministic_concept(campaign=campaign, revision_number=revision_number)
+    return {
+        **dict(bundle.concept),
+        "refined_image_prompt": bundle.refined_image_prompt,
+        "revision_number": revision_number,
+        "mode": bundle.agent_mode,
+        "image_asset": bundle.image_asset,
+        "optimized_asset": bundle.optimized_asset,
+    }
+
+
+def _liquid_config_from_bundle(*, bundle: AgenticArtifactBundle | None, campaign_id: str, run_id: str, revision_number: int) -> dict[str, Any]:
+    base = _deterministic_liquid_config(campaign_id=campaign_id, run_id=run_id, revision_number=revision_number)
+    if bundle is None:
+        return base
+    return {
+        **base,
+        **dict(bundle.liquid_payload),
+        "provider_provenance": dict(bundle.provenance),
+        "agent_mode": bundle.agent_mode,
+        "image_provider": bundle.provenance.get("image_provider", "fake"),
+        "kg_provider": bundle.provenance.get("kg_provider", "static"),
+        "audit_provider": bundle.provenance.get("audit_provider", "deterministic_local"),
+        "safe_to_publish": False,
+    }
+
+
+def _audit_report_from_bundle(*, bundle: AgenticArtifactBundle | None, campaign_id: str, revision_id: str, generation_run_id: str) -> dict[str, Any]:
+    base = deterministic_mvp_audit_report(campaign_id=campaign_id, revision_id=revision_id, generation_run_id=generation_run_id)
+    if bundle is None:
+        return base
+    audit = {**base, **dict(bundle.audit_result)}
+    audit.update(
+        {
+            "campaign_id": campaign_id,
+            "revision_id": revision_id,
+            "generation_run_id": generation_run_id,
+            "provider": bundle.provenance.get("audit_provider", "deterministic_local"),
+            "provider_provenance": dict(bundle.provenance),
+            "human_review_required": bool(audit.get("human_review_required", True)),
+            "avif_skipped": bool(audit.get("avif_skipped", False)),
+            "schema_report": {"valid": bool((audit.get("schema_report") or {}).get("valid", audit.get("schema_valid", True)))},
+        }
+    )
+    audit["seo_report"] = {
+        **dict(base.get("seo_report") or {}),
+        **dict(audit.get("seo_report") or {}),
+        "audit_runtime": {
+            "status": audit.get("status", "warn"),
+            "findings": list(audit.get("findings") or []),
+            "schema_report": dict(audit.get("schema_report") or {}),
+            "human_review_required": bool(audit.get("human_review_required", True)),
+            "avif_skipped": bool(audit.get("avif_skipped", False)),
+        },
+    }
+    return audit
 
 
 def _progress_for_run(status: GenerationRunStatus, frontend_step: FrontendStep) -> list[FrontendProgressStep]:
