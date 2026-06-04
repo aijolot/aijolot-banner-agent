@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.schemas.schedules import ScheduleCreate, ScheduleUpdate
-from app.services.banners.schedule_service import CampaignNotApproved, CampaignNotFound, InvalidScheduleWindow, ScheduleNotFound, ScheduleService
+from app.services.banners.schedule_service import CampaignNotApproved, CampaignNotFound, CampaignRevisionNotFound, InvalidScheduleWindow, ScheduleNotFound, ScheduleService
 
 CAMPAIGN_ID = "00000000-0000-0000-0000-000000000101"
 REVISION_ID = "00000000-0000-0000-0000-000000000201"
@@ -45,10 +45,25 @@ class InMemorySchedules:
         return row
 
 
+class InMemoryRevisions:
+    def __init__(self) -> None:
+        self.rows = {
+            REVISION_ID: {"id": REVISION_ID, "campaign_id": CAMPAIGN_ID, "revision_number": 1},
+            "00000000-0000-0000-0000-000000000202": {
+                "id": "00000000-0000-0000-0000-000000000202",
+                "campaign_id": CAMPAIGN_ID,
+                "revision_number": 2,
+            },
+        }
+
+    def get(self, *, revision_id: str):
+        return self.rows.get(revision_id)
+
+
 def _service(status: str = "approved") -> tuple[ScheduleService, InMemoryCampaigns, InMemorySchedules]:
     campaigns = InMemoryCampaigns(status)
     schedules = InMemorySchedules()
-    return ScheduleService(campaigns=campaigns, revisions=None, schedules=schedules), campaigns, schedules
+    return ScheduleService(campaigns=campaigns, revisions=InMemoryRevisions(), schedules=schedules), campaigns, schedules
 
 
 def test_schedule_approved_campaign_transitions_to_scheduled() -> None:
@@ -65,6 +80,28 @@ def test_schedule_approved_campaign_transitions_to_scheduled() -> None:
     assert result.timezone == "Asia/Bishkek"
     assert campaigns.rows[CAMPAIGN_ID]["status"] == "scheduled"
     assert schedules.rows[result.id]["created_by"] == USER_ID
+
+
+def test_schedule_uses_selected_revision_and_rejects_other_revision() -> None:
+    service, _, schedules = _service()
+
+    result = service.schedule_campaign(CAMPAIGN_ID, ScheduleCreate(starts_at="2026-06-10T10:00:00Z"))
+
+    assert result.revision_id == REVISION_ID
+    assert schedules.rows[result.id]["revision_id"] == REVISION_ID
+    with pytest.raises(CampaignRevisionNotFound):
+        service.schedule_campaign(
+            CAMPAIGN_ID,
+            ScheduleCreate(starts_at="2026-06-11T10:00:00Z", revision_id="00000000-0000-0000-0000-000000000202"),
+        )
+
+
+def test_schedule_requires_selected_revision() -> None:
+    service, campaigns, _ = _service()
+    campaigns.rows[CAMPAIGN_ID].pop("selected_revision_id")
+
+    with pytest.raises(CampaignRevisionNotFound):
+        service.schedule_campaign(CAMPAIGN_ID, ScheduleCreate(starts_at="2026-06-10T10:00:00Z"))
 
 
 def test_schedule_rejects_unapproved_or_missing_campaign() -> None:

@@ -66,16 +66,16 @@ class ScheduleService:
 
     def schedule_campaign(self, campaign_id: str, request: ScheduleCreate) -> ScheduleResponse:
         campaign = self._approved_campaign(campaign_id)
-        revision_id = request.revision_id or campaign.get("selected_revision_id")
-        if request.revision_id and self.revisions:
-            revision = self.revisions.get(revision_id=request.revision_id)
+        selected_revision_id = campaign.get("selected_revision_id")
+        if not selected_revision_id:
+            raise CampaignRevisionNotFound(campaign_id)
+        revision_id = request.revision_id or selected_revision_id
+        if str(revision_id) != str(selected_revision_id):
+            raise CampaignRevisionNotFound(campaign_id)
+        if self.revisions:
+            revision = self.revisions.get(revision_id=str(revision_id))
             if not revision or str(revision.get("campaign_id")) != campaign_id:
                 raise CampaignRevisionNotFound(campaign_id)
-        if not revision_id:
-            latest = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id) if self.revisions else None
-            revision_id = latest.get("id") if latest else None
-        if not revision_id:
-            raise CampaignRevisionNotFound(campaign_id)
         self._validate_window(request.starts_at, request.ends_at)
         existing = self.schedules.get_active_by_campaign_id(campaign_id=campaign_id)
         data = {

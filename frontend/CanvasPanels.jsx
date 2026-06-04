@@ -154,6 +154,22 @@ function MiniSwitch({ on, onToggle, disabled }) {
 
 const pad2 = (n) => String(n).padStart(2, "0");
 const toVal = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+function defaultScheduleWindow(now = new Date()) {
+  const start = new Date(now.getTime() + 60 * 60 * 1000);
+  const end = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  return { start: toVal(start), end: toVal(end) };
+}
+function scheduleDateError(start, end, auto) {
+  const startAt = new Date(start);
+  const endAt = auto && end ? new Date(end) : null;
+  if (!start || Number.isNaN(startAt.getTime())) return "El inicio de programación no es válido.";
+  if (startAt.getTime() <= Date.now()) return "El inicio debe estar en el futuro.";
+  if (auto) {
+    if (!end || !endAt || Number.isNaN(endAt.getTime())) return "El fin de programación no es válido.";
+    if (endAt.getTime() <= startAt.getTime()) return "El fin debe ser posterior al inicio.";
+  }
+  return "";
+}
 const MONTHS_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
 const WD_ES = ["L", "M", "X", "J", "V", "S", "D"];
 
@@ -255,11 +271,13 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
   backendScheduleReady = false, backendPublishReady = false, scheduleGuardReason = "", publishGuardReason = "",
   approvalMode = "local", backendStatus = "draft" }) {
   const [mode, setMode] = useStateCP("schedule");
-  const [start, setStart] = useStateCP("2026-06-02T09:00");
-  const [end, setEnd] = useStateCP("2026-06-09T23:59");
+  const initialWindow = defaultScheduleWindow();
+  const [start, setStart] = useStateCP(initialWindow.start);
+  const [end, setEnd] = useStateCP(initialWindow.end);
   const [auto, setAuto] = useStateCP(true);
-  const activeReady = mode === "now" ? backendPublishReady : backendScheduleReady;
-  const activeReason = mode === "now" ? publishGuardReason : scheduleGuardReason;
+  const scheduleError = mode === "schedule" ? scheduleDateError(start, end, auto) : "";
+  const activeReady = mode === "now" ? backendPublishReady : backendScheduleReady && !scheduleError;
+  const activeReason = mode === "now" ? publishGuardReason : (scheduleError || scheduleGuardReason);
   const primaryLabel = !activeReady
     ? (mode === "now" ? "Publicación backend no disponible" : "Programación bloqueada")
     : mode === "now" ? "Publicar en backend" : "Programar publicación";
@@ -342,7 +360,7 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
             </>
           )}
 
-          <Button variant={activeReady ? "shine" : "secondary"} icon={primaryIcon}
+          <Button variant={activeReady ? "shine" : "secondary"} icon={primaryIcon} disabled={!activeReady}
             onClick={() => mode === "now" ? onPublishNow() : onSchedule({ start, end, auto })} style={{ justifyContent: "center" }}>
             {primaryLabel}
           </Button>

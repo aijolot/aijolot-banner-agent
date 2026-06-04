@@ -414,6 +414,10 @@ Coordinator note: Implemented by fresh subagent with multiple security/spec revi
 
 **Commit:** `feat: complete approved campaign scheduling flow`
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented by fresh subagent and independently reviewed. Changed `backend/app/services/banners/schedule_service.py`, `backend/tests/unit/test_schedule_service.py`, `backend/tests/api/test_schedules.py`, and `frontend/CanvasPanels.jsx`. Schedule creation now requires an approved/scheduled campaign with `selected_revision_id`, defaults to the selected revision, rejects explicit non-selected revisions, verifies revision ownership when a revision repo is configured, writes schedule rows, and transitions the campaign to `scheduled`; update/cancel remain team-scoped through campaign lookup. Publish panel schedule defaults now use current time-relative values (`now + 1 hour`, `now + 7 days`) and disables/prevents scheduling API calls for missing, past, invalid, or end-before-start windows. Validation: schedule API/unit tests passed (10 passed, 1 existing warning); spec and quality reviewers approved; `node --check scripts/smoke-frontend-backend-connection.mjs`, JSX esbuild check for `frontend/CanvasPanels.jsx`, and `git diff --check` passed.
+
 ---
 
 ## Phase 6: Publish Demo Boundary — Safe Dry-Run or Approved Test Store

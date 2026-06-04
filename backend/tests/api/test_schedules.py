@@ -20,17 +20,20 @@ def _install(monkeypatch, status: str = "approved"):
 
 
 def test_schedule_patch_and_cancel_campaign(monkeypatch) -> None:
-    _install(monkeypatch)
+    _, campaigns, _ = _install(monkeypatch)
 
     created = client.post(
         f"/api/v1/campaigns/{CAMPAIGN_ID}/schedule",
         json={"starts_at": "2026-06-10T10:00:00Z", "ends_at": "2026-06-12T10:00:00Z", "timezone": "UTC"},
     )
+    assert created.status_code == 200, created.text
+    assert created.json()["campaign_id"] == CAMPAIGN_ID
+    assert created.json()["revision_id"] == campaigns.rows[CAMPAIGN_ID]["selected_revision_id"]
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "scheduled"
+
     patched = client.patch(f"/api/v1/campaigns/{CAMPAIGN_ID}/schedule", json={"ends_at": "2026-06-13T10:00:00Z"})
     cancelled = client.post(f"/api/v1/campaigns/{CAMPAIGN_ID}/schedule/cancel")
 
-    assert created.status_code == 200, created.text
-    assert created.json()["campaign_id"] == CAMPAIGN_ID
     assert patched.status_code == 200, patched.text
     assert patched.json()["ends_at"] == "2026-06-13T10:00:00Z"
     assert cancelled.status_code == 200, cancelled.text
