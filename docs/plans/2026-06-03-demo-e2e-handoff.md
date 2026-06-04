@@ -20,9 +20,15 @@
 - Sin PR todavía (el usuario pidió "solo commit, aún no PR").
 
 ## Fases hechas (✅) vs pendientes (⬜)
-- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F6 concept+layout KG · F10 código publisher
-- ⬜ F7 fondos AI · F8 prompts descriptivos+modelos · F9 refine agéntico · F11 frontend · F12 verificación final
+- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F6 concept+layout KG · F7 fondos AI · F10 código publisher
+- ⬜ F8 prompts descriptivos+modelos · F9 refine agéntico · F11 frontend · F12 verificación final
 - ⬜ **F10 e2e** (publish real de una campaña) — ya desbloqueado por F5; falta correr schedule→dry-run publish→publish real→storefront.
+
+## F7 — hecho (2026-06-03, commit 4c1c075)
+- Nuevo skill `backend/app/agents/skills/background-options-generate/impl.py`: Gemini FLASH structured (`BackgroundOptionsOutput`), gated por cost_guard, fail-closed a gradientes de `brand_context.palette`. Sanitización obligatoria (`sanitize_css`/`sanitize_html`): quita `@import`, `url(http…)`, `expression(`, `javascript:`, `<script>`/`<iframe>`, `on*=`; opción inválida tras sanear → gradiente determinista.
+- `BackgroundOptionsService` (`background_service.py`) carga concepto de la revisión (selected o `revision_id`) + brand, corre el skill. Endpoint `POST /api/v1/campaigns/{id}/background-options {revision_id?,count?}` → `{campaign_id,revision_id,source,options:[{name,description,css,html,rationale}]}`. Registrado en `router.py`.
+- Refactor DRY: extraídos de F5 → `app/services/banners/async_run.py` (`run_coro`) y `app/services/banners/brand_resolver.py` (`resolve_brand_context`), usados por orquestador, generation_run_service y background_service.
+- E2E (`a1cf2aee-…`): source=gemini, 3 fondos distintos scoped a `.aijolot-banner`, todos sin tokens peligrosos. Tests: **306 passed, 3 skipped**.
 
 ## F6 — hecho (2026-06-03, commit 752345e)
 - Nuevo skill `backend/app/agents/skills/layout-retrieve/impl.py`: query `placement+goal+tone` contra `kg.retrieve(kinds=["liquid_pattern"])`.
