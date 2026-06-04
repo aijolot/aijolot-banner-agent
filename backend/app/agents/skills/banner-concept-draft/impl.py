@@ -5,8 +5,22 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from app.agents.state import BannerSessionState, Campaign, Concept, Variant
+from app.agents.tools import gemini_text
 from app.schemas.brand import BrandContext
+
+EST_CONCEPT_COPY_USD = 0.002
+
+
+class _ConceptCopy(BaseModel):
+    """Structured banner copy for the Gemini generation call."""
+
+    eyebrow: str = Field(default="", description="Short kicker, <=4 words")
+    headline: str = Field(default="", description="Punchy benefit-led headline, <=8 words")
+    subheadline: str = Field(default="", description="One supporting line, <=16 words")
+    cta: str = Field(default="", description="Action-first CTA, <=5 words")
 
 
 def _get(obj: Any, key: str, default: Any = "") -> Any:
@@ -242,6 +256,69 @@ def draft_concept(
     )
 
 
+def _product_lines(catalog_context: Any) -> str:
+    items = _get(catalog_context, "items", []) or []
+    titles = []
+    for item in items[:4]:
+        title = _get(item, "title", "")
+        if title:
+            titles.append(str(title))
+    return "; ".join(titles)
+
+
+def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str) -> str:
+    brief = _brief(campaign)
+    goal = _get(brief, "goal", "")
+    audience = _get(brief, "audience", "")
+    tone = _get(brief, "tone", "") or ", ".join(brand_context.voice.tone)
+    urgency = _get(brief, "urgency", "")
+    cta = _get(brief, "cta", "")
+    products = _product_lines(catalog_context)
+    practices = "; ".join([str(d.get("title", "")) for d in (best_practices or [])[:4] if d.get("title")])
+    required = ", ".join(brand_context.voice.required_phrases or [])
+    prohibited = ", ".join(brand_context.voice.prohibited_words or [])
+    lang = "Spanish" if re.search(r"[áéíóúñ¿¡]|\b(de|para|con|los|las|promo)\b", f"{goal} {audience}", re.I) else "the brief's language"
+    return (
+        "You are a senior ecommerce copywriter. Write ONE banner's hero copy.\n"
+        f"Campaign goal: {goal}\nAudience: {audience}\nTone: {tone}\nUrgency: {urgency}\n"
+        f"Offer / CTA seed: {cta}\nFeatured products: {products or 'the featured catalog'}\n"
+        f"Layout direction: {layout_hint}\n"
+        f"Best-practice notes from our knowledge base: {practices or 'standard ecommerce banner hierarchy'}\n"
+        f"Brand required phrases: {required or 'none'}\nProhibited words (never use): {prohibited or 'none'}\n\n"
+        f"Write in {lang}. Be specific to the products and the offer — not generic. "
+        "One headline (<=8 words, benefit-led, may reference the product/season), one short eyebrow (<=4 words), "
+        "one supporting subheadline (<=16 words), one action-first CTA (<=5 words). "
+        "No clickbait, no prohibited words, no emojis. Return JSON matching the schema."
+    )
+
+
+async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any) -> dict[str, str] | None:
+    if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
+        return None
+    try:
+        from app.services.gemini.cost_guard import get_default_cost_guard
+
+        guard = cost_guard or get_default_cost_guard(settings)
+        if not guard.check_and_reserve(EST_CONCEPT_COPY_USD).allowed:
+            return None
+        result = await gemini_text.generate(
+            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint),
+            model=gemini_text.FLASH_MODEL,
+            structured=_ConceptCopy,
+        )
+    except gemini_text.GeminiUnavailable:
+        return None
+    except Exception:  # noqa: BLE001 — any failure → deterministic copy
+        return None
+    prohibited = brand_context.voice.prohibited_words or []
+    out: dict[str, str] = {}
+    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 28)):
+        value = _remove_prohibited(str(_get(result, key, "")), prohibited)
+        if value:
+            out[key] = _truncate(value, limit)
+    return out or None
+
+
 async def run(
     state: BannerSessionState | None = None,
     *,
@@ -253,6 +330,8 @@ async def run(
     placement_context: Any = None,
     catalog_context: Any = None,
     art_direction: Any = None,
+    settings: Any = None,
+    cost_guard: Any = None,
 ) -> Concept:
     if state is not None:
         campaign = campaign or state.campaign
@@ -263,7 +342,7 @@ async def run(
         raise ValueError("campaign is required")
     if brand_context is None:
         raise ValueError("brand_context is required")
-    return draft_concept(
+    concept = draft_concept(
         campaign=campaign,
         brand_context=brand_context,
         variants=variants,
@@ -273,3 +352,15 @@ async def run(
         catalog_context=catalog_context,
         art_direction=art_direction,
     )
+    # Quality jump: replace the deterministic template copy with Gemini-written,
+    # product- and offer-specific banner copy when a key + budget are available.
+    gem = await _gemini_copy(
+        campaign=campaign, brand_context=brand_context, catalog_context=catalog_context,
+        best_practices=best_practices, layout_hint=concept.layout, settings=settings, cost_guard=cost_guard,
+    )
+    if gem:
+        for key in ("eyebrow", "headline", "subheadline", "cta"):
+            if gem.get(key):
+                concept.copy[key] = gem[key]
+        concept.copy["copy_source"] = "gemini"
+    return concept

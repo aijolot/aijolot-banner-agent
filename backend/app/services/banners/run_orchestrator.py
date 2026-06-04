@@ -361,6 +361,8 @@ class RunOrchestrator:
             best_practices=best_practices,
             layout_candidates=layout_candidates,
             catalog_context=catalog_context,
+            settings=self.settings,
+            cost_guard=self.cost_guard,
         )
 
     def _load_catalog_context(self, campaign_id: str) -> dict[str, Any] | None:

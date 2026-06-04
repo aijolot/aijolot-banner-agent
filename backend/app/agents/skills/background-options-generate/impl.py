@@ -125,18 +125,24 @@ def _fallback_options(brand_context: Any, count: int) -> list[BackgroundOption]:
 def _build_prompt(concept: Any, brand_context: Any, count: int) -> str:
     copy = _get(concept, "copy", {}) or {}
     headline = _get(copy, "headline", "") if isinstance(copy, dict) else ""
+    subheadline = _get(copy, "subheadline", "") if isinstance(copy, dict) else ""
     layout = _get(concept, "layout", "")
+    image_prompt = _get(concept, "image_prompt", "")
     palette_lines = ", ".join(f"{name} {hex_value}" for name, hex_value in _palette(brand_context))
     tone = " ".join(_get(_get(brand_context, "voice", None), "tone", []) or [])
     return (
         f"You are a senior ecommerce art director. Propose exactly {count} DISTINCT background "
         "treatments for a Shopify banner hero surface.\n\n"
-        f"Banner headline: {headline}\nLayout: {layout}\nBrand tone: {tone}\n"
+        f"Campaign theme / headline: {headline}\nSupporting line: {subheadline}\n"
+        f"Scene/mood context: {image_prompt}\nLayout: {layout}\nBrand tone: {tone}\n"
         f"Brand palette: {palette_lines}\n\n"
+        "The backgrounds MUST evoke the campaign's theme, season, and product mood from the context above "
+        "(e.g. citrus/fruity summer → warm, fresh, sunlit tones; not a generic dark 'premium' look). "
+        "Make the three options visually distinct in mood, not just layout.\n"
         "Requirements for EACH option:\n"
         "- CSS MUST be a single rule scoped to `.aijolot-banner` (you may add nested selectors under it).\n"
-        "- Use ONLY gradients/colors built from the brand palette. NO external assets, NO url() to the web, "
-        "NO @import, NO <script>, NO images.\n"
+        "- Build richness with layered gradients (linear/radial/conic) and palette-derived hues; "
+        "NO external assets, NO url() to the web, NO @import, NO <script>, NO images.\n"
         "- Ensure accessible contrast for overlaid HTML copy (set a legible `color`).\n"
         "- Provide a short name, a one-line description, the css, a minimal html wrapper, and a rationale.\n"
         "Return JSON matching the provided schema."
