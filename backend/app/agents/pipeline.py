@@ -102,7 +102,9 @@ async def node_concept_draft(ctx: Context) -> None:
     t0 = time.monotonic()
     await _emit_start(ctx, "draft_banner_concept")
     kwargs = sb.read_concept_draft(ctx.state)
-    result = await _load_skill("banner-concept-draft").run(**kwargs)
+    # F6: ground the layout in KG liquid_pattern docs (empty → deterministic layout).
+    layout_candidates = await _load_skill("layout-retrieve").run(kwargs["campaign"], kwargs["brand_context"])
+    result = await _load_skill("banner-concept-draft").run(**kwargs, layout_candidates=layout_candidates)
     for k, v in sb.write_concept_draft(ctx.state, result).items():
         ctx.state[k] = v
     await _emit_done(ctx, "draft_banner_concept", t0)

@@ -90,6 +90,55 @@ def _append_required_phrase(base: str, phrase: str, limit: int) -> str:
     return f"{shortened_base}{separator if shortened_base else ''}{phrase}"
 
 
+def _placement_tokens(placement: str) -> set[str]:
+    return {tok for tok in re.split(r"[^a-z0-9]+", str(placement or "").lower()) if len(tok) > 2}
+
+
+def _resolve_layout(
+    *,
+    layout_candidates: list[dict[str, Any]] | None,
+    placement: str,
+    fallback_layout: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Ground the layout in a KG ``liquid_pattern`` doc when one is available.
+
+    Picks the candidate whose category/applicable_when best matches the
+    placement, falling back to the top-ranked candidate, then to the
+    deterministic layout string when retrieval returned nothing.
+    """
+    candidates = [c for c in (layout_candidates or []) if c.get("title")]
+    if not candidates:
+        return fallback_layout, []
+
+    placement_tokens = _placement_tokens(placement)
+
+    def _match_score(doc: dict[str, Any]) -> int:
+        meta = doc.get("metadata") or {}
+        haystack = f"{meta.get('category', '')} {meta.get('applicable_when', '')}".lower()
+        return sum(1 for tok in placement_tokens if tok in haystack)
+
+    ranked = sorted(candidates, key=lambda d: (-_match_score(d), -float(d.get("score") or 0.0)))
+    chosen = ranked[0]
+    meta = chosen.get("metadata") or {}
+    applicable = str(meta.get("applicable_when") or "").strip()
+    title = str(chosen.get("title") or "Layout pattern").strip()
+    layout = _truncate(f"{title} — {applicable}" if applicable else title, 200)
+
+    source_refs = [
+        {
+            "kind": str(doc.get("kind") or "liquid_pattern"),
+            "id": doc.get("id"),
+            "title": str(doc.get("title") or ""),
+            "category": (doc.get("metadata") or {}).get("category"),
+            "applicable_when": (doc.get("metadata") or {}).get("applicable_when"),
+            "score": doc.get("score"),
+            "selected": doc is chosen,
+        }
+        for doc in ranked
+    ]
+    return layout, source_refs
+
+
 def _catalog_summary(catalog_context: Any) -> str:
     items = _get(catalog_context, "items", []) or []
     if not items:
@@ -106,6 +155,7 @@ def draft_concept(
     brand_context: BrandContext,
     variants: list[Variant] | None = None,
     best_practices: list[dict[str, Any]] | None = None,
+    layout_candidates: list[dict[str, Any]] | None = None,
     placement_context: Any = None,
     catalog_context: Any = None,
     art_direction: Any = None,
@@ -142,11 +192,18 @@ def draft_concept(
     fold = _get(art_direction, "fold_percentage", 55)
     background_mode = _get(art_direction, "background_mode", "hero")
 
-    layout = f"{placement} split layout: copy block left, product/visual right, focal area safe within {fold}% fold"
+    fallback_layout = f"{placement} split layout: copy block left, product/visual right, focal area safe within {fold}% fold"
+    layout, source_refs = _resolve_layout(
+        layout_candidates=layout_candidates,
+        placement=placement,
+        fallback_layout=fallback_layout,
+    )
+    layout_note = [f"KG layout: {source_refs[0]['title']}"] if source_refs else []
     hierarchy_notes = "; ".join(
         [
             "One headline, one support line, one CTA",
             f"Audience rationale: {audience}",
+            *layout_note,
             *(variant_notes[:2] or []),
             *(practice_notes[:2] or []),
         ]
@@ -181,6 +238,7 @@ def draft_concept(
         },
         image_prompt=image_prompt,
         hierarchy_notes=hierarchy_notes,
+        source_refs=source_refs,
     )
 
 
@@ -191,6 +249,7 @@ async def run(
     brand_context: BrandContext | None = None,
     variants: list[Variant] | None = None,
     best_practices: list[dict[str, Any]] | None = None,
+    layout_candidates: list[dict[str, Any]] | None = None,
     placement_context: Any = None,
     catalog_context: Any = None,
     art_direction: Any = None,
@@ -209,6 +268,7 @@ async def run(
         brand_context=brand_context,
         variants=variants,
         best_practices=best_practices,
+        layout_candidates=layout_candidates,
         placement_context=placement_context,
         catalog_context=catalog_context,
         art_direction=art_direction,

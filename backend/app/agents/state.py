@@ -32,6 +32,9 @@ class Concept(BaseModel):
     palette_usage: dict[str, str]
     image_prompt: str
     hierarchy_notes: str
+    # KG provenance for the chosen layout (F6): liquid_pattern docs that informed
+    # the layout direction. Empty when retrieval found nothing (deterministic mode).
+    source_refs: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class BannerAssets(BaseModel):

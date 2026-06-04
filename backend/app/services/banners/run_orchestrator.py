@@ -156,11 +156,22 @@ class RunOrchestrator:
             )
             recorder.succeed(node, {"retrieved": len(best_practices)})
 
-            # 5 — concept
+            # 5 — concept (grounded in KG liquid_pattern layouts when available)
             node = "draft_banner_concept"
             recorder.start(node)
-            concept = await self._run_concept(campaign_state, brand, state_variants, best_practices)
-            recorder.succeed(node, {"layout": _short(concept.layout), "headline": _short(concept.copy.get("headline", ""))})
+            layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
+            concept = await self._run_concept(
+                campaign_state, brand, state_variants, best_practices, layout_candidates
+            )
+            recorder.succeed(
+                node,
+                {
+                    "layout": _short(concept.layout),
+                    "headline": _short(concept.copy.get("headline", "")),
+                    "layout_source": (concept.source_refs[0]["title"] if concept.source_refs else None),
+                    "layout_candidates": len(layout_candidates),
+                },
+            )
 
             # Persist the revision shell now so assets can be linked by revision_id.
             revision = self._create_revision(campaign_id=campaign_id, run_id=run_id, concept=concept)
@@ -303,8 +314,20 @@ class RunOrchestrator:
         skill = _load_runtime_skill(skill_id)
         return await skill.run(campaign=campaign, brand_context=brand)
 
+    async def _run_layout_retrieve(self, campaign: StateCampaign, brand: Any) -> list[dict[str, Any]]:
+        skill = _load_runtime_skill("layout-retrieve")
+        try:
+            return await skill.run(campaign, brand)
+        except Exception:  # noqa: BLE001 — layout grounding is best-effort; concept falls back
+            return []
+
     async def _run_concept(
-        self, campaign: StateCampaign, brand: Any, variants: list[StateVariant], best_practices: list[dict[str, Any]]
+        self,
+        campaign: StateCampaign,
+        brand: Any,
+        variants: list[StateVariant],
+        best_practices: list[dict[str, Any]],
+        layout_candidates: list[dict[str, Any]] | None = None,
     ) -> Any:
         skill = _load_runtime_skill("banner-concept-draft")
         return await skill.run(
@@ -312,6 +335,7 @@ class RunOrchestrator:
             brand_context=brand,
             variants=variants,
             best_practices=best_practices,
+            layout_candidates=layout_candidates,
         )
 
     async def _generate_image(self, *, concept: Any, brand: Any, campaign_id: str) -> tuple[bytes, dict[str, Any], float]:
