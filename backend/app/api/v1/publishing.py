@@ -30,13 +30,21 @@ def _publisher() -> ShopifyPublisher:
 _DEFAULT_PUBLISHER_FACTORY = _publisher
 
 
-def _publisher_for_request(request: Request) -> ShopifyPublisher:
-    """Build a request-scoped publisher, or use a test-overridden factory."""
+def _publisher_for_request(request: Request, dry_run: bool | None = None) -> ShopifyPublisher:
+    """Build a request-scoped publisher, or use a test-overridden factory.
+
+    ``dry_run`` (from the optional ?dry_run= query param) overrides the
+    server default so the UI can toggle simulate-vs-publish per request.
+    """
 
     if _publisher is _DEFAULT_PUBLISHER_FACTORY:
         context = require_user_context(request)
-        return configured_publisher(team_id=context.team_id)
-    return _publisher()
+        publisher = configured_publisher(team_id=context.team_id)
+    else:
+        publisher = _publisher()
+    if dry_run is not None:
+        publisher.dry_run = dry_run
+    return publisher
 
 
 def _raise_http(exc: Exception) -> None:
@@ -52,24 +60,24 @@ def _raise_http(exc: Exception) -> None:
 
 
 @router.post("/campaigns/{campaign_id}/publish", response_model=PublishJobResponse)
-def publish_campaign(campaign_id: CampaignIdPath, request: Request) -> PublishJobResponse:
+def publish_campaign(campaign_id: CampaignIdPath, request: Request, dry_run: bool | None = None) -> PublishJobResponse:
     try:
-        return _publisher_for_request(request).publish_campaign(str(campaign_id))
+        return _publisher_for_request(request, dry_run).publish_campaign(str(campaign_id))
     except (CampaignNotFound, CampaignRevisionNotFound, CampaignNotScheduled, StoreNotFound, PublishUnsupported, PublisherUnavailable) as exc:
         _raise_http(exc)
 
 
 @router.post("/campaigns/{campaign_id}/unpublish", response_model=PublishJobResponse)
-def unpublish_campaign(campaign_id: CampaignIdPath, request: Request) -> PublishJobResponse:
+def unpublish_campaign(campaign_id: CampaignIdPath, request: Request, dry_run: bool | None = None) -> PublishJobResponse:
     try:
-        return _publisher_for_request(request).unpublish_campaign(str(campaign_id))
+        return _publisher_for_request(request, dry_run).unpublish_campaign(str(campaign_id))
     except (CampaignNotFound, CampaignRevisionNotFound, CampaignNotScheduled, StoreNotFound, PublishUnsupported, PublisherUnavailable) as exc:
         _raise_http(exc)
 
 
 @router.post("/stores/{store_id}/shopify/install-theme-files", response_model=PublishJobResponse)
-def install_theme_files(store_id: StoreIdPath, request: Request) -> PublishJobResponse:
+def install_theme_files(store_id: StoreIdPath, request: Request, dry_run: bool | None = None) -> PublishJobResponse:
     try:
-        return _publisher_for_request(request).install_theme_files(str(store_id))
+        return _publisher_for_request(request, dry_run).install_theme_files(str(store_id))
     except (StoreNotFound, PublishUnsupported, PublisherUnavailable) as exc:
         _raise_http(exc)

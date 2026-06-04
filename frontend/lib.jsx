@@ -532,15 +532,26 @@ const ReviewApi = {
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/schedule/cancel`));
     return { ok: true, fallback: false, data };
   },
-  async publish(campaign) {
+  async publish(campaign, dryRun) {
     if (!isApiCampaign(campaign)) return fallbackResult("Backend publishing requires a scheduled UUID campaign; local/prototype publish is unavailable/fail-closed.", null);
-    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/publish`));
+    const q = dryRun === undefined ? "" : `?dry_run=${dryRun ? "true" : "false"}`;
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/publish${q}`));
     return { ok: true, fallback: false, data };
   },
-  async unpublish(campaign) {
+  async unpublish(campaign, dryRun) {
     if (!isApiCampaign(campaign)) return fallbackResult("Backend unpublish requires a UUID campaign.", null);
-    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/unpublish`));
+    const q = dryRun === undefined ? "" : `?dry_run=${dryRun ? "true" : "false"}`;
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/unpublish${q}`));
     return { ok: true, fallback: false, data };
+  },
+  // F10/F11 — install the Aijolot Liquid placeholder assets before first publish.
+  async installThemeFiles(storeId, dryRun) {
+    const sid = storeId || AIJOLOT_DEMO_IDS.store;
+    const q = dryRun === undefined ? "" : `?dry_run=${dryRun ? "true" : "false"}`;
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/stores/${sid}/shopify/install-theme-files${q}`));
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Backend no instaló los placeholders del tema (" + errorText(e) + ").", null); }
   },
 };
 
@@ -562,9 +573,74 @@ const PerformanceApi = {
   },
 };
 
+// --- F3 live catalog sync + search ---
+StoreApi.sync = async function (storeId, input) {
+  const sid = storeId || AIJOLOT_DEMO_IDS.store;
+  try {
+    const data = await AijolotApi.post(AijolotApi.v1(`/stores/${sid}/shopify/sync`), input || { dry_run: false });
+    return { ok: true, fallback: false, data };
+  } catch (e) { return fallbackResult("Sync en vivo no disponible (" + errorText(e) + ").", null); }
+};
+CatalogApi.search = async function (storeId, query, resourceType) {
+  const sid = storeId || AIJOLOT_DEMO_IDS.store;
+  const params = new URLSearchParams({ resource_type: resourceType || "product" });
+  if (query) params.set("q", query);
+  try {
+    const data = await AijolotApi.get(AijolotApi.v1(`/stores/${sid}/shopify/resources?${params.toString()}`));
+    return { ok: true, fallback: false, data: Array.isArray(data) ? data : (data && data.items) || [] };
+  } catch (e) { return fallbackResult("Búsqueda de catálogo no disponible (" + errorText(e) + ").", []); }
+};
+
+// --- F7 AI backgrounds ---
+const BackgroundApi = {
+  async generate(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Los fondos AI requieren una campaña UUID con revisión generada.", { options: [] });
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/background-options`), input || { count: 3 });
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Fondos AI no disponibles (" + errorText(e) + ").", { options: [] }); }
+  },
+};
+
+// --- F8 descriptive art prompts + generation ---
+const ArtApi = {
+  async artPrompts(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Las propuestas de arte requieren una campaña UUID.", { options: [] });
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/art-prompts`), input || { shot_type: "hero", count: 3 });
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Propuestas de arte no disponibles (" + errorText(e) + ").", { options: [] }); }
+  },
+  async modelPrompts(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Las propuestas de modelo requieren una campaña UUID.", { options: [] });
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/model-prompts`), input || { count: 3 });
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Propuestas de modelo no disponibles (" + errorText(e) + ").", { options: [] }); }
+  },
+  async generateArt(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Generar arte requiere una campaña UUID con revisión.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/generate-art`), input || {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Generación de arte no disponible (" + errorText(e) + ").", null); }
+  },
+};
+
+// --- F9 agentic refine (regenerate with classified target nodes) ---
+GenerationApi.agenticRefine = async function (campaign, prompt, targetNodes) {
+  if (!isApiCampaign(campaign)) return fallbackResult("El refinamiento agéntico requiere una campaña UUID.", null);
+  const input = { prompt: prompt || "Refinar banner" };
+  if (Array.isArray(targetNodes) && targetNodes.length) input.target_nodes = targetNodes;
+  try {
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/regenerate`), input);
+    return { ok: true, fallback: false, data };
+  } catch (e) { return fallbackResult("Refinamiento agéntico no disponible (" + errorText(e) + ").", null); }
+};
+
 Object.assign(window, {
   Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar,
   AijolotApi, CampaignApi, StoreApi, PlacementApi, CatalogApi, ArtDirectionApi,
-  GenerationApi, ReviewApi, PerformanceApi, API_V1, UUID_RE, isApiCampaign,
+  GenerationApi, ReviewApi, PerformanceApi, BackgroundApi, ArtApi, API_V1, UUID_RE, isApiCampaign,
   AIJOLOT_DEMO_IDS, AIJOLOT_DEMO_AUTH_HEADERS, apiPath, apiV1Path, normalizeApiOrigin, errorText,
 });
