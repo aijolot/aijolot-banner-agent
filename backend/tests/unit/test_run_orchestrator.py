@@ -207,7 +207,7 @@ def test_orchestrator_failure_is_recorded_honestly() -> None:
     service, *_ = _build_service()
 
     class Boom:
-        def execute(self, *, run_id: str, campaign_row: dict):
+        def execute(self, *, run_id: str, campaign_row: dict, **_kwargs):
             raise RuntimeError("pipeline blew up")
 
     assert service.orchestrator is not None

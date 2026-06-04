@@ -142,6 +142,7 @@ class GenerationRunService:
         self.campaign_repository = campaign_repository
         self.orchestrator = orchestrator
         self.team_id = team_id
+        self._last_revision_id: str | None = None
 
     @classmethod
     def from_supabase_client(cls, client: Any, *, team_id: str | None = None) -> "GenerationRunService":
@@ -205,12 +206,47 @@ class GenerationRunService:
         self.event_repository.create_many(events=self._deterministic_events(run_id=run_id))
         return self._run_response_from_record(row)
 
+    def start_refinement_run(
+        self,
+        campaign_id: str,
+        *,
+        prompt: str | None,
+        targets: list[str] | None,
+        started_by: str | None = None,
+        parent_run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """F9 — run an agentic refinement through the orchestrator.
+
+        Returns the run response and the new revision id (None on failure).
+        Caller (RevisionService) handles refinement-request bookkeeping.
+        """
+        campaign = self._get_campaign(campaign_id)
+        if self.orchestrator is None or campaign is None:
+            raise MissingSettingsError(("orchestrator",))
+        request = GenerationRunCreate(
+            run_type="refinement",
+            parent_run_id=parent_run_id,
+            started_by=started_by,
+            metadata={**(metadata or {}), "prompt": prompt or "", "refine_targets": list(targets or [])},
+        )
+        run = self._start_orchestrated_run(campaign_id, request, campaign, prompt=prompt, targets=targets)
+        return run, self._last_revision_id
+
     def _start_orchestrated_run(
-        self, campaign_id: str, request: GenerationRunCreate, campaign_row: dict[str, Any]
+        self,
+        campaign_id: str,
+        request: GenerationRunCreate,
+        campaign_row: dict[str, Any],
+        *,
+        prompt: str | None = None,
+        targets: list[str] | None = None,
     ) -> GenerationRunResponse:
         assert self.orchestrator is not None
         now = _utc_now_iso()
         base_metadata = dict(request.metadata)
+        is_refine = bool(prompt) or bool(targets)
+        facade = "f9-refine-orchestrator" if is_refine else "f5-run-orchestrator"
         run_row = self.run_repository.create(
             data={
                 "campaign_id": campaign_id,
@@ -221,14 +257,17 @@ class GenerationRunService:
                 "adk_trace_id": str(uuid4()),
                 "started_by": request.started_by,
                 "started_at": now,
-                "metadata": {**base_metadata, "facade_version": "f5-run-orchestrator"},
+                "metadata": {**base_metadata, "facade_version": facade},
             }
         )
         run_id = str(run_row["id"])
         try:
-            outcome = _run_coro(self.orchestrator.execute(run_id=run_id, campaign_row=campaign_row))
+            outcome = _run_coro(
+                self.orchestrator.execute(run_id=run_id, campaign_row=campaign_row, prompt=prompt, targets=targets)
+            )
         except BaseException as exc:  # noqa: BLE001 — record honest failure on the run row
             outcome = _failed_outcome(f"{type(exc).__name__}: {exc}")
+        self._last_revision_id = outcome.revision_id
         if outcome.events:
             self.event_repository.create_many(events=outcome.events)
         updated = self.run_repository.update(

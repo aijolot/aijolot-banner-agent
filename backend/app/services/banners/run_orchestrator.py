@@ -117,8 +117,23 @@ class RunOrchestrator:
         self.cost_guard = cost_guard or get_default_cost_guard(self.settings)
         self.team_id = team_id
 
-    async def execute(self, *, run_id: str, campaign_row: dict[str, Any]) -> OrchestratorOutcome:
+    async def execute(
+        self,
+        *,
+        run_id: str,
+        campaign_row: dict[str, Any],
+        prompt: str | None = None,
+        targets: list[str] | None = None,
+    ) -> OrchestratorOutcome:
+        """Run the pipeline and persist a real revision.
+
+        ``prompt``/``targets`` switch the run into agentic-refine mode (F9): the
+        concept is re-drafted with the refinement note, and a fresh AI background
+        is attached when ``background`` is a target.
+        """
         campaign_id = str(campaign_row["id"])
+        is_refine = bool(prompt) or bool(targets)
+        target_set = set(targets or [])
         recorder = _EventRecorder(run_id=run_id)
         total_cost = 0.0
         node = ""
@@ -159,6 +174,14 @@ class RunOrchestrator:
             concept = await self._run_concept(
                 campaign_state, brand, state_variants, best_practices, layout_candidates
             )
+            if is_refine and prompt:
+                # Record the refinement intent on the concept so the new revision
+                # is traceable and the canvas can surface what changed.
+                concept.copy["revision_note"] = _short(prompt, 280)
+                concept.hierarchy_notes = f"Refine: {_short(prompt, 120)}; {concept.hierarchy_notes}"
+            background = None
+            if is_refine and "background" in target_set:
+                background = await self._refine_background(concept, brand)
             recorder.succeed(
                 node,
                 {
@@ -166,11 +189,15 @@ class RunOrchestrator:
                     "headline": _short(concept.copy.get("headline", "")),
                     "layout_source": (concept.source_refs[0]["title"] if concept.source_refs else None),
                     "layout_candidates": len(layout_candidates),
+                    "targets": sorted(target_set) or None,
+                    "background": (background or {}).get("name") if background else None,
                 },
             )
 
             # Persist the revision shell now so assets can be linked by revision_id.
-            revision = self._create_revision(campaign_id=campaign_id, run_id=run_id, concept=concept)
+            revision = self._create_revision(
+                campaign_id=campaign_id, run_id=run_id, concept=concept, background=background
+            )
             revision_id = str(revision["id"])
             layout_rows = self._create_layout_variants(revision_id, concept)
             variant_rows = self._create_banner_variants(revision_id, concept, campaign_state)
@@ -251,9 +278,10 @@ class RunOrchestrator:
                 revision_id=revision_id,
                 total_cost_usd=round(total_cost, 6),
                 metadata={
-                    "facade_version": "f5-run-orchestrator",
+                    "facade_version": "f9-refine-orchestrator" if is_refine else "f5-run-orchestrator",
                     "image_provider": image_meta.get("provider"),
                     "audit_status": audit_report.status,
+                    "refine_targets": sorted(target_set) if is_refine else None,
                 },
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -409,9 +437,12 @@ class RunOrchestrator:
 
     # --- persistence helpers ---------------------------------------------
 
-    def _create_revision(self, *, campaign_id: str, run_id: str, concept: Any) -> dict[str, Any]:
+    def _create_revision(self, *, campaign_id: str, run_id: str, concept: Any, background: dict[str, Any] | None = None) -> dict[str, Any]:
         latest = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id)
         revision_number = int((latest or {}).get("revision_number") or 0) + 1
+        concept_dict = _concept_dict(concept)
+        if background:
+            concept_dict["background"] = background
         # Created as draft; promoted to "selected" only once the pipeline
         # finishes (see _promote_revision). A mid-pipeline failure therefore
         # leaves an inert draft instead of a half-built "selected" revision.
@@ -421,12 +452,23 @@ class RunOrchestrator:
                 "generation_run_id": run_id,
                 "revision_number": revision_number,
                 "status": "draft",
-                "concept": _json_safe(_concept_dict(concept)),
+                "concept": _json_safe(concept_dict),
                 "liquid_config": {},
                 "html_preview": None,
                 "preview_storage_path": None,
             }
         )
+
+    async def _refine_background(self, concept: Any, brand: Any) -> dict[str, Any] | None:
+        skill = _load_runtime_skill("background-options-generate")
+        try:
+            options, _source = await skill.run(concept, brand, count=1, settings=self.settings, cost_guard=self.cost_guard)
+        except Exception:  # noqa: BLE001 — background is best-effort in refine
+            return None
+        if not options:
+            return None
+        top = options[0]
+        return {"name": top.name, "description": top.description, "css": top.css, "html": top.html}
 
     def _create_layout_variants(self, revision_id: str, concept: Any) -> list[dict[str, Any]]:
         layout_label = _short(concept.layout, 80)

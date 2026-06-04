@@ -74,6 +74,10 @@ class RegenerateRequest(BaseModel):
     refinement_request_id: str | None = Field(default=None, pattern=UUID_PATTERN)
     source_revision_id: str | None = Field(default=None, pattern=UUID_PATTERN)
     requested_by: str | None = Field(default=None, pattern=UUID_PATTERN)
+    # F9 — agentic refine: which nodes to re-run. Empty/None → inferred from the
+    # prompt by the refinement-route classifier (default concept+copy).
+    target_nodes: list[str] | None = Field(default=None)
+    structured_changes: dict[str, Any] | None = Field(default=None)
 
 
 class RevisionVariantResponse(BaseModel):
