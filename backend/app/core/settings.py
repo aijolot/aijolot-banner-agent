@@ -87,7 +87,7 @@ class Settings(BaseModel):
     gemini_model_pro: str = "gemini-3.1-pro"
     gemini_model_flash: str = "gemini-3.5-flash"
     gemini_model_image: str = "gemini-3.1-pro-image"
-    gemini_embedding_model: str = "text-embedding-005"
+    gemini_embedding_model: str = "gemini-embedding-001"
     image_generation_provider: str = "gemini"
     daily_cost_cap_usd: float = Field(default=5.0, ge=0)
     kg_retrieval_top_k: int = Field(default=5, ge=1)

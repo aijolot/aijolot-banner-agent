@@ -12,7 +12,7 @@ import os
 
 from app.agents.tools.gemini_text import GeminiUnavailable, _api_key
 
-EMBED_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-005")
+EMBED_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
 EMBED_DIM = 768
 
 

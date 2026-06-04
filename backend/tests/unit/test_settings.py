@@ -49,7 +49,7 @@ def test_settings_load_defaults_without_secrets(monkeypatch: pytest.MonkeyPatch)
     assert settings.gemini_model_pro == "gemini-3.1-pro"
     assert settings.gemini_model_flash == "gemini-3.5-flash"
     assert settings.gemini_model_image == "gemini-3.1-pro-image"
-    assert settings.gemini_embedding_model == "text-embedding-005"
+    assert settings.gemini_embedding_model == "gemini-embedding-001"
     assert settings.image_generation_provider == "gemini"
     assert settings.supabase_storage_bucket == "campaign-assets"
     assert settings.google_cloud_location == "us-central1"
