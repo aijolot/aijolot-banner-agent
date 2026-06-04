@@ -60,7 +60,13 @@ class Settings(BaseModel):
         "shopify_theme_id": "SHOPIFY_THEME_ID",
         "shopify_banner_metafield_namespace": "SHOPIFY_BANNER_METAFIELD_NAMESPACE",
         "shopify_banner_metafield_key": "SHOPIFY_BANNER_METAFIELD_KEY",
+        "shopify_publish_dry_run": "SHOPIFY_PUBLISH_DRY_RUN",
         "soft_image_generation_limit_per_15_minutes": "SOFT_IMAGE_GENERATION_LIMIT_PER_15_MINUTES",
+        "aijolot_intake_provider": "AIJOLOT_INTAKE_PROVIDER",
+        "aijolot_concept_provider": "AIJOLOT_CONCEPT_PROVIDER",
+        "aijolot_background_provider": "AIJOLOT_BACKGROUND_PROVIDER",
+        "aijolot_refine_provider": "AIJOLOT_REFINE_PROVIDER",
+        "kg_embeddings_enabled": "KG_EMBEDDINGS_ENABLED",
     }
 
     app_env: str = "local"
@@ -93,8 +99,18 @@ class Settings(BaseModel):
     shopify_theme_id: str | None = None
     shopify_banner_metafield_namespace: str = "aijolot"
     shopify_banner_metafield_key: str = "banner_campaigns"
+    shopify_publish_dry_run: bool = True
 
     soft_image_generation_limit_per_15_minutes: int = Field(default=20, ge=0)
+
+    # Per-feature agentic provider opt-ins. Empty string keeps the deterministic
+    # path; set to "gemini" (plus a configured GOOGLE_API_KEY) to enable the
+    # Gemini-backed branch, which still falls back to deterministic on error.
+    aijolot_intake_provider: str = ""
+    aijolot_concept_provider: str = ""
+    aijolot_background_provider: str = ""
+    aijolot_refine_provider: str = ""
+    kg_embeddings_enabled: bool = False
 
     @field_validator(
         "supabase_db_url",
@@ -131,6 +147,10 @@ class Settings(BaseModel):
         "shopify_api_version",
         "shopify_banner_metafield_namespace",
         "shopify_banner_metafield_key",
+        "aijolot_intake_provider",
+        "aijolot_concept_provider",
+        "aijolot_background_provider",
+        "aijolot_refine_provider",
         mode="before",
     )
     @classmethod
@@ -192,6 +212,18 @@ class Settings(BaseModel):
             raise MissingSettingsError(("GOOGLE_API_KEY",))
         assert self.google_api_key is not None
         return self.google_api_key.get_secret_value()
+
+    def has_google_api_key(self) -> bool:
+        return not self._secret_is_missing(self.google_api_key)
+
+    def gemini_enabled_for(self, provider_flag: str) -> bool:
+        """True when a per-feature flag opts into Gemini AND a key is present.
+
+        ``provider_flag`` is one of the ``aijolot_*_provider`` values. The
+        deterministic path stays active unless the flag is exactly ``gemini``.
+        """
+
+        return provider_flag.strip().lower() == "gemini" and self.has_google_api_key()
 
     def require_google_cloud(self) -> tuple[str, str]:
         missing = []
