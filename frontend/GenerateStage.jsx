@@ -148,7 +148,14 @@ function Gauge({ label, value, target, color, unit }) {
   );
 }
 
-function Viewport({ phase, typed, shieldOn, generationStatus, backendError }) {
+function generateIframeSafePreviewHtml(html) {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">`;
+  const source = String(html || "");
+  if (/<head[^>]*>/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${csp}`);
+  return `<!doctype html><html><head>${csp}</head><body>${source}</body></html>`;
+}
+
+function Viewport({ phase, typed, shieldOn, generationStatus, backendError, backendPreviewHtml, latestRevision }) {
   // phase 0 query | 1 brand | 2 image | 3 code | 4 shield | 5 done
   if (generationStatus === "failed") {
     return (
@@ -163,9 +170,11 @@ function Viewport({ phase, typed, shieldOn, generationStatus, backendError }) {
   if (phase >= 5) {
     return (
       <div className="fade-up" style={{ display: "flex", flexDirection: "column", gap: 14, alignItems: "center", justifyContent: "center", height: "100%" }}>
-        <Badge tone="green" icon="sparkles">Banner generado por backend</Badge>
-        <div style={{ width: "100%" }}><Banner seg={seg} variant="A" /></div>
-        <div style={{ fontFamily: "Inter", fontSize: 12, color: "#94A3B8" }}>Generación confirmada · abriendo el lienzo…</div>
+        {backendPreviewHtml ? <Badge tone="green" icon="database">Preview backend{latestRevision ? ` · revisión #${latestRevision.revision_number || "—"}` : ""}</Badge> : <Badge tone="amber" icon="flask-conical">Preview local/fallback · no es HTML backend</Badge>}
+        <div style={{ width: "100%" }}>
+          {backendPreviewHtml ? <iframe title="Backend generation preview" sandbox="" srcDoc={generateIframeSafePreviewHtml(backendPreviewHtml)} style={{ width: "100%", height: 300, border: 0, borderRadius: 14, background: "#fff" }} /> : <Banner seg={seg} variant="A" />}
+        </div>
+        <div style={{ fontFamily: "Inter", fontSize: 12, color: "#94A3B8" }}>{backendPreviewHtml ? "Generación confirmada con preview backend · abriendo el lienzo…" : "Generación confirmada, pero usando fallback visual local · abriendo el lienzo…"}</div>
       </div>
     );
   }
@@ -267,6 +276,8 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
   const [kgContext, setKgContext] = useStateG(null);
   const [artifactStatus, setArtifactStatus] = useStateG(null);
   const [artifactNotice, setArtifactNotice] = useStateG(null);
+  const [backendPreviewHtml, setBackendPreviewHtml] = useStateG(null);
+  const [latestRevision, setLatestRevision] = useStateG(null);
   const completed = useRefG(false);
   const generatedArtifacts = useRefG(null);
 
@@ -277,8 +288,16 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
       setBackendError(null);
       setArtifactStatus(null);
       setArtifactNotice(null);
+      setBackendPreviewHtml(null);
+      setLatestRevision(null);
       generatedArtifacts.current = null;
       try {
+        if (art && art.prototypeOnly) {
+          setGenerationStatus("prototype");
+          setArtifactNotice("Modo prototipo explícito: no se llamó al backend porque el arte no se guardó.");
+          onNotice && onNotice({ tone: "amber", text: "Generación en modo prototipo local: no se llamó al backend porque el arte no se guardó." });
+          return;
+        }
         const r = await GenerationApi.start(campaign, { placement, art, source: "frontend-generate-stage" });
         if (!alive) return;
         if (r.fallback) {
@@ -350,10 +369,13 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
         if (normalized.revisions.ok && !Array.isArray(normalized.revisions.data)) normalized.revisions = { ok: false, reason: "Respuesta de revisiones inválida" };
         const revisionRows = normalized.revisions.ok ? normalized.revisions.data : [];
         const latestRevision = revisionRows.length ? revisionRows.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a)) : null;
+        const previewHtml = normalized.preview.ok ? normalized.preview.data : (latestRevision && latestRevision.html_preview) || null;
+        setBackendPreviewHtml(previewHtml);
+        setLatestRevision(latestRevision);
         generatedArtifacts.current = {
           source: "backend",
           run,
-          previewHtml: normalized.preview.ok ? normalized.preview.data : null,
+          previewHtml,
           auditReport: normalized.audit.ok ? normalized.audit.data : null,
           revisions: revisionRows,
           latestRevision,
@@ -483,7 +505,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.1fr)", gap: 16, alignItems: "stretch" }}>
         <GlassCard style={{ padding: 18 }}><StepRail steps={generationStatus === "prototype" ? PIPELINE.map((step, i) => ({ ...step, key: step.id, backendLabel: "Fallback local", status: prototypePhase > i ? "succeeded" : prototypePhase === i ? "running" : "queued", events: [] })) : backendSteps} phase={phase} status={generationStatus} /></GlassCard>
         <GlassCard style={{ padding: 20, minHeight: 360, display: "flex", flexDirection: "column" }}>
-          <Viewport phase={phase} typed={typed} shieldOn={shieldOn} generationStatus={generationStatus} backendError={backendError} />
+          <Viewport phase={phase} typed={typed} shieldOn={shieldOn} generationStatus={generationStatus} backendError={backendError} backendPreviewHtml={backendPreviewHtml} latestRevision={latestRevision} />
         </GlassCard>
       </div>
     </div>

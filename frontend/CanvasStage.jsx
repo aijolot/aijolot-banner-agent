@@ -425,7 +425,7 @@ function CanvasStage({ campaign, tweaks, placement, art, generationArtifacts, on
   const visibleVariants = VARIANTS.filter((v) => visibleVariantKeys.includes(v.id));
   const currentVariantMeta = VARIANTS.find((v) => v.id === layoutVariant) || VARIANTS[0];
   const backendCreativeHtml = backendPreviewHtml || (revision && revision.html_preview) || null;
-  const creativeSourceLabel = backendCreativeHtml ? "preview HTML backend" : "renderer local/prototipo";
+  const creativeSourceLabel = backendCreativeHtml ? `preview/revisión backend${revision ? ` #${revision.revision_number || "—"}` : ""}` : "fallback local/prototipo";
   const auditStatusLabel = auditReport && (auditReport.runtime_status || auditReport.status || (auditReport.schema_report && auditReport.schema_report.valid ? "pass" : null));
 
   const TabBtn = ({ active, onClick, children, title }) => (
@@ -488,7 +488,7 @@ function CanvasStage({ campaign, tweaks, placement, art, generationArtifacts, on
               <div ref={stageRef} onClick={addComment} style={{ position: "relative", cursor: commentMode ? "crosshair" : "default" }}>
                 {backendCreativeHtml ? (
                   <div style={{ position: "relative", borderRadius: 18, overflow: "hidden", border: "1px solid rgba(34,211,238,.28)", background: "#fff", minHeight: device === "mobile" ? 520 : 360 }}>
-                    <Badge tone="green" icon="database" style={{ position: "absolute", top: 10, left: 10, zIndex: 12 }}>Backend-backed creative</Badge>
+                    <Badge tone="green" icon="database" style={{ position: "absolute", top: 10, left: 10, zIndex: 12 }}>Backend-backed creative · Preview/revisión backend</Badge>
                     <iframe
                       title="Backend banner preview"
                       sandbox=""

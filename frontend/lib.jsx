@@ -294,9 +294,10 @@ const CampaignApi = {
   toRecentCard(campaign) {
     const brief = campaign && campaign.structured_brief || {};
     const status = (campaign && campaign.status) || "draft";
+    const hasBrief = !!((campaign && campaign.raw_brief) || Object.values(brief).some((v) => (v || "").toString().trim()));
     const isDraft = ["draft", "intake", "generating", "review", "failed"].includes(status);
-    const tone = status === "published" || status === "live" ? "green" : status === "approved" ? "cyan" : status === "scheduled" ? "purple" : status === "failed" ? "red" : "amber";
-    const labels = { draft: "Borrador backend", intake: "Brief backend", generating: "Generando", review: "En revisión", approved: "Aprobada", scheduled: "Programada", published: "Publicada", live: "Publicada", failed: "Error" };
+    const tone = !hasBrief && status === "draft" ? "amber" : status === "published" || status === "live" ? "green" : status === "approved" ? "cyan" : status === "scheduled" ? "purple" : status === "failed" ? "red" : "amber";
+    const labels = { draft: hasBrief ? "Borrador backend" : "Borrador backend · pendiente de brief", intake: "Brief backend", generating: "Generando", review: "En revisión", approved: "Aprobada", scheduled: "Programada", published: "Publicada", live: "Publicada", failed: "Error" };
     const promo = brief.cta || brief.urgency || "Backend";
     const windowLabel = brief.deadline ? `Deadline ${brief.deadline}` : (brief.placement || "Sin deadline");
     return {

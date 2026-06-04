@@ -83,6 +83,7 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
   const [catalogSelect, setCatalogSelect] = useStateAR(null);
   const [hydrateNotice, setHydrateNotice] = useStateAR(null);
   const [saveState, setSaveState] = useStateAR("idle");
+  const [prototypeContinue, setPrototypeContinue] = useStateAR(false);
   const set = (patch) => { setSaveState("dirty"); setArt((a) => ({ ...a, ...patch })); };
   const allModels = [...MODELS, ...createdModels];
   const selectedItem = catalog.items.find((item) => item.id === catalogSelect) || catalog.items[0] || catalogFallbackItems()[0];
@@ -170,11 +171,18 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
     set({ bg: "usage", model: id, customModel: { name: m.name, tag: m.tag, desc: m.desc || "" } });
   }
 
+  function continuePrototype() {
+    onNotice && onNotice({ tone: "amber", text: "Continuando explícitamente en modo prototipo local; no se llamará al backend porque el arte no está guardado." });
+    onAssemble && onAssemble({ ...art, prototypeOnly: true });
+  }
+
   async function assemble() {
     setSaveState("saving");
+    setPrototypeContinue(false);
+    const apiCampaign = typeof isApiCampaign === "function" && isApiCampaign(campaign);
     try {
       let snapshot = null;
-      if (typeof isApiCampaign === "function" && isApiCampaign(campaign)) {
+      if (apiCampaign) {
         snapshot = await CatalogApi.createSnapshot(campaign, {
           store_id: (placement && placement.backend && placement.backend.store_id) || (AIJOLOT_DEMO_IDS && AIJOLOT_DEMO_IDS.store) || window.AIJOLOT_STORE_ID || "00000000-0000-0000-0000-000000000101",
           resource_types: ["product", "collection", "page"],
@@ -190,9 +198,17 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
       const r = await ArtDirectionApi.save(campaign, art, placement);
       setSaveState(r.fallback ? "fallback" : "saved");
       onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Catálogo y dirección de arte guardados en backend" });
+      if (apiCampaign && r.fallback) {
+        setPrototypeContinue(true);
+        return;
+      }
     } catch (e) {
       setSaveState("failed");
       onNotice && onNotice({ tone: "amber", text: "No se pudo guardar catálogo/arte en backend: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || e.status || "error")) });
+      if (apiCampaign) {
+        setPrototypeContinue(true);
+        return;
+      }
     }
     onAssemble && onAssemble(art);
   }
@@ -337,6 +353,12 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
           <Button variant="shine" icon="wand-sparkles" onClick={assemble} disabled={saveState === "saving"} style={{ justifyContent: "center" }}>
             {saveState === "saving" ? "Guardando dirección de arte…" : "Ensamblar banner"}
           </Button>
+          {prototypeContinue ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 12px", borderRadius: 12, background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.28)", fontFamily: "Inter", fontSize: 12, color: "#B45309" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}><Icon name="triangle-alert" size={14} /> La campaña tiene UUID backend, pero el arte no se guardó. La generación queda bloqueada para evitar una etapa rota.</div>
+              <Button variant="secondary" icon="flask-conical" onClick={continuePrototype} style={{ justifyContent: "center" }}>Continuar en modo prototipo</Button>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

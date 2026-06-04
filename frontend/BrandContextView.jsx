@@ -196,7 +196,7 @@ function BrandContextView() {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <Kicker>Guardián de identidad</Kicker>
           <h1 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 38, letterSpacing: "-0.02em", color: "#002B57", margin: 0, lineHeight: 1.05 }}>Contexto de marca</h1>
-          <p style={{ fontFamily: "Inter", fontSize: 14.5, color: "#68737D", margin: 0, maxWidth: 560 }}>El filtro que el agente aplica antes de diseñar. Selecciona una tienda, edita sus tokens y guárdalos — se persisten en <span style={{ fontFamily: "Space Grotesk" }}>brands/{(draft && draft.id) || "{id}"}.md</span>.</p>
+          <p style={{ fontFamily: "Inter", fontSize: 14.5, color: "#68737D", margin: 0, maxWidth: 560 }}>El filtro que el agente aplica antes de diseñar. Selecciona una tienda, edita sus tokens y guárdalos — se guardan en el backend vía <span style={{ fontFamily: "Space Grotesk" }}>/api/v1/brands</span>.</p>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
           {online === true ? <Badge tone="green" icon="wifi">Bridge conectado</Badge>

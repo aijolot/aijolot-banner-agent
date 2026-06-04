@@ -1,6 +1,6 @@
 /* global React, useTweaks, TweaksPanel, TweakSection, TweakSelect, TweakRadio,
    Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, ArtStage, GenerateStage,
-   CanvasStage, PerformanceStage, Icon, Badge, PlacementApi, CampaignApi, isApiCampaign */
+   CanvasStage, PerformanceStage, Icon, Badge, PlacementApi, GenerationApi, ArtDirectionApi, isApiCampaign */
 // Aijolot Banner Agent — app orchestrator.
 const { useState: useStateA } = React;
 
@@ -19,6 +19,24 @@ const STEPS = [
   { id: "performance", label: "Performance", icon: "bar-chart-3" },
 ];
 const STAGE_CRUMB = { campaigns: "", placement: "Ubicación", brief: "Brief comercial", art: "Dirección de arte", generate: "Generación", canvas: "Lienzo colaborativo", performance: "Performance" };
+
+function briefCompleteForStage(campaign) {
+  const brief = campaign && campaign.structured_brief || {};
+  return ["goal", "audience", "cta", "urgency", "placement"].every((k) => ((brief[k] || "") + "").trim());
+}
+
+function stageForCampaign(campaign, artifacts) {
+  const a = artifacts || {};
+  const status = ((campaign && campaign.status) || "draft").toLowerCase();
+  if (!campaign) return "placement";
+  if (!a.hasPlacement) return "placement";
+  if (!briefCompleteForStage(campaign)) return "brief";
+  if (!a.hasArtDirection) return "art";
+  if (!a.hasRevision) return "generate";
+  if (status === "generating") return "generate";
+  if (["published", "live"].includes(status)) return "performance";
+  return "canvas";
+}
 
 function Stepper({ stage, goTo }) {
   const cur = STEPS.findIndex((s) => s.id === stage);
@@ -62,14 +80,8 @@ function App() {
   async function handleNewCampaign() {
     setApiNotice(null);
     setGenerationArtifacts(null);
-    try {
-      const c = await CampaignApi.create({ title: "Nueva campaña", raw_brief: "" });
-      setCampaign(c);
-      setApiNotice({ tone: "green", text: "Campaña backend creada: " + c.id });
-    } catch (e) {
-      setCampaign(null);
-      setApiNotice({ tone: "amber", text: "No se pudo crear campaña backend; continuarás en modo prototipo hasta completar intake: " + (e.message || e.status || "error") });
-    }
+    setCampaign(null);
+    setApiNotice({ tone: "amber", text: "Nueva campaña pendiente de brief: se creará/actualizará en backend durante el intake, no como borrador vacío." });
     setStage("placement");
   }
   async function handlePlacementNext(p) {
@@ -85,11 +97,30 @@ function App() {
     }
     setStage("brief");
   }
-  function hydrateCampaignSelection(c, nextStage) {
+  async function inspectCampaignArtifacts(c) {
+    if (!(c && isApiCampaign(c))) return { hasPlacement: false, hasArtDirection: false, hasRevision: false };
+    const artifacts = { hasPlacement: false, hasArtDirection: false, hasRevision: false };
+    try { const r = await PlacementApi.get(c); artifacts.hasPlacement = !!(r && !r.fallback && r.data); } catch (_) {}
+    try { const r = await ArtDirectionApi.get(c); artifacts.hasArtDirection = !!(r && !r.fallback && r.data); } catch (_) {}
+    try { const r = await GenerationApi.revisions(c); artifacts.hasRevision = !!(r && !r.fallback && Array.isArray(r.data) && r.data.length); } catch (_) {}
+    return artifacts;
+  }
+  async function hydrateCampaignSelection(c, nextStage) {
     setGenerationArtifacts(null);
-    if (c) setCampaign({ ...c, structured_brief: c.structured_brief || {} });
-    setApiNotice(c && isApiCampaign(c) ? { tone: "green", text: "Campaña backend activa: " + c.id } : { tone: "amber", text: "Campaña demo/prototipo activa; las APIs durables requieren UUID backend." });
-    setStage(nextStage);
+    const normalized = c ? { ...c, structured_brief: c.structured_brief || {} } : null;
+    if (normalized) setCampaign(normalized);
+    if (nextStage === "performance") {
+      setApiNotice(normalized && isApiCampaign(normalized) ? { tone: "green", text: "Campaña backend activa: " + normalized.id } : { tone: "amber", text: "Performance demo/prototipo; métricas no live." });
+      setStage("performance");
+      return;
+    }
+    setApiNotice(normalized && isApiCampaign(normalized) ? { tone: "cyan", text: "Revisando progreso backend para retomar en el paso correcto…" } : { tone: "amber", text: "Campaña demo/prototipo activa; las APIs durables requieren UUID backend." });
+    const artifacts = await inspectCampaignArtifacts(normalized);
+    const resolvedStage = stageForCampaign(normalized, artifacts);
+    setApiNotice(normalized && isApiCampaign(normalized)
+      ? { tone: "green", text: `Campaña backend activa: ${normalized.id} · retomando en ${STAGE_CRUMB[resolvedStage] || resolvedStage}` }
+      : { tone: "amber", text: "Campaña demo/prototipo: retomando en ubicación/brief para evitar etapas imposibles." });
+    setStage(resolvedStage);
   }
   async function onCampaignReady(c, opts) {
     setCampaign(c);

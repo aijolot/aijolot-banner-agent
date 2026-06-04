@@ -75,21 +75,35 @@ function Topbar({ crumb, onHome }) {
 }
 
 // ---- Campaigns landing ----
-const KPIS = [
-  { icon: "rocket", label: "Campañas activas", value: "3" },
-  { icon: "image", label: "Banners publicados", value: "47" },
-  { icon: "mouse-pointer-click", label: "CTR promedio", value: "4.6%" },
-  { icon: "feather", label: "Peso ahorrado", value: "−81%" },
+const FALLBACK_KPIS = [
+  { icon: "rocket", label: "Campañas activas", value: "—", source: "backend" },
+  { icon: "image", label: "Banners publicados", value: "—", source: "backend" },
+  { icon: "mouse-pointer-click", label: "CTR promedio", value: "4.6%", source: "demo/fallback" },
+  { icon: "feather", label: "Peso ahorrado", value: "−81%", source: "demo/fallback" },
 ];
 
 const RECENT = [
-  { id: CAMPAIGN.id, title: CAMPAIGN.title, promo: CAMPAIGN.promo, window: CAMPAIGN.window, status: "draft", tone: "amber", statusLabel: "Demo/prototipo · En revisión", action: "Continuar", source: "demo" },
+  { id: CAMPAIGN.id, title: CAMPAIGN.title, promo: CAMPAIGN.promo, window: CAMPAIGN.window, status: "draft", tone: "amber", statusLabel: "Demo/fallback · pendiente de brief", action: "Continuar", source: "demo" },
   { id: "CMP-0188", title: "Calzado primavera", promo: "20% OFF", window: "12 — 19 may 2026", status: "live", tone: "green", statusLabel: "Demo/prototipo · Publicado", action: "Ver performance", source: "demo" },
   { id: "CMP-0185", title: "Skincare — Día Madre", promo: "2x1", window: "1 — 10 may 2026", status: "live", tone: "green", statusLabel: "Demo/prototipo · Publicado", action: "Ver performance", source: "demo" },
 ];
 
 function isDraftish(status) {
   return ["draft", "intake", "generating", "review", "failed"].includes(status || "draft");
+}
+
+function kpisFromCampaigns(cards, fallback) {
+  if (fallback) return FALLBACK_KPIS.map((k) => ({ ...k, value: k.source === "backend" ? "—" : k.value }));
+  const rows = Array.isArray(cards) ? cards : [];
+  const liveStatuses = ["approved", "scheduled", "published", "live"];
+  const active = rows.filter((r) => liveStatuses.includes(r.status)).length;
+  const published = rows.filter((r) => ["published", "live"].includes(r.status)).length;
+  return [
+    { icon: "rocket", label: "Campañas activas", value: String(active), source: "backend" },
+    { icon: "image", label: "Banners publicados", value: String(published), source: "backend" },
+    FALLBACK_KPIS[2],
+    FALLBACK_KPIS[3],
+  ];
 }
 
 function CampaignRow({ r, index, onResume, onPerf }) {
@@ -133,6 +147,8 @@ function CampaignsView({ onNew, onResume, onPerf }) {
     return () => { live = false; };
   }, []);
 
+  const kpis = kpisFromCampaigns(backendCards, loading || !!apiError);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 26 }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
@@ -145,12 +161,13 @@ function CampaignsView({ onNew, onResume, onPerf }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
-        {KPIS.map((k) => (
+        {kpis.map((k) => (
           <GlassCard key={k.label} style={{ padding: 18 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#68737D", fontFamily: "Inter", fontSize: 13 }}>
               <Icon name={k.icon} size={16} color="#22D3EE" /> {k.label}
             </div>
             <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 28, color: "#002B57", marginTop: 12, fontVariantNumeric: "tabular-nums" }}>{k.value}</div>
+            <div style={{ marginTop: 6 }}><Badge tone={k.source === "backend" ? "cyan" : "amber"} icon={k.source === "backend" ? "database" : "flask-conical"}>{k.source === "backend" ? "Derivado de /api/v1" : "Demo/fallback no live"}</Badge></div>
           </GlassCard>
         ))}
       </div>
@@ -173,7 +190,7 @@ function CampaignsView({ onNew, onResume, onPerf }) {
           {!loading && !backendCards.length && !apiError ? (
             <div style={{ padding: "18px 0 12px", fontFamily: "Inter", color: "#475569" }}>
               <div style={{ fontWeight: 600, color: "#002B57", marginBottom: 4 }}>No hay campañas creadas aún</div>
-              <div style={{ fontSize: 13 }}>Crea una campaña con intake o CampaignApi.create; aparecerá aquí después de refrescar.</div>
+              <div style={{ fontSize: 13 }}>Crea una campaña desde el intake/brief; aparecerá aquí después de guardarse en el backend y refrescar.</div>
             </div>
           ) : null}
           {!loading && !backendCards.length ? (

@@ -528,6 +528,10 @@ Coordinator note: Implemented by fresh subagent and passed review after coordina
 
 **Commit:** `fix: tighten studio demo flow guardrails`
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented by fresh subagent and passed review after coordinator fixes. Changed `frontend/App.jsx`, `frontend/Shell.jsx`, `frontend/ArtStage.jsx`, `frontend/GenerateStage.jsx`, `frontend/CanvasStage.jsx`, `frontend/BrandContextView.jsx`, and `frontend/lib.jsx`. Resume routing now inspects backend placement, art direction, and revisions, routes missing-revision campaigns back to Generation instead of Canvas, and keeps published/live campaigns on Performance only when artifacts exist. New campaign no longer creates an empty backend draft immediately and is visibly labeled pending brief. Shell KPIs are backend-derived when available or explicitly demo/fallback-labeled; static fallback draft rows are labeled pending brief. Backend UUID art-save failures block progression, exposing an explicit prototype-only escape hatch; GenerateStage honors `art.prototypeOnly` by entering local prototype mode without calling `GenerationApi.start`. Generate/Canvas creative labels distinguish backend preview/revision from local fallback. Brand context persistence copy now references `/api/v1/brands`/backend, not `brands/{id}.md`. Validation: JSX esbuild checks for all changed frontend files, `python3 scripts/smoke-demo-flow.py`, `node scripts/smoke-frontend-backend-connection.mjs`, and `git diff --check` passed; final reviewer approved.
+
 ---
 
 ## Phase 8: Browser-Level Smoke and Final Demo Script
