@@ -27,6 +27,7 @@ from app.services.banners.generation_run_service import (
     CampaignGenerationRunNotFound,
     CampaignNotFound,
     GenerationRunNotFound,
+    GenerationRunPersistenceError,
     GenerationRunService,
     configured_service,
     configured_service_for_team,
@@ -86,6 +87,8 @@ def start_generation_run(
         raise HTTPException(status_code=404, detail="resource not found")
     except GenerationRunNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+    except GenerationRunPersistenceError as exc:
+        raise HTTPException(status_code=503, detail=f"generation artifact persistence failed: {exc.message}")
 
 
 @router.get("/campaigns/{campaign_id}/generation-runs/latest", response_model=GenerationRunResponse)

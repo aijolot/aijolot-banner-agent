@@ -5,6 +5,7 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any
+import html as _html
 from urllib.parse import urlparse
 
 from app.agents.state import BannerAssets, Concept
@@ -219,4 +220,30 @@ def render_banner_preview(concept: Concept, assets: BannerAssets, *, brand: Any 
     )
 
 
-__all__ = ["RenderedPreview", "render_banner_preview"]
+def render_deterministic_mvp_preview(*, campaign: dict[str, Any], revision_number: int) -> str:
+    """Render a local, escaped MVP preview without model or network calls."""
+    title = _html.escape(str(campaign.get("title") or "Nueva campaña"), quote=True)
+    promo = _html.escape(str(campaign.get("promo_label") or "Oferta especial"), quote=True)
+    brief_value = campaign.get("structured_brief")
+    brief = brief_value if isinstance(brief_value, dict) else {}
+    cta = _html.escape(str(brief.get("cta") or "Comprar ahora"), quote=True)
+    audience = _html.escape(str(brief.get("audience") or "Clientes destacados"), quote=True)
+    return f"""<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{title}</title>
+</head>
+<body>
+  <section class="aijolot-banner" data-revision-number="{revision_number}">
+    <p class="aijolot-banner__eyebrow">{promo}</p>
+    <h1>{title}</h1>
+    <p>{audience}</p>
+    <a href="/collections/all" class="aijolot-banner__cta">{cta}</a>
+  </section>
+</body>
+</html>"""
+
+
+__all__ = ["RenderedPreview", "render_banner_preview", "render_deterministic_mvp_preview"]

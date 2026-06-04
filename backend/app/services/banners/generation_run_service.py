@@ -5,6 +5,10 @@ from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from app.core.settings import MissingSettingsError, Settings
+from app.db.repositories.audit_reports import AuditReportRepository
+from app.db.repositories.banner_layout_variants import BannerLayoutVariantRepository
+from app.db.repositories.banner_variants import BannerVariantRepository
+from app.db.repositories.campaign_revisions import CampaignRevisionRepository
 from app.db.repositories.campaigns import CampaignRepository
 from app.db.repositories.generation_events import GenerationEventRepository
 from app.db.repositories.generation_runs import GenerationRunRepository
@@ -16,8 +20,10 @@ from app.schemas.generation import (
     GenerationRunResponse,
     GenerationRunStatus,
 )
+from app.services.banners.audit_report_service import deterministic_mvp_audit_report
+from app.services.banners.html_renderer import render_deterministic_mvp_preview
 from app.services.supabase.client import SupabaseClientFactory
-from app.workflows.banner_creation import FRONTEND_PROGRESS_STEPS, frontend_step_for_node, ordered_node_keys
+from app.workflows.banner_creation import DETERMINISTIC_LAYOUT_VARIANT_KEYS, FRONTEND_PROGRESS_STEPS, frontend_step_for_node, ordered_node_keys
 
 
 class CampaignNotFound(Exception):
@@ -32,6 +38,12 @@ class GenerationRunNotFound(Exception):
         self.run_id = run_id
 
 
+class GenerationRunPersistenceError(RuntimeError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
 class CampaignGenerationRunNotFound(Exception):
     def __init__(self, campaign_id: str) -> None:
         super().__init__(f"generation run for campaign '{campaign_id}' not found")
@@ -40,10 +52,12 @@ class CampaignGenerationRunNotFound(Exception):
 
 class CampaignRepositoryProtocol(Protocol):
     def get(self, *, campaign_id: str, team_id: str | None = None) -> dict[str, Any] | None: ...
+    def update(self, *, campaign_id: str, data: dict[str, Any], team_id: str | None = None) -> dict[str, Any] | None: ...
 
 
 class GenerationRunRepositoryProtocol(Protocol):
     def create(self, *, data: dict[str, Any]) -> dict[str, Any]: ...
+    def update(self, *, run_id: str, data: dict[str, Any]) -> dict[str, Any] | None: ...
     def get(self, *, run_id: str) -> dict[str, Any] | None: ...
     def get_latest_by_campaign_id(self, *, campaign_id: str) -> dict[str, Any] | None: ...
 
@@ -51,6 +65,21 @@ class GenerationRunRepositoryProtocol(Protocol):
 class GenerationEventRepositoryProtocol(Protocol):
     def create_many(self, *, events: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
     def list_by_run_id(self, *, run_id: str) -> list[dict[str, Any]]: ...
+
+
+class RevisionRepositoryProtocol(Protocol):
+    def create(self, *, data: dict[str, Any]) -> dict[str, Any]: ...
+    def get(self, *, revision_id: str) -> dict[str, Any] | None: ...
+    def get_latest_by_campaign_id(self, *, campaign_id: str) -> dict[str, Any] | None: ...
+    def update(self, *, revision_id: str, data: dict[str, Any]) -> dict[str, Any] | None: ...
+
+
+class ChildArtifactRepositoryProtocol(Protocol):
+    def create_many(self, *, variants: list[dict[str, Any]]) -> list[dict[str, Any]]: ...
+
+
+class AuditReportRepositoryProtocol(Protocol):
+    def create(self, *, data: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class InMemoryGenerationRunRepository:
@@ -74,6 +103,13 @@ class InMemoryGenerationRunRepository:
     def get(self, *, run_id: str) -> dict[str, Any] | None:
         row = self.rows.get(run_id)
         return dict(row) if row else None
+
+    def update(self, *, run_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        row = self.rows.get(run_id)
+        if row is None:
+            return None
+        row.update(data)
+        return dict(row)
 
     def get_latest_by_campaign_id(self, *, campaign_id: str) -> dict[str, Any] | None:
         rows = [row for row in self.rows.values() if str(row.get("campaign_id")) == campaign_id]
@@ -122,11 +158,19 @@ class GenerationRunService:
         run_repository: GenerationRunRepositoryProtocol | None = None,
         event_repository: GenerationEventRepositoryProtocol | None = None,
         campaign_repository: CampaignRepositoryProtocol | None = None,
+        revision_repository: RevisionRepositoryProtocol | None = None,
+        layout_variant_repository: ChildArtifactRepositoryProtocol | None = None,
+        variant_repository: ChildArtifactRepositoryProtocol | None = None,
+        audit_report_repository: AuditReportRepositoryProtocol | None = None,
         team_id: str | None = None,
     ) -> None:
         self.run_repository = run_repository or _LOCAL_RUN_REPOSITORY
         self.event_repository = event_repository or _LOCAL_EVENT_REPOSITORY
         self.campaign_repository = campaign_repository
+        self.revision_repository = revision_repository
+        self.layout_variant_repository = layout_variant_repository
+        self.variant_repository = variant_repository
+        self.audit_report_repository = audit_report_repository
         self.team_id = team_id
 
     @classmethod
@@ -135,33 +179,58 @@ class GenerationRunService:
             run_repository=GenerationRunRepository(client),
             event_repository=GenerationEventRepository(client),
             campaign_repository=CampaignRepository(client),
+            revision_repository=CampaignRevisionRepository(client),
+            layout_variant_repository=BannerLayoutVariantRepository(client),
+            variant_repository=BannerVariantRepository(client),
+            audit_report_repository=AuditReportRepository(client),
             team_id=team_id,
         )
 
     def start_generation_run(self, campaign_id: str, request: GenerationRunCreate | None = None) -> GenerationRunResponse:
         request = request or GenerationRunCreate()
-        self._get_campaign(campaign_id)
+        campaign = self._get_campaign(campaign_id)
         if request.parent_run_id:
             self._verify_parent_run(campaign_id=campaign_id, parent_run_id=request.parent_run_id)
         now = _utc_now_iso()
         trace_id = str(uuid4())
-        metadata = {**request.metadata, "facade_version": "task-10-deterministic"}
+        metadata = {
+            **request.metadata,
+            "facade_version": "task-10-deterministic",
+            "artifact_version": "phase-1-mvp-deterministic",
+            "layout_variants": list(DETERMINISTIC_LAYOUT_VARIANT_KEYS),
+        }
         row = self.run_repository.create(
             data={
                 "campaign_id": campaign_id,
                 "parent_run_id": request.parent_run_id,
                 "run_type": request.run_type,
-                "status": "succeeded",
-                "frontend_step": "review_publish",
+                "status": "running",
+                "frontend_step": "intake_context",
                 "adk_trace_id": trace_id,
                 "started_by": request.started_by,
                 "started_at": now,
-                "finished_at": now,
                 "metadata": metadata,
             }
         )
         run_id = str(row["id"])
-        self.event_repository.create_many(events=self._deterministic_events(run_id=run_id))
+        try:
+            self.event_repository.create_many(events=self._deterministic_events(run_id=run_id))
+            self._persist_mvp_artifacts(campaign_id=campaign_id, campaign=campaign or {"id": campaign_id}, run_id=run_id)
+            succeeded = self.run_repository.update(
+                run_id=run_id,
+                data={
+                    "status": "succeeded",
+                    "frontend_step": "review_publish",
+                    "finished_at": _utc_now_iso(),
+                    "error_message": None,
+                },
+            )
+            if succeeded is None:
+                raise RuntimeError("generation run update failed")
+            row = succeeded
+        except Exception as exc:
+            self._mark_run_failed(run_id=run_id, error_message=str(exc))
+            raise GenerationRunPersistenceError(str(exc)) from exc
         return self._run_response_from_record(row)
 
     def get_latest_for_campaign(self, campaign_id: str) -> GenerationRunResponse:
@@ -214,6 +283,7 @@ class GenerationRunService:
                     "frontend_step": step,
                     "status": "started",
                     "input_summary": {"summary": f"Deterministic Task 10 input for {node_key}"},
+                    "output_summary": {},
                     "duration_ms": 0,
                     "cost_usd": 0.0,
                     "created_at": started_created_at,
@@ -225,6 +295,7 @@ class GenerationRunService:
                     "node_key": node_key,
                     "frontend_step": step,
                     "status": "succeeded",
+                    "input_summary": {},
                     "output_summary": {"summary": f"Deterministic Task 10 output for {node_key}"},
                     "duration_ms": 1 + index,
                     "cost_usd": 0.0,
@@ -232,6 +303,93 @@ class GenerationRunService:
                 }
             )
         return events
+
+    def _persist_mvp_artifacts(self, *, campaign_id: str, campaign: dict[str, Any], run_id: str) -> None:
+        if not all(
+            (
+                self.campaign_repository,
+                self.revision_repository,
+                self.layout_variant_repository,
+                self.variant_repository,
+                self.audit_report_repository,
+            )
+        ):
+            return
+        assert self.campaign_repository is not None
+        assert self.revision_repository is not None
+        assert self.layout_variant_repository is not None
+        assert self.variant_repository is not None
+        assert self.audit_report_repository is not None
+
+        latest = self.revision_repository.get_latest_by_campaign_id(campaign_id=campaign_id)
+        revision_number = int((latest or {}).get("revision_number") or 0) + 1
+        previous_selected_revision_id = campaign.get("selected_revision_id")
+        revision = self.revision_repository.create(
+            data={
+                "campaign_id": campaign_id,
+                "generation_run_id": run_id,
+                "revision_number": revision_number,
+                "status": "draft",
+                "concept": _deterministic_concept(campaign=campaign, revision_number=revision_number),
+                "liquid_config": _deterministic_liquid_config(
+                    campaign_id=campaign_id,
+                    run_id=run_id,
+                    revision_number=revision_number,
+                ),
+                "html_preview": render_deterministic_mvp_preview(campaign=campaign, revision_number=revision_number),
+                "preview_storage_path": None,
+            }
+        )
+        revision_id = str(revision["id"])
+        self.layout_variant_repository.create_many(variants=_default_layout_variants(revision_id))
+        self.variant_repository.create_many(variants=_default_segment_variants(revision_id))
+        self.audit_report_repository.create(
+            data=deterministic_mvp_audit_report(campaign_id=campaign_id, revision_id=revision_id, generation_run_id=run_id)
+        )
+        selected_revision = self.revision_repository.update(revision_id=revision_id, data={"status": "selected"})
+        if selected_revision is None:
+            raise RuntimeError("revision status update failed")
+
+        updated_campaign = self.campaign_repository.update(
+            campaign_id=campaign_id,
+            team_id=self.team_id,
+            data={"selected_revision_id": revision_id, "status": "needs_review"},
+        )
+        if updated_campaign is None:
+            self._rollback_new_revision_selection(revision_id=revision_id)
+            raise RuntimeError("campaign update failed")
+
+        if previous_selected_revision_id and str(previous_selected_revision_id) != revision_id:
+            previous = self.revision_repository.get(revision_id=str(previous_selected_revision_id))
+            if previous and previous.get("status") == "selected":
+                superseded = self.revision_repository.update(
+                    revision_id=str(previous_selected_revision_id),
+                    data={"status": "superseded"},
+                )
+                if superseded is None:
+                    raise RuntimeError("previous revision supersede failed")
+
+    def _rollback_new_revision_selection(self, *, revision_id: str) -> None:
+        if self.revision_repository is None:
+            return
+        try:
+            self.revision_repository.update(revision_id=revision_id, data={"status": "draft"})
+        except Exception:
+            return
+
+    def _mark_run_failed(self, *, run_id: str, error_message: str) -> None:
+        try:
+            self.run_repository.update(
+                run_id=run_id,
+                data={
+                    "status": "failed",
+                    "frontend_step": "render_audit",
+                    "finished_at": _utc_now_iso(),
+                    "error_message": error_message,
+                },
+            )
+        except Exception:
+            return
 
     @staticmethod
     def _run_response_from_record(row: dict[str, Any]) -> GenerationRunResponse:
@@ -323,6 +481,62 @@ def _utc_now_iso(offset_microseconds: int = 0) -> str:
     if offset_microseconds:
         now = now + timedelta(microseconds=offset_microseconds)
     return _utc_iso(now)
+
+
+def _deterministic_concept(*, campaign: dict[str, Any], revision_number: int) -> dict[str, Any]:
+    brief_value = campaign.get("structured_brief")
+    brief = brief_value if isinstance(brief_value, dict) else {}
+    return {
+        "title": campaign.get("title") or "Nueva campaña",
+        "promo_label": campaign.get("promo_label") or "Oferta especial",
+        "audience": brief.get("audience") or "Clientes destacados",
+        "cta": brief.get("cta") or "Comprar ahora",
+        "tone": brief.get("tone") or "Premium",
+        "revision_number": revision_number,
+        "mode": "deterministic_mvp",
+    }
+
+
+def _deterministic_liquid_config(*, campaign_id: str, run_id: str, revision_number: int) -> dict[str, Any]:
+    return {
+        "campaign_id": campaign_id,
+        "generation_run_id": run_id,
+        "revision_number": revision_number,
+        "section_type": "aijolot-mvp-banner",
+        "safe_to_publish": False,
+    }
+
+
+def _default_layout_variants(revision_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "revision_id": revision_id,
+            "key": key,
+            "name": f"Hero layout {key}",
+            "description": f"Deterministic MVP layout {key}",
+            "layout_type": "split" if key == "A" else ("centered" if key == "B" else "media_first"),
+            "is_recommended": key == "A",
+            "config": {"variant_key": key, "offline_deterministic": True},
+        }
+        for key in DETERMINISTIC_LAYOUT_VARIANT_KEYS
+    ]
+
+
+def _default_segment_variants(revision_id: str) -> list[dict[str, Any]]:
+    return [
+        {
+            "revision_id": revision_id,
+            "segment_key": "default",
+            "segment_label": "Default audience",
+            "audience_rule": {},
+            "eyebrow": "Limited offer",
+            "headline": "Fresh picks for you",
+            "subheadline": "Deterministic MVP banner copy",
+            "cta_text": "Shop now",
+            "cta_url": "/collections/all",
+            "palette": {},
+        }
+    ]
 
 
 def _utc_iso(value: datetime) -> str:

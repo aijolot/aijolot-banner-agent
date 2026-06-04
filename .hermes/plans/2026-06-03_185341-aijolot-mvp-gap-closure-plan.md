@@ -170,6 +170,10 @@ Prioritize vertical demo continuity over post-MVP completeness.
 
 **Commit:** No commit unless docs/baseline notes are intentionally updated.
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Created branch `feature/mvp-gap-closure-demo-flow` from updated `main`. Baseline validation passed for existing tests and documented current fail-closed behavior: `cd backend && . .venv/bin/activate && pytest tests/api/test_generation_runs.py tests/unit/test_generation_run_service.py -q` passed (16 passed, 1 existing `Concept.copy` warning); `python3 scripts/smoke-demo-flow.py` passed; `node scripts/smoke-frontend-backend-connection.mjs` passed while confirming generation 500, no revisions, regenerate 404, refinement 503, approval 422, schedule 409, publish 503, and non-live performance label.
+
 ---
 
 ## Phase 1: Fix Generation Runtime and Persist MVP Artifacts
@@ -225,6 +229,10 @@ Prioritize vertical demo continuity over post-MVP completeness.
 - Frontend can advance to Canvas only after backend generation success.
 
 **Commit:** `feat: persist demo generation revisions and artifacts`
+
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented and reviewed through fresh subagents plus coordinator fixes. Changed `backend/app/services/banners/generation_run_service.py`, `backend/app/db/repositories/generation_runs.py`, `backend/app/services/banners/html_renderer.py`, new `backend/app/services/banners/audit_report_service.py`, `backend/app/api/v1/generation.py`, and `backend/tests/unit/test_generation_run_service.py`. Generation now creates runs as `running`, inserts non-null-summary events before artifacts, persists deterministic MVP revision/layout variants/segment variant/preview/audit artifacts in configured repository mode, marks the run `succeeded` only after artifacts, marks failed on persistence errors, and API converts persistence failures to 503. Review loops fixed partial-write risks around campaign update rollback, event-insert ordering, audit normalization, and ignored campaign update results. Validation: focused generation tests passed (24 passed, 1 existing warning); final reviewer ran full backend suite (296 passed, 3 skipped, 1 warning), `python3 scripts/smoke-demo-flow.py`, `node scripts/smoke-frontend-backend-connection.mjs`, and `git diff --check` successfully.
 
 ---
 

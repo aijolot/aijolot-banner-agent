@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from app.db.repositories.audit_reports import AuditReportRepository
 from app.schemas.generation import GenerationRunCreate
+from app.services.banners.audit_report_service import deterministic_mvp_audit_report
 from app.services.banners.generation_run_service import (
     CampaignGenerationRunNotFound,
     CampaignNotFound,
@@ -21,13 +23,115 @@ SECOND_STARTED_BY_ID = "00000000-0000-0000-0000-000000000602"
 class FakeCampaignRepository:
     def __init__(self, *, exists: bool = True) -> None:
         self.exists = exists
+        self.fail_update = False
+        self.rows: dict[str, dict] = {}
         self.calls: list[tuple[str, str | None]] = []
 
     def get(self, *, campaign_id: str, team_id: str | None = None) -> dict | None:
         self.calls.append((campaign_id, team_id))
         if not self.exists:
             return None
-        return {"id": campaign_id, "team_id": team_id or "team-1", "status": "brief_ready"}
+        return self.rows.setdefault(
+            campaign_id,
+            {
+                "id": campaign_id,
+                "team_id": team_id or "team-1",
+                "status": "brief_ready",
+                "title": "Black Friday VIP",
+                "promo_label": "30% off",
+                "raw_brief": "Premium Black Friday hero for VIP customers",
+                "structured_brief": {"cta": "Shop now", "audience": "VIP customers"},
+                "selected_revision_id": None,
+            },
+        )
+
+    def update(self, *, campaign_id: str, data: dict, team_id: str | None = None) -> dict | None:
+        if self.fail_update:
+            return None
+        row = self.get(campaign_id=campaign_id, team_id=team_id)
+        if row is None:
+            return None
+        row.update(data)
+        return dict(row)
+
+
+class InMemoryArtifactRepository:
+    def __init__(self) -> None:
+        self.rows: dict[str, dict] = {}
+        self._sequence = 0
+
+    def create(self, *, data: dict) -> dict:
+        self._sequence += 1
+        row = {"id": f"00000000-0000-0000-0001-{self._sequence:012d}", "created_at": f"2026-01-01T00:00:00.{self._sequence:06d}+00:00", **data}
+        self.rows[row["id"]] = row
+        return dict(row)
+
+    def get(self, *, revision_id: str) -> dict | None:
+        row = self.rows.get(revision_id)
+        return dict(row) if row else None
+
+    def get_latest_by_campaign_id(self, *, campaign_id: str) -> dict | None:
+        rows = [row for row in self.rows.values() if row.get("campaign_id") == campaign_id]
+        if not rows:
+            return None
+        return dict(max(rows, key=lambda row: int(row.get("revision_number") or 0)))
+
+    def list_by_campaign_id(self, *, campaign_id: str) -> list[dict]:
+        return [dict(row) for row in self.rows.values() if row.get("campaign_id") == campaign_id]
+
+    def update(self, *, revision_id: str, data: dict) -> dict | None:
+        row = self.rows.get(revision_id)
+        if row is None:
+            return None
+        row.update(data)
+        return dict(row)
+
+
+class InMemoryChildArtifactRepository:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+        self._sequence = 0
+
+    def create_many(self, *, variants: list[dict]) -> list[dict]:
+        created = []
+        for variant in variants:
+            self._sequence += 1
+            row = {"id": f"00000000-0000-0000-0002-{self._sequence:012d}", **variant}
+            self.rows.append(row)
+            created.append(dict(row))
+        return created
+
+    def list_by_revision_id(self, *, revision_id: str) -> list[dict]:
+        return [dict(row) for row in self.rows if row.get("revision_id") == revision_id]
+
+
+class FailingChildArtifactRepository(InMemoryChildArtifactRepository):
+    def __init__(self, *, after: int = 0, message: str = "artifact insert failed") -> None:
+        super().__init__()
+        self.after = after
+        self.message = message
+
+    def create_many(self, *, variants: list[dict]) -> list[dict]:
+        if self.after <= 0:
+            raise RuntimeError(self.message)
+        super().create_many(variants=variants[: self.after])
+        raise RuntimeError(self.message)
+
+
+class InMemoryAuditReportRepository(InMemoryArtifactRepository):
+    def get_latest_by_campaign_id(self, *, campaign_id: str) -> dict | None:
+        rows = [row for row in self.rows.values() if row.get("campaign_id") == campaign_id]
+        return dict(rows[-1]) if rows else None
+
+
+class FailingAuditReportRepository(InMemoryAuditReportRepository):
+    def create(self, *, data: dict) -> dict:
+        raise RuntimeError("audit insert failed")
+
+
+class FailingGenerationEventRepository(InMemoryGenerationEventRepository):
+    def create_many(self, *, events: list[dict]) -> list[dict]:
+        raise RuntimeError("events insert failed")
 
 
 @pytest.fixture
@@ -109,6 +213,16 @@ def test_start_generation_run_creates_succeeded_run_and_deterministic_events(ser
     assert len({event.created_at for event in events}) == len(events)
 
 
+def test_generation_events_insert_payload_never_has_null_output_summary(service: GenerationRunService) -> None:
+    run = service.start_generation_run(CAMPAIGN_ID)
+
+    raw_events = service.event_repository.list_by_run_id(run_id=run.id)  # type: ignore[attr-defined]
+
+    assert raw_events
+    assert all("output_summary" in event for event in raw_events)
+    assert all(event["output_summary"] is not None for event in raw_events)
+
+
 def test_latest_run_is_deterministic_most_recent(service: GenerationRunService) -> None:
     first = service.start_generation_run(CAMPAIGN_ID, GenerationRunCreate(started_by=STARTED_BY_ID))
     second = service.start_generation_run(CAMPAIGN_ID, GenerationRunCreate(started_by=SECOND_STARTED_BY_ID))
@@ -118,6 +232,209 @@ def test_latest_run_is_deterministic_most_recent(service: GenerationRunService) 
     assert latest.id != first.id
     assert latest.id == second.id
     assert latest.started_by == SECOND_STARTED_BY_ID
+
+
+def test_start_generation_run_persists_mvp_artifacts_and_selects_new_revision() -> None:
+    campaigns = FakeCampaignRepository()
+    revisions = InMemoryArtifactRepository()
+    layout_variants = InMemoryChildArtifactRepository()
+    variants = InMemoryChildArtifactRepository()
+    audit_reports = InMemoryAuditReportRepository()
+    service = GenerationRunService(
+        run_repository=InMemoryGenerationRunRepository(),
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns,
+        revision_repository=revisions,
+        layout_variant_repository=layout_variants,
+        variant_repository=variants,
+        audit_report_repository=audit_reports,
+        team_id="team-1",
+    )
+
+    first = service.start_generation_run(CAMPAIGN_ID, GenerationRunCreate(started_by=STARTED_BY_ID))
+    first_revision_id = campaigns.rows[CAMPAIGN_ID]["selected_revision_id"]
+    second = service.start_generation_run(CAMPAIGN_ID, GenerationRunCreate(started_by=SECOND_STARTED_BY_ID))
+    second_revision_id = campaigns.rows[CAMPAIGN_ID]["selected_revision_id"]
+
+    assert first.id != second.id
+    assert first_revision_id != second_revision_id
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "needs_review"
+    assert revisions.rows[first_revision_id]["status"] == "superseded"
+    assert revisions.rows[second_revision_id]["status"] == "selected"
+    assert revisions.rows[second_revision_id]["generation_run_id"] == second.id
+    assert revisions.rows[second_revision_id]["revision_number"] == 2
+    assert "aijolot-banner" in revisions.rows[second_revision_id]["html_preview"]
+    assert [row["key"] for row in layout_variants.list_by_revision_id(revision_id=second_revision_id)] == ["A", "B", "C"]
+    assert [row["segment_key"] for row in variants.list_by_revision_id(revision_id=second_revision_id)]
+    assert audit_reports.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)["revision_id"] == second_revision_id
+    audit = audit_reports.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+    assert audit is not None
+    assert audit["schema_report"] == {"valid": True}
+    assert audit["human_review_required"] is True
+    assert audit["avif_skipped"] is True
+
+
+def test_audit_report_normalization_preserves_deterministic_runtime_fields() -> None:
+    payload = deterministic_mvp_audit_report(campaign_id=CAMPAIGN_ID, revision_id="revision-1", generation_run_id="run-1")
+
+    normalized = AuditReportRepository._normalize_for_storage(payload)
+
+    assert normalized["asset_weight_report"]["avif_skipped"] is True
+    assert normalized["seo_report"]["audit_runtime"] == {
+        "status": "pass",
+        "findings": [],
+        "schema_report": {"valid": True},
+        "human_review_required": True,
+        "avif_skipped": True,
+    }
+
+
+def test_artifact_failure_does_not_change_selected_revision() -> None:
+    class FailingRevisionRepository(InMemoryArtifactRepository):
+        def create(self, *, data: dict) -> dict:
+            raise RuntimeError("revision insert failed")
+
+    campaigns = FakeCampaignRepository()
+    campaigns.rows[CAMPAIGN_ID] = {"id": CAMPAIGN_ID, "team_id": "team-1", "status": "draft", "selected_revision_id": "existing-revision"}
+    service = GenerationRunService(
+        run_repository=InMemoryGenerationRunRepository(),
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns,
+        revision_repository=FailingRevisionRepository(),
+        layout_variant_repository=InMemoryChildArtifactRepository(),
+        variant_repository=InMemoryChildArtifactRepository(),
+        audit_report_repository=InMemoryAuditReportRepository(),
+        team_id="team-1",
+    )
+
+    with pytest.raises(RuntimeError, match="revision insert failed"):
+        service.start_generation_run(CAMPAIGN_ID)
+
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == "existing-revision"
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "draft"
+
+
+def test_layout_variant_partial_failure_keeps_previous_selection_and_marks_run_failed() -> None:
+    campaigns = FakeCampaignRepository()
+    campaigns.rows[CAMPAIGN_ID] = {"id": CAMPAIGN_ID, "team_id": "team-1", "status": "needs_review", "selected_revision_id": "existing-revision"}
+    revisions = InMemoryArtifactRepository()
+    revisions.rows["existing-revision"] = {"id": "existing-revision", "campaign_id": CAMPAIGN_ID, "revision_number": 1, "status": "selected"}
+    run_repository = InMemoryGenerationRunRepository()
+    service = GenerationRunService(
+        run_repository=run_repository,
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns,
+        revision_repository=revisions,
+        layout_variant_repository=FailingChildArtifactRepository(after=1, message="layout variant insert failed"),
+        variant_repository=InMemoryChildArtifactRepository(),
+        audit_report_repository=InMemoryAuditReportRepository(),
+        team_id="team-1",
+    )
+
+    with pytest.raises(RuntimeError, match="layout variant insert failed"):
+        service.start_generation_run(CAMPAIGN_ID)
+
+    failed_run = run_repository.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+    assert failed_run is not None
+    assert failed_run["status"] == "failed"
+    assert "layout variant insert failed" in failed_run["error_message"]
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == "existing-revision"
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "needs_review"
+    assert revisions.rows["existing-revision"]["status"] == "selected"
+
+
+def test_audit_failure_after_partial_artifacts_keeps_previous_selection_and_marks_run_failed() -> None:
+    campaigns = FakeCampaignRepository()
+    campaigns.rows[CAMPAIGN_ID] = {"id": CAMPAIGN_ID, "team_id": "team-1", "status": "needs_review", "selected_revision_id": "existing-revision"}
+    revisions = InMemoryArtifactRepository()
+    revisions.rows["existing-revision"] = {"id": "existing-revision", "campaign_id": CAMPAIGN_ID, "revision_number": 1, "status": "selected"}
+    run_repository = InMemoryGenerationRunRepository()
+    layout_variants = InMemoryChildArtifactRepository()
+    variants = InMemoryChildArtifactRepository()
+    service = GenerationRunService(
+        run_repository=run_repository,
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns,
+        revision_repository=revisions,
+        layout_variant_repository=layout_variants,
+        variant_repository=variants,
+        audit_report_repository=FailingAuditReportRepository(),
+        team_id="team-1",
+    )
+
+    with pytest.raises(RuntimeError, match="audit insert failed"):
+        service.start_generation_run(CAMPAIGN_ID)
+
+    failed_run = run_repository.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+    assert failed_run is not None
+    assert failed_run["status"] == "failed"
+    assert "audit insert failed" in failed_run["error_message"]
+    assert layout_variants.rows
+    assert variants.rows
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == "existing-revision"
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "needs_review"
+    assert revisions.rows["existing-revision"]["status"] == "selected"
+
+
+def test_campaign_update_failure_does_not_supersede_previous_revision_and_marks_run_failed() -> None:
+    campaigns = FakeCampaignRepository()
+    campaigns.rows[CAMPAIGN_ID] = {"id": CAMPAIGN_ID, "team_id": "team-1", "status": "needs_review", "selected_revision_id": "existing-revision"}
+    campaigns.fail_update = True
+    revisions = InMemoryArtifactRepository()
+    revisions.rows["existing-revision"] = {"id": "existing-revision", "campaign_id": CAMPAIGN_ID, "revision_number": 1, "status": "selected"}
+    run_repository = InMemoryGenerationRunRepository()
+    service = GenerationRunService(
+        run_repository=run_repository,
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns,
+        revision_repository=revisions,
+        layout_variant_repository=InMemoryChildArtifactRepository(),
+        variant_repository=InMemoryChildArtifactRepository(),
+        audit_report_repository=InMemoryAuditReportRepository(),
+        team_id="team-1",
+    )
+
+    with pytest.raises(RuntimeError, match="campaign update failed"):
+        service.start_generation_run(CAMPAIGN_ID)
+
+    failed_run = run_repository.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+    assert failed_run is not None
+    assert failed_run["status"] == "failed"
+    assert "campaign update failed" in failed_run["error_message"]
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == "existing-revision"
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "needs_review"
+    selected_revision_ids = [revision_id for revision_id, row in revisions.rows.items() if row.get("status") == "selected"]
+    assert selected_revision_ids == ["existing-revision"]
+
+
+def test_event_insert_failure_happens_before_artifacts_and_marks_run_failed() -> None:
+    campaigns = FakeCampaignRepository()
+    campaigns.rows[CAMPAIGN_ID] = {"id": CAMPAIGN_ID, "team_id": "team-1", "status": "needs_review", "selected_revision_id": "existing-revision"}
+    revisions = InMemoryArtifactRepository()
+    revisions.rows["existing-revision"] = {"id": "existing-revision", "campaign_id": CAMPAIGN_ID, "revision_number": 1, "status": "selected"}
+    run_repository = InMemoryGenerationRunRepository()
+    service = GenerationRunService(
+        run_repository=run_repository,
+        event_repository=FailingGenerationEventRepository(),
+        campaign_repository=campaigns,
+        revision_repository=revisions,
+        layout_variant_repository=InMemoryChildArtifactRepository(),
+        variant_repository=InMemoryChildArtifactRepository(),
+        audit_report_repository=InMemoryAuditReportRepository(),
+        team_id="team-1",
+    )
+
+    with pytest.raises(RuntimeError, match="events insert failed"):
+        service.start_generation_run(CAMPAIGN_ID)
+
+    failed_run = run_repository.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+    assert failed_run is not None
+    assert failed_run["status"] == "failed"
+    assert "events insert failed" in failed_run["error_message"]
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == "existing-revision"
+    assert revisions.rows == {
+        "existing-revision": {"id": "existing-revision", "campaign_id": CAMPAIGN_ID, "revision_number": 1, "status": "selected"}
+    }
 
 
 def test_parent_run_must_exist_and_match_campaign(service: GenerationRunService) -> None:
