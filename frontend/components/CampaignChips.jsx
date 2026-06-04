@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, CampaignApi */
+/* global React, Icon, GlassCard, Button, Badge, CampaignApi, isApiCampaign */
 // Aijolot Banner Agent — editable Campaign objects (GH-28).
 // Renders the structured brief from GH-27 as inline-editable fields, validates
 // client-side, persists edits via PATCH /api/v1/campaigns/{id}, and advances to Art.
@@ -40,8 +40,8 @@ function Row({ icon, label, error, children }) {
 
 const inputStyle = { width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 10px", fontFamily: "Inter", fontSize: 13, color: "#002B57", outline: "none", background: "#fff" };
 
-function CampaignChips({ campaign, onChange, onAdvance }) {
-  const [saving, setSaving] = useStateCC(false);
+function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
+  const [saveState, setSaveState] = useStateCC("saved");
 
   if (!campaign) {
     return (
@@ -53,20 +53,33 @@ function CampaignChips({ campaign, onChange, onAdvance }) {
     );
   }
 
-  const brief = campaign.structured_brief;
+  const brief = campaign.structured_brief || {};
   const errors = validate(brief);
   const missing = REQUIRED.filter((f) => !(brief[f] || "").trim());
-  const canAdvance = missing.length === 0 && Object.keys(errors).length === 0;
+  const isBackendCampaign = typeof isApiCampaign === "function" && isApiCampaign(campaign);
+  const prototypeOnly = !isBackendCampaign;
+  const canAdvance = !prototypeOnly && missing.length === 0 && Object.keys(errors).length === 0;
 
   const setField = (k, v) => onChange && onChange({ ...campaign, structured_brief: { ...brief, [k]: v } });
 
   async function persist(k, value) {
-    if (!campaign.id || campaign.id === "local") return; // offline / no bridge
+    if (!isBackendCampaign) {
+      setSaveState("failed");
+      const text = "Modo prototipo: este brief local no tiene UUID backend y no puede persistirse ni avanzar.";
+      onNotice && onNotice({ tone: "amber", text });
+      return;
+    }
     try {
-      setSaving(true);
-      await CampaignApi.patch(campaign.id, { [k]: value });
-    } catch (_) { /* best-effort; local state stays authoritative */ }
-    finally { setSaving(false); }
+      setSaveState("saving");
+      const updated = await CampaignApi.patch(campaign.id, { [k]: value });
+      setSaveState("saved");
+      onChange && onChange({ ...updated, structured_brief: updated.structured_brief || {} });
+      onNotice && onNotice({ tone: "green", text: "Brief guardado en backend." });
+    } catch (e) {
+      const msg = e && (e.message || e.status) || "error";
+      setSaveState("failed");
+      onNotice && onNotice({ tone: "amber", text: "No se pudo guardar brief en backend: " + msg });
+    }
   }
 
   return (
@@ -74,23 +87,30 @@ function CampaignChips({ campaign, onChange, onAdvance }) {
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Icon name="clipboard-list" size={16} color="#0891B2" />
         <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 15, color: "#002B57" }}>Brief estructurado</span>
-        {saving ? <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>guardando…</span> : null}
+        <span style={{ fontFamily: "Inter", fontSize: 10.5, color: saveState === "failed" ? "#DC2626" : saveState === "saving" ? "#0891B2" : "#10B981" }}>
+          {saveState === "saving" ? "guardando…" : saveState === "failed" ? "guardado falló" : "guardado"}
+        </span>
         <span style={{ marginLeft: "auto" }}>{canAdvance ? <Badge tone="green" icon="check">Completo</Badge> : <Badge tone="amber" icon="pencil">{missing.length} pendiente{missing.length === 1 ? "" : "s"}</Badge>}</span>
       </div>
       <p style={{ fontFamily: "Inter", fontSize: 12, color: "#68737D", margin: 0, lineHeight: 1.5 }}>Edita cualquier campo antes de avanzar. Se sincroniza con el agente.</p>
+      {prototypeOnly ? (
+        <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#B45309", background: "rgba(251,191,36,.14)", border: "1px solid rgba(251,191,36,.35)", borderRadius: 10, padding: "8px 10px" }}>
+          Modo prototipo solamente: esta campaña no tiene UUID backend. Crea/recupera una campaña backend para guardar y avanzar.
+        </div>
+      ) : null}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         <Row icon="target" label="Objetivo">
-          <textarea value={brief.goal} onChange={(e) => setField("goal", e.target.value)} onBlur={(e) => persist("goal", e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.4 }} placeholder="Qué quieres lograr con la campaña" />
+          <textarea value={brief.goal || ""} onChange={(e) => setField("goal", e.target.value)} onBlur={(e) => persist("goal", e.target.value)} rows={2} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.4 }} placeholder="Qué quieres lograr con la campaña" />
         </Row>
         <Row icon="users-round" label="Audiencia">
-          <input value={brief.audience} onChange={(e) => setField("audience", e.target.value)} onBlur={(e) => persist("audience", e.target.value)} style={inputStyle} placeholder="ej. mujeres 25-40" />
+          <input value={brief.audience || ""} onChange={(e) => setField("audience", e.target.value)} onBlur={(e) => persist("audience", e.target.value)} style={inputStyle} placeholder="ej. mujeres 25-40" />
         </Row>
         <Row icon="mouse-pointer-click" label="CTA" error={errors.cta}>
-          <input value={brief.cta} onChange={(e) => setField("cta", e.target.value)} onBlur={(e) => persist("cta", e.target.value)} style={inputStyle} placeholder="ej. Comprar ahora" />
+          <input value={brief.cta || ""} onChange={(e) => setField("cta", e.target.value)} onBlur={(e) => persist("cta", e.target.value)} style={inputStyle} placeholder="ej. Comprar ahora" />
         </Row>
         <Row icon="message-circle" label="Tono">
-          <input value={brief.tone} onChange={(e) => setField("tone", e.target.value)} onBlur={(e) => persist("tone", e.target.value)} style={inputStyle} placeholder="ej. Premium, Directo" />
+          <input value={brief.tone || ""} onChange={(e) => setField("tone", e.target.value)} onBlur={(e) => persist("tone", e.target.value)} style={inputStyle} placeholder="ej. Premium, Directo" />
         </Row>
         <Row icon="gauge" label="Urgencia">
           <div style={{ display: "flex", gap: 6 }}>
@@ -106,7 +126,7 @@ function CampaignChips({ campaign, onChange, onAdvance }) {
           </div>
         </Row>
         <Row icon="map-pin" label="Ubicación">
-          <input value={brief.placement} onChange={(e) => setField("placement", e.target.value)} onBlur={(e) => persist("placement", e.target.value)} style={inputStyle} placeholder="ej. Home · Hero" />
+          <input value={brief.placement || ""} onChange={(e) => setField("placement", e.target.value)} onBlur={(e) => persist("placement", e.target.value)} style={inputStyle} placeholder="ej. Home · Hero" />
         </Row>
         <Row icon="calendar" label="Fecha límite (opcional)" error={errors.deadline}>
           <input type="date" value={/^\d{4}-\d{2}-\d{2}$/.test(brief.deadline || "") ? brief.deadline : ""} onChange={(e) => { setField("deadline", e.target.value || null); persist("deadline", e.target.value || null); }} style={inputStyle} />
@@ -114,7 +134,7 @@ function CampaignChips({ campaign, onChange, onAdvance }) {
       </div>
 
       <Button variant={canAdvance ? "shine" : "secondary"} icon="arrow-right" disabled={!canAdvance} onClick={() => canAdvance && onAdvance && onAdvance(campaign)} style={{ justifyContent: "center", marginTop: 2 }}>
-        {canAdvance ? "Avanzar a Arte" : `Completa ${missing.length} campo${missing.length === 1 ? "" : "s"}`}
+        {prototypeOnly ? "Requiere campaña backend" : canAdvance ? "Avanzar a Arte" : `Completa ${missing.length} campo${missing.length === 1 ? "" : "s"}`}
       </Button>
     </GlassCard>
   );

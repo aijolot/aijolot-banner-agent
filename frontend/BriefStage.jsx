@@ -3,16 +3,22 @@
 // The Chatbox (GH-27) captures the idea and emits a structured Campaign, held in
 // this stage's state. CampaignChips (GH-28) renders it as editable fields and
 // advances to Art once the brief is complete and valid.
-const { useState: useStateB } = React;
+const { useState: useStateB, useEffect: useEffectB } = React;
 
 const REQUIRED = ["goal", "audience", "cta", "urgency", "placement"];
 
-function BriefStage({ onGenerate, onCampaignReady, placement }) {
-  const [campaign, setCampaign] = useStateB(null);
+function BriefStage({ campaign: initialCampaign, onGenerate, onCampaignReady, onNotice, placement }) {
+  const normalizeCampaign = (c) => c ? { ...c, structured_brief: c.structured_brief || {} } : null;
+  const [campaign, setCampaign] = useStateB(() => normalizeCampaign(initialCampaign));
 
-  function onCampaign(c) { setCampaign(c); onCampaignReady && onCampaignReady(c); }
+  function onCampaign(c) { const next = normalizeCampaign(c); setCampaign(next); onCampaignReady && onCampaignReady(next); }
+  function onLocalChange(c) { const next = normalizeCampaign(c); setCampaign(next); onCampaignReady && onCampaignReady(next, { localOnly: true }); }
 
-  const ready = !!campaign && REQUIRED.every((k) => (campaign.structured_brief[k] || "").toString().trim());
+  useEffectB(() => {
+    if (initialCampaign) setCampaign(normalizeCampaign(initialCampaign));
+  }, [initialCampaign]);
+
+  const ready = !!campaign && REQUIRED.every((k) => ((campaign.structured_brief || {})[k] || "").toString().trim());
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -24,8 +30,8 @@ function BriefStage({ onGenerate, onCampaignReady, placement }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.35fr) minmax(0,1fr)", gap: 16, alignItems: "stretch" }}>
-        <Chatbox onCampaign={onCampaign} />
-        <CampaignChips campaign={campaign} onChange={setCampaign} onAdvance={(c) => onGenerate(c)} />
+        <Chatbox campaign={campaign} onCampaign={onCampaign} onNotice={onNotice} />
+        <CampaignChips campaign={campaign} onChange={onLocalChange} onNotice={onNotice} onAdvance={(c) => onGenerate(c)} />
       </div>
     </div>
   );

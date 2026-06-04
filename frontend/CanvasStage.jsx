@@ -1,6 +1,7 @@
 /* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, Banner,
    ApprovalPanel, CommentsPanel, SEGMENTS, SEGMENT_ORDER, VARIANTS, COMMENTS_SEED, APPROVERS_SEED,
-   ReviewApi, GenerationApi, errorText, layoutCells, BannerLayout, UUID_RE, AIJOLOT_DEMO_IDS */
+   ReviewApi, GenerationApi, CampaignApi, errorText, layoutCells, BannerLayout, UUID_RE, AIJOLOT_DEMO_IDS,
+   isApiCampaign */
 // Aijolot Banner Agent — Stage 3: collaborative canvas (Modules 4, 6, 7).
 const { useState: useStateCV, useRef: useRefCV, useEffect: useEffectCV } = React;
 
@@ -12,6 +13,60 @@ const DEVICES = [
 
 let CID = 100;
 const ACCENT_MAP = { cyan: "#28C7F0", gold: "#E7C76B", rose: "#F6B3CE" };
+
+function backendReviewerStatus(status) {
+  if (status === "changes_requested" || status === "rejected") return "changes";
+  return status === "approved" ? "approved" : "pending";
+}
+function mapBackendApprovers(thread) {
+  const reviewers = thread && Array.isArray(thread.reviewers) ? thread.reviewers : [];
+  if (!reviewers.length) return null;
+  return reviewers.map((r, i) => {
+    const seed = APPROVERS_SEED[i % APPROVERS_SEED.length];
+    return {
+      ...seed,
+      id: r.user_id || r.id || seed.id,
+      backendReviewerId: r.id,
+      name: r.user_id ? `Reviewer ${String(r.user_id).slice(0, 8)}` : seed.name,
+      role: r.role_label || seed.role || "Reviewer backend",
+      status: backendReviewerStatus(r.status),
+      note: r.note || null,
+      backend: true,
+    };
+  });
+}
+function mapBackendComments(thread) {
+  const rows = thread && Array.isArray(thread.comments) ? thread.comments : [];
+  if (!rows.length) return null;
+  return rows.map((c) => ({
+    id: c.id,
+    x: Math.round(c.pin_x == null ? 50 : c.pin_x),
+    y: Math.round(c.pin_y == null ? 50 : c.pin_y),
+    author: c.author_id ? `Usuario ${String(c.author_id).slice(0, 8)}` : "Backend",
+    initials: "BE",
+    grad: "linear-gradient(135deg,#0891B2,#22D3EE)",
+    text: c.body || "Comentario backend",
+    resolved: !!c.resolved,
+    time: c.created_at ? "backend" : "—",
+    backend: true,
+  }));
+}
+function revisionMappings(rev) {
+  const lmap = {}, smap = {}, labels = {};
+  const layoutRows = Array.isArray(rev && rev.layout_variants) ? rev.layout_variants : [];
+  layoutRows.forEach((lv, i) => {
+    const visibleKey = ["A", "B", "C"].includes(lv.key) ? lv.key : (VARIANTS[i] && VARIANTS[i].id);
+    if (!visibleKey) return;
+    lmap[visibleKey] = lv.id || lv.variant_id || lv.key;
+    labels[visibleKey] = lv.name || lv.label || lv.key || visibleKey;
+  });
+  const rows = Array.isArray(rev && rev.variants) ? rev.variants : [];
+  rows.forEach((v) => {
+    const key = v.segment_key || v.segment || v.audience_key;
+    if (key && SEGMENTS[key]) smap[key] = v.id;
+  });
+  return { lmap, smap, labels };
+}
 
 function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) {
   const [variant, setVariant] = useStateCV("A");
@@ -30,36 +85,87 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const stageRef = useRefCV(null);
   // Backend revision/thread context resolved on mount (fail-closed if absent).
   const [revision, setRevision] = useStateCV(null);
+  const [revisionList, setRevisionList] = useStateCV([]);
+  const [revisionMode, setRevisionMode] = useStateCV("local");
   const [layoutVariantIds, setLayoutVariantIds] = useStateCV({}); // { A,B,C -> variant uuid }
+  const [layoutVariantLabels, setLayoutVariantLabels] = useStateCV({});
   const [segmentVariantIds, setSegmentVariantIds] = useStateCV({}); // { segment_key -> variant uuid }
   const [threadId, setThreadId] = useStateCV(null);
-  const backendLoaded = useRefCV(false);
+  const [threadStatus, setThreadStatus] = useStateCV(null);
+  const [approvalMode, setApprovalMode] = useStateCV("local");
+  const [backendCampaignStatus, setBackendCampaignStatus] = useStateCV((campaign && campaign.status) || "draft");
+  const [backendNotice, setBackendNotice] = useStateCV("Cargando revisiones/aprobaciones backend…");
 
   useEffectCV(() => {
-    if (backendLoaded.current || typeof GenerationApi === "undefined") return;
+    if (typeof GenerationApi === "undefined") return;
     let alive = true;
     (async () => {
+      setRevision(null);
+      setRevisionList([]);
+      setRevisionMode("local");
+      setLayoutVariantIds({});
+      setLayoutVariantLabels({});
+      setSegmentVariantIds({});
+      setThreadId(null);
+      setThreadStatus(null);
+      setApprovalMode("local");
+      setApprovers(APPROVERS_SEED.map((a) => ({ ...a, localPrototype: true })));
+      setComments(COMMENTS_SEED.map((c) => ({ ...c, localPrototype: true })));
+      setBackendCampaignStatus((campaign && campaign.status) || "draft");
+      if (!campaign || !isApiCampaign || !isApiCampaign(campaign)) {
+        setBackendNotice("Vista local/prototipo: variantes, comentarios y aprobaciones no están respaldados por backend.");
+        return;
+      }
       try {
-        const rev = await GenerationApi.latestRevision(campaign);
+        if (typeof CampaignApi !== "undefined" && CampaignApi.get) {
+          try {
+            const full = await CampaignApi.get(campaign.id);
+            if (alive && full && full.status) setBackendCampaignStatus(full.status);
+          } catch (e) {
+            if (alive) onNotice && onNotice({ tone: "amber", text: "No pude refrescar estado de campaña backend: " + errorText(e) });
+          }
+        }
+        const listResult = GenerationApi.revisions ? await GenerationApi.revisions(campaign) : await GenerationApi.latestRevision(campaign);
         if (!alive) return;
-        if (!rev.fallback && rev.data) {
-          backendLoaded.current = true;
-          setRevision(rev.data);
-          const lmap = {};
-          (rev.data.layout_variants || []).forEach((lv) => { if (lv.key) lmap[lv.key] = lv.id; });
-          setLayoutVariantIds(lmap);
-          const smap = {};
-          (rev.data.variants || []).forEach((v) => { if (v.segment_key) smap[v.segment_key] = v.id; });
-          setSegmentVariantIds(smap);
-          const th = await ReviewApi.ensureThread(campaign, rev.data.id);
-          if (!alive) return;
-          if (!th.fallback && th.data) setThreadId(th.data.id);
-          else onNotice && onNotice({ tone: "amber", text: th.reason || "Aprobación backend no disponible; controles locales." });
+        const rows = Array.isArray(listResult.data) ? listResult.data : (listResult.data ? [listResult.data] : []);
+        if (listResult.fallback || !rows.length) {
+          setBackendNotice((listResult && listResult.reason) || "Sin revisiones backend; segmentos/variantes son previsualización local/prototipo.");
+          onNotice && onNotice({ tone: "amber", text: (listResult && listResult.reason) || "Sin revisiones backend; lienzo en modo prototipo local." });
+          return;
+        }
+        const latest = rows.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a));
+        setRevisionList(rows);
+        setRevision(latest);
+        setRevisionMode("backend");
+        const maps = revisionMappings(latest);
+        setLayoutVariantIds(maps.lmap);
+        setLayoutVariantLabels(maps.labels);
+        setSegmentVariantIds(maps.smap);
+        if (Object.keys(maps.lmap).length && !maps.lmap[variant]) setVariant(Object.keys(maps.lmap)[0]);
+        setBackendNotice(`Revisión backend #${latest.revision_number || rows.length} cargada${rows.length > 1 ? ` (${rows.length} revisiones)` : ""}.`);
+
+        const th = await ReviewApi.ensureThread(campaign, latest.id);
+        if (!alive) return;
+        if (!th.fallback && th.data) {
+          const thread = th.data.thread || th.data.approval_thread || th.data;
+          setThreadId(thread.id || thread.thread_id);
+          setThreadStatus(thread.status || null);
+          setApprovalMode("backend");
+          const backendApprovers = mapBackendApprovers(thread);
+          const backendComments = mapBackendComments(thread);
+          if (backendApprovers) setApprovers(backendApprovers);
+          if (backendComments) setComments(backendComments);
+          onNotice && onNotice({ tone: "green", text: "Hilo de aprobación backend cargado" });
         } else {
-          onNotice && onNotice({ tone: "amber", text: rev.reason || "Sin revisiones backend; lienzo en modo prototipo local." });
+          setApprovalMode("local");
+          onNotice && onNotice({ tone: "amber", text: (th && th.reason) || "Aprobaciones locales/prototipo: backend no creó/cargó el hilo." });
         }
       } catch (e) {
-        if (alive) onNotice && onNotice({ tone: "amber", text: "Lienzo sin backend: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) });
+        if (alive) {
+          const msg = "Lienzo en modo local/prototipo: " + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error"));
+          setBackendNotice(msg);
+          onNotice && onNotice({ tone: "amber", text: msg });
+        }
       }
     })();
     return () => { alive = false; };
@@ -75,35 +181,77 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const locked = tweaks.lockLayout && tweaks.lockLayout !== "auto";
   const layoutVariant = locked ? tweaks.lockLayout : variant;
   const bannerAccent = tweaks.bannerAccent && tweaks.bannerAccent !== "auto" ? ACCENT_MAP[tweaks.bannerAccent] : undefined;
+  const apiCampaign = !!(campaign && UUID_RE.test(campaign.id || ""));
+  const backendApproved = approvalMode === "backend" && (threadStatus === "approved" || backendCampaignStatus === "approved" || backendCampaignStatus === "scheduled");
+  const backendSchedulableStatus = ["approved", "scheduled"].includes(backendCampaignStatus) || threadStatus === "approved";
+  const backendScheduleReady = apiCampaign && revision && revision.id && backendApproved && backendSchedulableStatus;
+  const backendPublishReady = apiCampaign && revision && revision.id && backendCampaignStatus === "scheduled";
+  const scheduleGuardReason = !apiCampaign
+    ? "Programación backend no disponible: la campaña local/prototipo no tiene UUID."
+    : !revision
+      ? "Programación bloqueada: no hay revisión backend seleccionada. Genera/carga una revisión primero."
+      : approvalMode !== "backend"
+        ? "Programación bloqueada: las aprobaciones son locales/prototipo; backend no confirmó el hilo."
+        : !backendApproved
+          ? "Programación bloqueada: backend no reporta aprobación real de la revisión."
+          : !backendSchedulableStatus
+            ? `Programación bloqueada: estado backend actual '${backendCampaignStatus || "desconocido"}' no es approved/scheduled.`
+            : "";
+  const publishGuardReason = !apiCampaign
+    ? "Publicación fail-closed: la campaña local/prototipo no tiene UUID backend."
+    : !revision
+      ? "Publicación fail-closed: no hay revisión backend seleccionada."
+      : backendCampaignStatus !== "scheduled"
+        ? `Publicación fail-closed: backend requiere campaña scheduled; estado actual '${backendCampaignStatus || "desconocido"}'.`
+        : "";
 
   async function setApprover(id, status) {
     setApprovers((arr) => arr.map((a) => a.id === id ? { ...a, status, note: status === "approved" ? "Aprobado." : "Solicita ajustes." } : a));
-    const r = status === "approved"
-      ? await ReviewApi.approve(threadId)
-      : await ReviewApi.requestChangesThread(threadId, "Solicita ajustes.");
-    onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: status === "approved" ? "Aprobación registrada en backend" : "Cambios solicitados en backend" });
+    try {
+      const r = status === "approved"
+        ? await ReviewApi.approve(threadId)
+        : await ReviewApi.requestChangesThread(threadId, "Solicita ajustes.");
+      if (r.fallback) {
+        onNotice && onNotice({ tone: "amber", text: `Aprobaciones locales/prototipo: ${r.reason}` });
+      } else {
+        const thread = r.data && (r.data.thread || r.data.approval_thread || r.data);
+        if (thread && thread.status) setThreadStatus(thread.status);
+        onNotice && onNotice({ tone: "green", text: status === "approved" ? "Aprobación registrada en backend" : "Cambios solicitados en backend" });
+      }
+    } catch (e) {
+      onNotice && onNotice({ tone: "amber", text: "Backend no registró la acción de aprobación; cambio solo local/prototipo: " + errorText(e) });
+    }
   }
   // Backend variant selection: local tab switch always happens; if a real
   // variant uuid resolves, persist the choice. Fail-closed otherwise.
   async function selectLayoutVariant(key) {
     setVariant(key);
     const variantId = layoutVariantIds[key];
-    if (!variantId) return;
+    if (!variantId) {
+      if (revisionMode !== "backend") onNotice && onNotice({ tone: "amber", text: "Variante local/prototipo: no hay revisión backend para persistir esta selección." });
+      return;
+    }
     const r = await GenerationApi.selectVariant(campaign, variantId);
     onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: `Variante ${key} seleccionada en backend` });
   }
   async function selectSegment(id) {
     setSegId(id);
     const variantId = segmentVariantIds[id];
-    if (!variantId) return;
+    if (!variantId) {
+      if (revisionMode !== "backend") onNotice && onNotice({ tone: "amber", text: "Segmento local/prototipo: no hay variante backend para persistir esta selección." });
+      return;
+    }
     const r = await GenerationApi.selectVariant(campaign, variantId);
     onNotice && onNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: `Segmento ${id} seleccionado en backend` });
   }
   async function resolveComment(id) {
     setComments((arr) => arr.map((c) => c.id === id ? { ...c, resolved: true } : c));
     if (UUID_RE.test(id || "")) {
-      const r = await ReviewApi.resolveCommentSafe(id);
+      const r = await ReviewApi.resolveCommentSafe(id, { resolved_by: AIJOLOT_DEMO_IDS.user });
       if (r.fallback) onNotice && onNotice({ tone: "amber", text: r.reason });
+      else onNotice && onNotice({ tone: "green", text: "Comentario resuelto en backend" });
+    } else {
+      onNotice && onNotice({ tone: "amber", text: "Comentario resuelto solo local/prototipo; no tiene id backend." });
     }
   }
 
@@ -126,9 +274,11 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
       body: text,
       pin_x: pin ? pin.x : null,
       pin_y: pin ? pin.y : null,
+      banner_variant_id: segmentVariantIds[segId] || null,
+      layout_variant_key: layoutVariant,
       device_key: device,
     });
-    if (r.fallback) onNotice && onNotice({ tone: "amber", text: r.reason });
+    if (r.fallback) onNotice && onNotice({ tone: "amber", text: `Comentario local/prototipo: ${r.reason}` });
     else {
       onNotice && onNotice({ tone: "green", text: "Comentario guardado en backend" });
       if (r.data && r.data.id) setComments((arr) => arr.map((c) => c.id === id ? { ...c, id: r.data.id } : c));
@@ -177,35 +327,52 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   }
 
   async function publish() {
+    setPublished(false);
+    if (!backendPublishReady) {
+      onNotice && onNotice({ tone: "amber", text: publishGuardReason || "Publicación fail-closed: backend aún no acepta publicar." });
+      return;
+    }
     let canAdvance = false;
     try {
       const r = await ReviewApi.publish(campaign);
       if (r.fallback) {
-        onNotice && onNotice({ tone: "amber", text: r.reason });
+        onNotice && onNotice({ tone: "amber", text: `Publicación fail-closed: ${r.reason}` });
       } else {
-        onNotice && onNotice({ tone: "green", text: "Publicación enviada al backend" });
+        onNotice && onNotice({ tone: "green", text: "Publicación aceptada por backend" });
         canAdvance = true;
       }
     } catch (e) {
-      onNotice && onNotice({ tone: "amber", text: "Backend no publicó aún: " + (e.message || e.status || "error") });
+      const code = e.status ? `HTTP ${e.status}: ` : "";
+      onNotice && onNotice({ tone: "amber", text: "Publicación fail-closed: " + code + errorText(e) });
     }
     if (canAdvance) { setScheduled(false); setPublished(true); setTimeout(() => onPublish && onPublish(), 950); }
   }
   async function schedule(s) {
+    setScheduled(false);
+    if (!backendScheduleReady) {
+      onNotice && onNotice({ tone: "amber", text: scheduleGuardReason || "Programación bloqueada por guardrails backend." });
+      return;
+    }
     let accepted = false;
     try {
       const r = await ReviewApi.schedule(campaign, s);
       if (r.fallback) {
-        onNotice && onNotice({ tone: "amber", text: r.reason });
+        onNotice && onNotice({ tone: "amber", text: `Programación rechazada/fail-closed: ${r.reason}` });
       } else {
         onNotice && onNotice({ tone: "green", text: "Agenda guardada en backend" });
+        setBackendCampaignStatus("scheduled");
         accepted = true;
       }
     } catch (e) {
-      onNotice && onNotice({ tone: "amber", text: "Backend no aceptó la agenda: " + (e.message || e.status || "error") });
+      const code = e.status ? `HTTP ${e.status}: ` : "";
+      onNotice && onNotice({ tone: "amber", text: "Programación rechazada por backend: " + code + errorText(e) });
     }
     if (accepted) setScheduled(true);
   }
+
+  const visibleVariantKeys = Object.keys(layoutVariantIds).length ? Object.keys(layoutVariantIds) : VARIANTS.map((v) => v.id);
+  const visibleVariants = VARIANTS.filter((v) => visibleVariantKeys.includes(v.id));
+  const currentVariantMeta = VARIANTS.find((v) => v.id === layoutVariant) || VARIANTS[0];
 
   const TabBtn = ({ active, onClick, children, title }) => (
     <button onClick={onClick} title={title} style={{
@@ -224,7 +391,14 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
           <Kicker>Paso 5 de 6 · Lienzo colaborativo</Kicker>
           <h2 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 26, color: "#002B57", margin: 0 }}>Revisa, comenta y aprueba</h2>
         </div>
-        <Badge tone="cyan" icon="git-branch">3 variantes · 3 segmentos</Badge>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <Badge tone={revisionMode === "backend" ? "cyan" : "amber"} icon={revisionMode === "backend" ? "git-branch" : "flask-conical"}>
+            {revisionMode === "backend" ? `${visibleVariants.length} variantes backend · ${revisionList.length} revisiones` : "Vista local/prototipo"}
+          </Badge>
+          <Badge tone={approvalMode === "backend" ? "green" : "amber"} icon={approvalMode === "backend" ? "shield-check" : "triangle-alert"}>
+            {approvalMode === "backend" ? `Aprobación backend · ${threadStatus || "abierta"}` : "Aprobaciones locales/prototipo"}
+          </Badge>
+        </div>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.7fr) minmax(300px,1fr)", gap: 16, alignItems: "start" }}>
@@ -233,9 +407,10 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
           {/* toolbar */}
           <GlassCard style={{ padding: 10, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ display: "flex", gap: 2, background: "rgba(248,250,252,0.8)", borderRadius: 11, padding: 3 }}>
-              {VARIANTS.map((v) => (
-                <TabBtn key={v.id} active={layoutVariant === v.id} onClick={() => !locked && selectLayoutVariant(v.id)} title={locked ? "Layout fijado en Tweaks" : v.desc}>
-                  {v.id === "A" ? "Spotlight" : v.id === "B" ? "Split" : "Minimal"}
+              {visibleVariants.map((v) => (
+                <TabBtn key={v.id} active={layoutVariant === v.id} onClick={() => !locked && selectLayoutVariant(v.id)} title={locked ? "Layout fijado en Tweaks" : (layoutVariantIds[v.id] ? `Backend ${layoutVariantIds[v.id]}` : "Variante local/prototipo") }>
+                  {layoutVariantLabels[v.id] || (v.id === "A" ? "Spotlight" : v.id === "B" ? "Split" : "Minimal")}
+                  {layoutVariantIds[v.id] && <Icon name="database" size={12} />}
                   {v.recommended && layoutVariant === v.id && <Icon name="sparkles" size={12} />}
                 </TabBtn>
               ))}
@@ -253,7 +428,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             background: "rgba(255,255,255,0.55)",
             backgroundImage: "radial-gradient(rgba(148,163,184,.18) 1px, transparent 1px)", backgroundSize: "18px 18px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, alignSelf: "stretch", justifyContent: "center", fontFamily: "Space Grotesk", fontSize: 11, color: "#94A3B8" }}>
-              <Icon name={dev.icon} size={13} /> {dev.label} · {VARIANTS.find((v) => v.id === layoutVariant).name}{placement ? ` · ${placement.name}` : ""}{cellCount > 1 ? ` · ${gridLayout.cols.length} col / ${cellCount} celdas` : ""}{art ? ` · ${art.fold}% sobre el pliegue` : ""}
+              <Icon name={dev.icon} size={13} /> {dev.label} · {currentVariantMeta.name}{placement ? ` · ${placement.name}` : ""}{cellCount > 1 ? ` · ${gridLayout.cols.length} col / ${cellCount} celdas` : ""}{art ? ` · ${art.fold}% sobre el pliegue` : ""} · {revisionMode === "backend" ? "revisión backend" : "preview local/prototipo"}
             </div>
             <div style={{ width: dev.w, maxWidth: "100%", transition: "width .35s ease" }}>
               <div ref={stageRef} onClick={addComment} style={{ position: "relative", cursor: commentMode ? "crosshair" : "default" }}>
@@ -322,6 +497,9 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
               })}
             </div>
             <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#68737D", display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon name={revisionMode === "backend" ? "database" : "info"} size={12} color="#94A3B8" /> {backendNotice}
+            </div>
+            <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#68737D", display: "flex", alignItems: "center", gap: 6 }}>
               <Icon name="info" size={12} color="#94A3B8" /> Una sola campaña, variantes invisibles que el agente sirve según el tag del cliente.
             </div>
           </GlassCard>
@@ -350,8 +528,11 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
 
         {/* RIGHT */}
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <ApprovalPanel approvers={approvers} onSet={setApprover} published={published} />
+          <ApprovalPanel approvers={approvers} onSet={setApprover} published={published} mode={approvalMode} threadStatus={threadStatus} />
           <PublishPanel allApproved={allApproved} missing={missing} published={published} scheduled={scheduled}
+            backendScheduleReady={!!backendScheduleReady} backendPublishReady={!!backendPublishReady}
+            guardrailReason={backendPublishReady ? "" : (publishGuardReason || scheduleGuardReason)} scheduleGuardReason={scheduleGuardReason}
+            publishGuardReason={publishGuardReason} approvalMode={approvalMode} backendStatus={backendCampaignStatus}
             onPublishNow={publish} onSchedule={schedule} onEditSchedule={() => setScheduled(false)} onView={() => onPublish && onPublish()} />
           <CommentsPanel comments={comments} onResolve={resolveComment} commentMode={commentMode} setCommentMode={setCommentMode}
             editingId={editingId} onSaveDraft={saveDraft} onCancelDraft={cancelDraft} />

@@ -1,6 +1,8 @@
 # Static frontend ↔ FastAPI backend contract
 
-The current frontend in `frontend/` is a static React 18 UMD/Babel prototype. It has no Next.js/Tailwind build step in this branch. Task 18 connected this prototype to local FastAPI APIs through small static adapters while keeping visible fallbacks for prototype-only state.
+The current frontend in `frontend/` is a static React 18 UMD/Babel prototype. It has no Next.js/Tailwind build step in this branch. The frontend real-data integration connected the visible Banner Studio flow to local FastAPI `/api/v1` APIs through small static adapters while keeping visible fallbacks for prototype-only state and fail-closed backend gaps.
+
+For the static-data audit, see `docs/architecture/frontend-hardcoded-data-inventory.md`.
 
 ## Runtime API base
 
@@ -112,21 +114,43 @@ Campaign intake streaming uses:
 ## Prototype flow wiring
 
 - Brand Context loads/saves through `BrandAPI`.
+- Banner Studio campaign list loads `GET /api/v1/campaigns`; backend-created UUID campaigns are rendered before any labeled demo/prototype cards.
+- Starting/resuming Studio keeps the active campaign in App state. Durable stage APIs require a UUID campaign id; non-UUID local ids stay prototype-only and visibly labeled.
 - Brief chat streams from `/api/v1/campaigns/intake` and stores the returned backend UUID campaign object in authenticated `/api/v1` no-Supabase/Supabase flows.
-- Edited brief chips persist with `PATCH /api/v1/campaigns/{campaign_id}` when a backend campaign id/context is usable.
-- Placement is selected before intake; once a backend campaign exists the adapter saves placement.
-- Art direction is saved before generation.
-- Generation starts a backend generation run when the campaign id is a UUID and auth context is accepted.
-- Canvas approval controls are local/labeled in the static prototype because real reviewer/revision selection is not fully owned by this frontend.
+- Edited brief chips persist with `PATCH /api/v1/campaigns/{campaign_id}` when a backend campaign id/context is usable; save failures show inline save-failed state/notice.
+- Placement is selected before intake; placement choices hydrate from backend store/resources/placement types, `POST /api/v1/placements/validate` runs before continuing, and once a backend campaign exists the adapter saves/loads placement.
+- Art stage creates/loads a backend catalog snapshot and persists/rehydrates art direction before generation. Model/style lists remain local UI presets because the backend only stores selected metadata.
+- Generation starts a backend generation run when the campaign id is a UUID and auth context is accepted. StepRail/progress maps returned run/events; start/event failures stay visible and do not auto-advance to Canvas as a false success.
+- Preview, audit, revision list, variant selection, and regenerate/refinement requests are attempted through backend routes. Available backend results are rendered; unavailable local-demo paths are shown as fail-closed.
+- Canvas approval/comment controls call the exposed backend helpers when a thread/revision/reviewer context can be resolved. Otherwise reviewer/comment state is explicitly local/prototype.
 - Schedule/publish controls call backend endpoints where possible. Backend rejections are shown and do not silently advance local scheduled/published state.
+- Performance stage loads backend snapshots/insights/proposals, can post a manual non-live snapshot, and can submit a V2 optimization proposal when a backend revision id exists.
+
+## Current real-data integration matrix
+
+| Frontend area | Backend-backed when available | Static/fallback still allowed |
+| --- | --- | --- |
+| Shell campaign list | Campaign list/get/create/intake/PATCH data. Created campaigns should appear after refresh. | Demo cards only under fallback/prototype labeling. |
+| Brief | Intake stream and chip PATCH save state. | Local extractor only when backend is unreachable and labeled as offline/prototype. |
+| Brand context | Brand list/get/put. | `BRAND_SEEDS`, font previews, and copy examples as offline/UI metadata. |
+| Placement/store | Store summaries, Shopify resource cache, placement types/targets, validate/save/get. | `STORE_PAGES`, `BRANDS`, `COLLECTIONS`, visual mock page copy as labeled fallback/UI renderer data. |
+| Catalog/art | Catalog snapshot create/get and art-direction put/get. | `CATALOG` fallback cards plus `HERO_STYLES`, `MODELS`, `GRID_OPTS` as local presets. |
+| Generation | Generation run/latest/get/events; events are progress source. | Pipeline/code animation as labels only; generation errors are fail-closed. |
+| Canvas/review | Revisions, select variant, regenerate, approval thread/comment calls when backend accepts them. | Local approvers/comments/segments/variants only when visibly marked prototype/fallback. |
+| Schedule/publish | Schedule/publish/unpublish calls with backend prerequisites. | No fake success; unavailable states remain fail-closed. |
+| Performance | Performance get, manual snapshots, optimization proposals, backend source labels. | `METRICS`, `SEG_PERF`, `CTR_TREND`, `MEMORY` as demo/no-live fallback only. |
 
 ## Fallback and label rules
 
 Fallbacks are allowed only when visible/labeled:
 
+- Backend unreachable for campaigns: Shell shows a backend error and any demo cards are fallback/prototype, not the only implied source of truth.
 - Backend unreachable for brands: Brand Context shows offline/mock state.
 - Local non-UUID campaign ids are prototype-only. UUID-typed backend stage APIs cannot persist placement/art/generation/schedule/publish for those ids; adapters show amber fallback notices.
-- HTTP validation/status errors from backend are surfaced rather than silently swallowed for brand CRUD.
+- HTTP validation/status errors from backend are surfaced rather than silently swallowed for brand CRUD, brief chip persistence, placement validation/save, art-direction save, generation, review, schedule/publish, and performance actions.
+- Placement/store/catalog/product static data is allowed only as visible fallback when backend resources/snapshots are unavailable.
+- Model/style/grid presets are local UI metadata because no list endpoints exist; persisted selected art-direction values may still be backend-backed.
+- Generation progress must not be claimed successful from static animation alone; backend run/event failure is a visible fail-closed state.
 - Schedule/publish backend errors show amber notices and keep local state unchanged unless an explicit labeled fallback is used.
 - Performance metrics shown in the frontend are manual/mock/seed/agent unless explicitly marked live; do not present them as live Shopify analytics.
 
