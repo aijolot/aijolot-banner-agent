@@ -26,6 +26,13 @@ class CommentService:
         self.threads = threads
         self.comments = comments
 
+    @classmethod
+    def from_supabase_client(cls, client: Any) -> "CommentService":
+        from app.db.repositories.approval_threads import ApprovalThreadRepository
+        from app.db.repositories.comments import CommentRepository
+
+        return cls(threads=ApprovalThreadRepository(client), comments=CommentRepository(client))
+
     def create_comment(self, thread_id: str, request: CommentCreate) -> CommentResponse:
         thread = self.threads.get(thread_id=thread_id)
         if not thread:
@@ -60,4 +67,11 @@ class CommentService:
 
 
 def configured_service() -> CommentService:
-    raise CommentServiceUnavailable("comment endpoints require request-scoped auth/client configuration")
+    from app.core.settings import Settings
+    from app.services.supabase.client import SupabaseClientFactory
+
+    settings = Settings.from_env()
+    if settings.supabase_url is None or settings.supabase_service_role_key is None:
+        raise CommentServiceUnavailable("comment endpoints require Supabase service-role configuration")
+    client = SupabaseClientFactory(settings).service_role_client()
+    return CommentService.from_supabase_client(client)
