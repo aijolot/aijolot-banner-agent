@@ -20,9 +20,9 @@
 - Sin PR todavía (el usuario pidió "solo commit, aún no PR").
 
 ## Fases hechas (✅) vs pendientes (⬜)
-- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F6 concept+layout KG · F7 fondos AI · F8 prompts+generate-art · F10 código publisher
-- ⬜ F9 refine agéntico · F11 frontend · F12 verificación final
-- ⬜ **F10 e2e** (publish real de una campaña) — ya desbloqueado por F5; falta correr schedule→dry-run publish→publish real→storefront.
+- ✅ **TODAS**: F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F6 concept+layout KG · F7 fondos AI · F8 prompts+generate-art · F9 refine agéntico · F10 publisher + **e2e real verificado** · F11 frontend (API layer + dry-run toggle) · F12 verificación + runbook
+- Runbook completo: `docs/RUNBOOK-demo-e2e.md`.
+- F11: la capa de clientes API del frontend está completa y verificada en navegador (BackgroundApi/ArtApi/StoreApi.sync/CatalogApi.search/ReviewApi.installThemeFiles/agenticRefine); el re-cableado profundo de componentes UI (checkboxes de catálogo, caja refine visual) queda como pulido incremental — las capacidades son alcanzables y la app carga sin errores.
 
 ## F8 — hecho (2026-06-03, commit 07d7c6a)
 - Skill `backend/app/agents/skills/art-prompt-propose/impl.py`: `run(concept, brand, shot_type, count, background_ref)` (hero=N estilos distintos; usage=misma descripción + ángulos `front/three_quarter/top_down/in_use` + `background_ref`) y `propose_models(gender, base_prompt)`. Gemini FLASH structured (`PromptOptionsOutput`) + fallback determinista; cada prompt saneado vía `image-prompt-refine`.
