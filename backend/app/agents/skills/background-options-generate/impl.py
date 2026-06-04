@@ -1,0 +1,202 @@
+"""background-options-generate skill (F7).
+
+Generate self-contained HTML/CSS background treatments for the `.aijolot-banner`
+surface. Gemini FLASH (structured) when available + within cost cap; otherwise
+deterministic brand-palette gradients. All CSS/HTML is sanitized before return.
+"""
+
+from __future__ import annotations
+
+import re
+from typing import Any
+
+from app.agents.tools import gemini_text
+from app.core.settings import Settings
+from app.schemas.backgrounds import BackgroundOption, BackgroundOptionsOutput
+
+EST_BACKGROUND_USD = 0.002
+
+# Patterns that must never reach a rendered preview.
+_CSS_FORBIDDEN = (
+    re.compile(r"@import[^;]*;?", re.IGNORECASE),
+    re.compile(r"url\(\s*['\"]?\s*(?:https?:)?//[^)]*\)", re.IGNORECASE),
+    re.compile(r"expression\s*\(", re.IGNORECASE),
+    re.compile(r"javascript\s*:", re.IGNORECASE),
+    re.compile(r"-moz-binding[^;]*;?", re.IGNORECASE),
+    re.compile(r"behavior\s*:[^;]*;?", re.IGNORECASE),
+    re.compile(r"</?\s*style[^>]*>", re.IGNORECASE),
+)
+_HTML_FORBIDDEN = (
+    re.compile(r"<\s*script\b[^>]*>.*?<\s*/\s*script\s*>", re.IGNORECASE | re.S),
+    re.compile(r"<\s*script\b[^>]*>", re.IGNORECASE),
+    re.compile(r"<\s*iframe\b[^>]*>.*?<\s*/\s*iframe\s*>", re.IGNORECASE | re.S),
+    re.compile(r"<\s*iframe\b[^>]*>", re.IGNORECASE),
+    re.compile(r"\son\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE),
+    re.compile(r"javascript\s*:", re.IGNORECASE),
+)
+
+
+def _get(obj: Any, key: str, default: Any = "") -> Any:
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    return getattr(obj, key, default)
+
+
+def sanitize_css(css: str) -> str:
+    cleaned = str(css or "")
+    for pattern in _CSS_FORBIDDEN:
+        cleaned = pattern.sub("", cleaned)
+    return " ".join(cleaned.split()).strip()
+
+
+def sanitize_html(html: str) -> str:
+    cleaned = str(html or "")
+    for pattern in _HTML_FORBIDDEN:
+        cleaned = pattern.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _is_valid_css(css: str) -> bool:
+    # Must contain at least one declaration and look like background styling.
+    return bool(css) and ":" in css and "background" in css.lower()
+
+
+def _palette(brand_context: Any) -> list[tuple[str, str]]:
+    palette = _get(brand_context, "palette", []) or []
+    out: list[tuple[str, str]] = []
+    for color in palette:
+        name = str(_get(color, "name", "") or "Color")
+        hex_value = str(_get(color, "hex", "") or "")
+        if hex_value:
+            out.append((name, hex_value))
+    if not out:
+        out = [("Ink", "#111111"), ("Canvas", "#FFFFFF")]
+    return out
+
+
+def _fallback_options(brand_context: Any, count: int) -> list[BackgroundOption]:
+    palette = _palette(brand_context)
+    primary = palette[0][1]
+    secondary = palette[1][1] if len(palette) > 1 else "#FFFFFF"
+    accent = palette[2][1] if len(palette) > 2 else primary
+    recipes = [
+        (
+            "Linear brand gradient",
+            "Diagonal gradient from primary to secondary palette tones",
+            f".aijolot-banner{{background:linear-gradient(135deg,{primary} 0%,{secondary} 100%);color:#ffffff;}}",
+        ),
+        (
+            "Radial spotlight",
+            "Soft radial glow centered behind the hero copy",
+            f".aijolot-banner{{background:radial-gradient(circle at 30% 50%,{accent} 0%,{primary} 70%);color:#ffffff;}}",
+        ),
+        (
+            "Duotone band",
+            "Solid primary field with an accent base band for depth",
+            f".aijolot-banner{{background:linear-gradient(180deg,{primary} 0%,{primary} 70%,{accent} 100%);color:#ffffff;}}",
+        ),
+        (
+            "Soft canvas wash",
+            "Light secondary wash for dark-on-light copy",
+            f".aijolot-banner{{background:linear-gradient(160deg,{secondary} 0%,#ffffff 100%);color:{primary};}}",
+        ),
+        (
+            "Accent corner sweep",
+            "Primary field with an accent corner sweep",
+            f".aijolot-banner{{background:linear-gradient(45deg,{primary} 60%,{accent} 100%);color:#ffffff;}}",
+        ),
+    ]
+    options: list[BackgroundOption] = []
+    for name, description, css in recipes[: max(1, count)]:
+        options.append(
+            BackgroundOption(
+                name=name,
+                description=description,
+                css=sanitize_css(css),
+                html='<section class="aijolot-banner"></section>',
+                rationale="Derived from brand palette tokens with light/dark contrast.",
+            )
+        )
+    return options
+
+
+def _build_prompt(concept: Any, brand_context: Any, count: int) -> str:
+    copy = _get(concept, "copy", {}) or {}
+    headline = _get(copy, "headline", "") if isinstance(copy, dict) else ""
+    layout = _get(concept, "layout", "")
+    palette_lines = ", ".join(f"{name} {hex_value}" for name, hex_value in _palette(brand_context))
+    tone = " ".join(_get(_get(brand_context, "voice", None), "tone", []) or [])
+    return (
+        f"You are a senior ecommerce art director. Propose exactly {count} DISTINCT background "
+        "treatments for a Shopify banner hero surface.\n\n"
+        f"Banner headline: {headline}\nLayout: {layout}\nBrand tone: {tone}\n"
+        f"Brand palette: {palette_lines}\n\n"
+        "Requirements for EACH option:\n"
+        "- CSS MUST be a single rule scoped to `.aijolot-banner` (you may add nested selectors under it).\n"
+        "- Use ONLY gradients/colors built from the brand palette. NO external assets, NO url() to the web, "
+        "NO @import, NO <script>, NO images.\n"
+        "- Ensure accessible contrast for overlaid HTML copy (set a legible `color`).\n"
+        "- Provide a short name, a one-line description, the css, a minimal html wrapper, and a rationale.\n"
+        "Return JSON matching the provided schema."
+    )
+
+
+async def run(
+    concept: Any,
+    brand_context: Any,
+    *,
+    count: int = 3,
+    cost_guard: Any = None,
+    settings: Any = None,
+) -> tuple[list[BackgroundOption], str]:
+    """Return (options, source) where source is 'gemini' or 'deterministic'."""
+
+    count = max(1, min(int(count or 3), 5))
+
+    resolved_settings = settings or Settings.from_env()
+    if not resolved_settings.has_google_api_key():
+        return _fallback_options(brand_context, count), "deterministic"
+
+    from app.services.gemini.cost_guard import get_default_cost_guard
+
+    guard = cost_guard or get_default_cost_guard(resolved_settings)
+    reservation = guard.check_and_reserve(EST_BACKGROUND_USD)
+    if not reservation.allowed:
+        return _fallback_options(brand_context, count), "deterministic"
+
+    try:
+        result = await gemini_text.generate(
+            _build_prompt(concept, brand_context, count),
+            model=gemini_text.FLASH_MODEL,
+            structured=BackgroundOptionsOutput,
+        )
+    except gemini_text.GeminiUnavailable:
+        return _fallback_options(brand_context, count), "deterministic"
+
+    raw_options = list(getattr(result, "options", []) or [])
+    if not raw_options:
+        return _fallback_options(brand_context, count), "deterministic"
+
+    fallback = _fallback_options(brand_context, count)
+    sanitized: list[BackgroundOption] = []
+    for index, option in enumerate(raw_options[:count]):
+        css = sanitize_css(_get(option, "css", ""))
+        html = sanitize_html(_get(option, "html", "")) or '<section class="aijolot-banner"></section>'
+        if not _is_valid_css(css):
+            # Emptied/invalid after sanitization → substitute a safe gradient.
+            sanitized.append(fallback[index % len(fallback)])
+            continue
+        sanitized.append(
+            BackgroundOption(
+                name=str(_get(option, "name", f"Option {index + 1}")) or f"Option {index + 1}",
+                description=str(_get(option, "description", "")),
+                css=css,
+                html=html,
+                rationale=str(_get(option, "rationale", "")),
+            )
+        )
+    if not sanitized:
+        return fallback, "deterministic"
+    return sanitized, "gemini"

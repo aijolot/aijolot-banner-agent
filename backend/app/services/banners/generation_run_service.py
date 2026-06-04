@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-import threading
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Coroutine, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import uuid4
 
 from app.core.settings import MissingSettingsError, Settings
@@ -18,40 +16,12 @@ from app.schemas.generation import (
     GenerationRunResponse,
     GenerationRunStatus,
 )
+from app.services.banners.async_run import run_coro as _run_coro
 from app.services.supabase.client import SupabaseClientFactory
 from app.workflows.banner_creation import FRONTEND_PROGRESS_STEPS, frontend_step_for_node, ordered_node_keys
 
 if TYPE_CHECKING:
     from app.services.banners.run_orchestrator import RunOrchestrator
-
-_T = TypeVar("_T")
-
-
-def _run_coro(coro: Coroutine[Any, Any, _T]) -> _T:
-    """Run an async coroutine from sync code, even under a live event loop.
-
-    FastAPI sync route handlers run in a threadpool (no running loop), so
-    ``asyncio.run`` works directly. If a loop *is* running (async caller/test),
-    we offload to a fresh thread to avoid the event-loop-reentry trap.
-    """
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    box: dict[str, Any] = {}
-
-    def _runner() -> None:
-        try:
-            box["value"] = asyncio.run(coro)
-        except BaseException as exc:  # noqa: BLE001 — re-raised on the caller thread
-            box["error"] = exc
-
-    thread = threading.Thread(target=_runner)
-    thread.start()
-    thread.join()
-    if "error" in box:
-        raise box["error"]
-    return cast(_T, box["value"])
 
 
 class CampaignNotFound(Exception):

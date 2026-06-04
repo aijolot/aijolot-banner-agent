@@ -275,24 +275,9 @@ class RunOrchestrator:
     # --- node helpers -----------------------------------------------------
 
     def _resolve_brand(self, campaign_row: dict[str, Any]) -> Any:
-        slug = campaign_row.get("brand_slug") or campaign_row.get("brand_context_id")
-        if slug:
-            try:
-                from app.services import brand_store
+        from app.services.banners.brand_resolver import resolve_brand_context
 
-                return brand_store.get_brand(str(slug))
-            except Exception:  # noqa: BLE001 — fall through to synthesized default
-                pass
-        normalize_brand_context = _load_runtime_skill("brand-context-load").normalize_brand_context
-        structured = campaign_row.get("structured_brief") or {}
-        tone = structured.get("tone") if isinstance(structured, dict) else None
-        return normalize_brand_context(
-            {
-                "id": str(slug or "default"),
-                "name": campaign_row.get("title") or "Default Brand",
-                "tone": tone,
-            }
-        )
+        return resolve_brand_context(campaign_row)
 
     def _campaign_from_row(self, campaign_row: dict[str, Any], brand: Any) -> StateCampaign:
         structured = campaign_row.get("structured_brief") or {}
