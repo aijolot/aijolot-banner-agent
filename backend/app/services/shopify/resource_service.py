@@ -117,6 +117,32 @@ SEED_RESOURCES: list[dict[str, Any]] = [
         "status": "published",
         "raw": {},
     },
+    {
+        "id": "seed-vendor-1",
+        "store_id": DEMO_STORE_ID,
+        "resource_type": "vendor",
+        "shopify_gid": "vendor:hugo-boss",
+        "handle": "hugo-boss",
+        "title": "Hugo Boss",
+        "vendor": "Hugo Boss",
+        "tags": [],
+        "image_url": None,
+        "status": "active",
+        "raw": {"derived": "products.vendor"},
+    },
+    {
+        "id": "seed-segment-1",
+        "store_id": DEMO_STORE_ID,
+        "resource_type": "customer_segment",
+        "shopify_gid": "gid://shopify/Segment/9001",
+        "handle": "clientes-vip",
+        "title": "Clientes VIP",
+        "vendor": None,
+        "tags": [],
+        "image_url": None,
+        "status": "active",
+        "raw": {"query": "amount_spent > 500"},
+    },
 ]
 
 
@@ -191,7 +217,14 @@ class ShopifyResourceService:
             raise StoreNotFound(store_id)
         return self._store_from_record(row)
 
-    def list_resources(self, store_id: str, *, resource_type: ShopifyResourceType, limit: int = 100) -> list[ShopifyResourceSummary]:
+    def list_resources(
+        self,
+        store_id: str,
+        *,
+        resource_type: ShopifyResourceType,
+        limit: int = 100,
+        query: str | None = None,
+    ) -> list[ShopifyResourceSummary]:
         # Ensure the store belongs to the configured team/scope before returning resources.
         self.get_store(store_id)
         if resource_type == "search":
@@ -207,9 +240,20 @@ class ShopifyResourceService:
                     metadata={"virtual": True},
                 )
             ]
-        rows = self.resource_repository.list_for_store(store_id=store_id, resource_type=resource_type, limit=limit)
+        # Fetch a wider window when filtering so the text query can narrow it down.
+        fetch_limit = max(limit, 250) if query else limit
+        rows = self.resource_repository.list_for_store(store_id=store_id, resource_type=resource_type, limit=fetch_limit)
         resources = [self._resource_from_record(row) for row in rows]
-        return sorted(resources, key=lambda resource: resource.title.lower())
+        needle = (query or "").strip().lower()
+        if needle:
+            resources = [r for r in resources if needle in self._haystack(r)]
+        resources = sorted(resources, key=lambda resource: resource.title.lower())
+        return resources[:limit]
+
+    @staticmethod
+    def _haystack(resource: ShopifyResourceSummary) -> str:
+        parts = [resource.title, resource.handle or "", resource.vendor or "", " ".join(resource.tags)]
+        return " ".join(parts).lower()
 
     @staticmethod
     def _store_from_record(row: dict[str, Any]) -> StoreSummary:

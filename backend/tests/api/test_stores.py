@@ -31,7 +31,7 @@ class FakeStoreService:
 
         raise StoreNotFound(store_id)
 
-    def list_resources(self, store_id: str, *, resource_type: str):
+    def list_resources(self, store_id: str, *, resource_type: str, query: str | None = None, limit: int = 100):
         if store_id != STORE_ID:
             from app.services.shopify.resource_service import StoreNotFound
 
