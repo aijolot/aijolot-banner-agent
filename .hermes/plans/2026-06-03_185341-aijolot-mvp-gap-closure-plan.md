@@ -596,6 +596,10 @@ Coordinator note: Implemented by fresh subagent and passed review after coordina
 
 Do not start these until Phases 1-8 pass.
 
+**Progress:** [-] Skipped/deferred 2026-06-03
+
+Coordinator note: Phases 1-8 now cover the critical MVP showcase path with full validation. These enhancements remain explicitly post-critical/deferred so the demo stays stable: registry endpoints, live analytics ingestion, vector KG/live provider work, and any real Shopify mutation require separate scope/configuration and are not needed for the few-hours MVP showcase.
+
 ### 9A: Read-only model/style/grid registries
 
 **Goal:** Replace local frontend presets with backend-managed read-only demo registries.
