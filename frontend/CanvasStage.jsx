@@ -68,7 +68,27 @@ function revisionMappings(rev) {
   return { lmap, smap, labels };
 }
 
-function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) {
+function latestRevisionFromRows(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!list.length) return null;
+  return list.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a));
+}
+
+function backendHtmlFromArtifacts(artifacts) {
+  if (!artifacts) return null;
+  if (typeof artifacts.previewHtml === "string" && artifacts.previewHtml.trim()) return artifacts.previewHtml;
+  const latest = artifacts.latestRevision || latestRevisionFromRows(artifacts.revisions);
+  return latest && typeof latest.html_preview === "string" && latest.html_preview.trim() ? latest.html_preview : null;
+}
+
+function iframeSafePreviewHtml(html) {
+  const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">`;
+  const source = String(html || "");
+  if (/<head[^>]*>/i.test(source)) return source.replace(/<head([^>]*)>/i, `<head$1>${csp}`);
+  return `<!doctype html><html><head>${csp}</head><body>${source}</body></html>`;
+}
+
+function CanvasStage({ campaign, tweaks, placement, art, generationArtifacts, onNotice, onPublish }) {
   const [variant, setVariant] = useStateCV("A");
   const [segId, setSegId] = useStateCV("masculino");
   const [device, setDevice] = useStateCV("desktop");
@@ -87,6 +107,8 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const [revision, setRevision] = useStateCV(null);
   const [revisionList, setRevisionList] = useStateCV([]);
   const [revisionMode, setRevisionMode] = useStateCV("local");
+  const [backendPreviewHtml, setBackendPreviewHtml] = useStateCV(() => backendHtmlFromArtifacts(generationArtifacts));
+  const [auditReport, setAuditReport] = useStateCV(() => (generationArtifacts && generationArtifacts.auditReport) || null);
   const [layoutVariantIds, setLayoutVariantIds] = useStateCV({}); // { A,B,C -> variant uuid }
   const [layoutVariantLabels, setLayoutVariantLabels] = useStateCV({});
   const [segmentVariantIds, setSegmentVariantIds] = useStateCV({}); // { segment_key -> variant uuid }
@@ -103,6 +125,8 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
       setRevision(null);
       setRevisionList([]);
       setRevisionMode("local");
+      setBackendPreviewHtml(backendHtmlFromArtifacts(generationArtifacts));
+      setAuditReport((generationArtifacts && generationArtifacts.auditReport) || null);
       setLayoutVariantIds({});
       setLayoutVariantLabels({});
       setSegmentVariantIds({});
@@ -125,24 +149,43 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             if (alive) onNotice && onNotice({ tone: "amber", text: "No pude refrescar estado de campaña backend: " + errorText(e) });
           }
         }
-        const listResult = GenerationApi.revisions ? await GenerationApi.revisions(campaign) : await GenerationApi.latestRevision(campaign);
+        const artifactRows = generationArtifacts && Array.isArray(generationArtifacts.revisions) ? generationArtifacts.revisions : null;
+        const listResult = artifactRows ? { ok: true, fallback: false, data: artifactRows } : (GenerationApi.revisions ? await GenerationApi.revisions(campaign) : await GenerationApi.latestRevision(campaign));
         if (!alive) return;
         const rows = Array.isArray(listResult.data) ? listResult.data : (listResult.data ? [listResult.data] : []);
         if (listResult.fallback || !rows.length) {
-          setBackendNotice((listResult && listResult.reason) || "Sin revisiones backend; segmentos/variantes son previsualización local/prototipo.");
-          onNotice && onNotice({ tone: "amber", text: (listResult && listResult.reason) || "Sin revisiones backend; lienzo en modo prototipo local." });
+          const hasBackendHtml = !!backendHtmlFromArtifacts(generationArtifacts);
+          setRevisionMode(hasBackendHtml ? "backend" : "local");
+          setBackendNotice((listResult && listResult.reason) || (hasBackendHtml ? "Preview HTML backend cargado; no hay lista de revisiones para selección." : "Sin revisiones backend; segmentos/variantes son previsualización local/prototipo."));
+          onNotice && onNotice({ tone: hasBackendHtml ? "green" : "amber", text: (listResult && listResult.reason) || (hasBackendHtml ? "Lienzo usando preview HTML backend." : "Sin revisiones backend; lienzo en modo prototipo local.") });
           return;
         }
-        const latest = rows.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a));
+        const latest = latestRevisionFromRows(rows);
         setRevisionList(rows);
         setRevision(latest);
         setRevisionMode("backend");
+        setBackendPreviewHtml((current) => current || (latest && latest.html_preview) || null);
         const maps = revisionMappings(latest);
         setLayoutVariantIds(maps.lmap);
         setLayoutVariantLabels(maps.labels);
         setSegmentVariantIds(maps.smap);
         if (Object.keys(maps.lmap).length && !maps.lmap[variant]) setVariant(Object.keys(maps.lmap)[0]);
         setBackendNotice(`Revisión backend #${latest.revision_number || rows.length} cargada${rows.length > 1 ? ` (${rows.length} revisiones)` : ""}.`);
+
+        const seededHtml = backendHtmlFromArtifacts(generationArtifacts);
+        const [previewResult, auditResult] = await Promise.allSettled([
+          seededHtml ? Promise.resolve({ fallback: false, data: seededHtml }) : GenerationApi.preview(campaign),
+          generationArtifacts && generationArtifacts.auditReport ? Promise.resolve({ fallback: false, data: generationArtifacts.auditReport }) : GenerationApi.audit(campaign),
+        ]);
+        if (!alive) return;
+        if (previewResult.status === "fulfilled" && previewResult.value && !previewResult.value.fallback && previewResult.value.data) {
+          setBackendPreviewHtml(String(previewResult.value.data));
+        } else if (previewResult.status === "rejected") {
+          onNotice && onNotice({ tone: "amber", text: "Preview backend no disponible; usaré HTML de revisión o fallback local: " + errorText(previewResult.reason) });
+        }
+        if (auditResult.status === "fulfilled" && auditResult.value && !auditResult.value.fallback && auditResult.value.data) {
+          setAuditReport(auditResult.value.data);
+        }
 
         const th = await ReviewApi.ensureThread(campaign, latest.id);
         if (!alive) return;
@@ -169,7 +212,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
       }
     })();
     return () => { alive = false; };
-  }, [campaign && campaign.id]);
+  }, [campaign && campaign.id, generationArtifacts && generationArtifacts.loadedAt]);
 
   const seg = SEGMENTS[segId];
   const approvedCount = approvers.filter((a) => a.status === "approved").length;
@@ -317,7 +360,10 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
         setRefineMsg(base);
         onNotice && onNotice({ tone: "green", text: "Refinamiento enviado al backend" });
         const rev = await GenerationApi.latestRevision(campaign);
-        if (rev && !rev.fallback && rev.data) setRevision(rev.data);
+        if (rev && !rev.fallback && rev.data) {
+          setRevision(rev.data);
+          if (rev.data.html_preview) setBackendPreviewHtml(String(rev.data.html_preview));
+        }
       } else {
         setRefineMsg(base + " (local, sin backend)");
         onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "Refinamiento aplicado solo localmente." });
@@ -373,6 +419,9 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const visibleVariantKeys = Object.keys(layoutVariantIds).length ? Object.keys(layoutVariantIds) : VARIANTS.map((v) => v.id);
   const visibleVariants = VARIANTS.filter((v) => visibleVariantKeys.includes(v.id));
   const currentVariantMeta = VARIANTS.find((v) => v.id === layoutVariant) || VARIANTS[0];
+  const backendCreativeHtml = backendPreviewHtml || (revision && revision.html_preview) || null;
+  const creativeSourceLabel = backendCreativeHtml ? "preview HTML backend" : "renderer local/prototipo";
+  const auditStatusLabel = auditReport && (auditReport.runtime_status || auditReport.status || (auditReport.schema_report && auditReport.schema_report.valid ? "pass" : null));
 
   const TabBtn = ({ active, onClick, children, title }) => (
     <button onClick={onClick} title={title} style={{
@@ -428,18 +477,34 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             background: "rgba(255,255,255,0.55)",
             backgroundImage: "radial-gradient(rgba(148,163,184,.18) 1px, transparent 1px)", backgroundSize: "18px 18px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, alignSelf: "stretch", justifyContent: "center", fontFamily: "Space Grotesk", fontSize: 11, color: "#94A3B8" }}>
-              <Icon name={dev.icon} size={13} /> {dev.label} · {currentVariantMeta.name}{placement ? ` · ${placement.name}` : ""}{cellCount > 1 ? ` · ${gridLayout.cols.length} col / ${cellCount} celdas` : ""}{art ? ` · ${art.fold}% sobre el pliegue` : ""} · {revisionMode === "backend" ? "revisión backend" : "preview local/prototipo"}
+              <Icon name={dev.icon} size={13} /> {dev.label} · {currentVariantMeta.name}{placement ? ` · ${placement.name}` : ""}{cellCount > 1 ? ` · ${gridLayout.cols.length} col / ${cellCount} celdas` : ""}{art ? ` · ${art.fold}% sobre el pliegue` : ""} · {creativeSourceLabel}{auditStatusLabel ? ` · audit ${auditStatusLabel}` : ""}
             </div>
             <div style={{ width: dev.w, maxWidth: "100%", transition: "width .35s ease" }}>
               <div ref={stageRef} onClick={addComment} style={{ position: "relative", cursor: commentMode ? "crosshair" : "default" }}>
-                {cellCount > 1 ? (
-                  <BannerLayout layout={gridLayout} gap={12} cell={(i) => (
-                    <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={tweaks.bannerFont} accent={bannerAccent}
-                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} />
-                  )} />
+                {backendCreativeHtml ? (
+                  <div style={{ position: "relative", borderRadius: 18, overflow: "hidden", border: "1px solid rgba(34,211,238,.28)", background: "#fff", minHeight: device === "mobile" ? 520 : 360 }}>
+                    <Badge tone="green" icon="database" style={{ position: "absolute", top: 10, left: 10, zIndex: 12 }}>Backend-backed creative</Badge>
+                    <iframe
+                      title="Backend banner preview"
+                      sandbox=""
+                      srcDoc={iframeSafePreviewHtml(backendCreativeHtml)}
+                      style={{ width: "100%", height: device === "mobile" ? 560 : device === "tablet" ? 460 : 420, border: 0, display: "block", background: "#fff" }}
+                    />
+                  </div>
+                ) : cellCount > 1 ? (
+                  <>
+                    <Badge tone="amber" icon="flask-conical" style={{ position: "absolute", top: 10, left: 10, zIndex: 12 }}>Fallback local/prototipo</Badge>
+                    <BannerLayout layout={gridLayout} gap={12} cell={(i) => (
+                      <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={tweaks.bannerFont} accent={bannerAccent}
+                        brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} />
+                    )} />
+                  </>
                 ) : (
-                  <Banner seg={seg} variant={layoutVariant} slot font={tweaks.bannerFont} accent={bannerAccent}
-                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} />
+                  <>
+                    <Badge tone="amber" icon="flask-conical" style={{ position: "absolute", top: 10, left: 10, zIndex: 12 }}>Fallback local/prototipo</Badge>
+                    <Banner seg={seg} variant={layoutVariant} slot font={tweaks.bannerFont} accent={bannerAccent}
+                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} />
+                  </>
                 )}
 
                 {/* refine shimmer overlay */}

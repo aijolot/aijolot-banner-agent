@@ -55,11 +55,13 @@ function App() {
   const [placement, setPlacement] = useStateA(() => ({ id: "hero", name: "Hero principal", size: "1440 × 420", page: "Inicio", layout: { cols: [{ rows: 1, w: 1 }] } }));
   const [art, setArt] = useStateA(() => ({ bg: "usage", heroStyle: "rocks", model: "m2", fold: 55 }));
   const [campaign, setCampaign] = useStateA(null);
+  const [generationArtifacts, setGenerationArtifacts] = useStateA(null);
   const [apiNotice, setApiNotice] = useStateA(null);
 
   function onNav(id) { setNav(id); }
   async function handleNewCampaign() {
     setApiNotice(null);
+    setGenerationArtifacts(null);
     try {
       const c = await CampaignApi.create({ title: "Nueva campaña", raw_brief: "" });
       setCampaign(c);
@@ -84,6 +86,7 @@ function App() {
     setStage("brief");
   }
   function hydrateCampaignSelection(c, nextStage) {
+    setGenerationArtifacts(null);
     if (c) setCampaign({ ...c, structured_brief: c.structured_brief || {} });
     setApiNotice(c && isApiCampaign(c) ? { tone: "green", text: "Campaña backend activa: " + c.id } : { tone: "amber", text: "Campaña demo/prototipo activa; las APIs durables requieren UUID backend." });
     setStage(nextStage);
@@ -116,10 +119,10 @@ function App() {
   } else {
     let view;
     if (stage === "placement") view = <PlacementStage onNotice={setApiNotice} onNext={handlePlacementNext} />;
-    else if (stage === "brief") view = <BriefStage campaign={campaign} onGenerate={(c) => { setCampaign(c); setStage("art"); }} onCampaignReady={onCampaignReady} onNotice={setApiNotice} placement={placement} />;
-    else if (stage === "art") view = <ArtStage campaign={campaign} placement={placement} onNotice={setApiNotice} onAssemble={(a) => { setArt(a); setStage("generate"); }} />;
-    else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} onNotice={setApiNotice} onDone={() => setStage("canvas")} />;
-    else if (stage === "canvas") view = <CanvasStage campaign={campaign} tweaks={t} placement={placement} art={art} onNotice={setApiNotice} onPublish={() => setStage("performance")} />;
+    else if (stage === "brief") view = <BriefStage campaign={campaign} onGenerate={(c) => { setCampaign(c); setGenerationArtifacts(null); setStage("art"); }} onCampaignReady={onCampaignReady} onNotice={setApiNotice} placement={placement} />;
+    else if (stage === "art") view = <ArtStage campaign={campaign} placement={placement} onNotice={setApiNotice} onAssemble={(a) => { setArt(a); setGenerationArtifacts(null); setStage("generate"); }} />;
+    else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} onNotice={setApiNotice} onDone={(artifacts) => { setGenerationArtifacts(artifacts || null); setStage("canvas"); }} />;
+    else if (stage === "canvas") view = <CanvasStage campaign={campaign} tweaks={t} placement={placement} art={art} generationArtifacts={generationArtifacts} onNotice={setApiNotice} onPublish={() => setStage("performance")} />;
     else view = <PerformanceStage campaign={campaign} tweaks={t} onNotice={setApiNotice} onBack={() => setStage("canvas")} />;
     body = <><Stepper stage={stage} goTo={setStage} />{apiNotice ? <div style={{ marginBottom: 12 }}><Badge tone={apiNotice.tone || "slate"} icon={apiNotice.tone === "green" ? "wifi" : "wifi-off"}>{apiNotice.text}</Badge></div> : null}{view}</>;
   }

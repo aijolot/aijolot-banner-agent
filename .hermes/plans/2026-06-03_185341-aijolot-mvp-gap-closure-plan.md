@@ -330,6 +330,10 @@ Coordinator note: Implemented by fresh subagent and independently reviewed. Chan
 
 **Commit:** `feat: render generated backend preview in studio`
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented by fresh subagent and reviewed/fixed by coordinator. Changed `backend/app/api/v1/previews.py`, new `backend/tests/api/test_previews.py`, `frontend/App.jsx`, `frontend/GenerateStage.jsx`, `frontend/CanvasStage.jsx`, and `scripts/smoke-frontend-backend-connection.mjs`. Preview/audit routes now use request-scoped demo context with team ownership checks and service-role repositories only in local/dev/demo/test environments, fail closed on missing config/auth, and return preview/audit artifacts when configured. GenerateStage now carries preview/audit/revision artifacts to Canvas. Canvas now prioritizes backend preview HTML/revision `html_preview` in a sandboxed iframe with injected CSP meta and visibly labels backend creative vs local/prototype fallback. Smoke script asserts backend creative source wiring and fallback labels. Review fixed service-role demo gating and iframe CSP concerns. Validation: focused preview/generation/revision tests passed (36 passed, 1 existing warning); backend API tests passed (102 passed, 1 warning); final reviewer ran broader backend tests (303 passed, 3 skipped); `node --check`, JSX esbuild checks, `node scripts/smoke-frontend-backend-connection.mjs`, and `git diff --check` passed.
+
 ---
 
 ## Phase 4: Wire Local Approval, Comments, and Refinement Services

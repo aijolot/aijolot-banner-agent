@@ -268,6 +268,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
   const [artifactStatus, setArtifactStatus] = useStateG(null);
   const [artifactNotice, setArtifactNotice] = useStateG(null);
   const completed = useRefG(false);
+  const generatedArtifacts = useRefG(null);
 
   useEffectG(() => {
     let alive = true;
@@ -276,6 +277,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
       setBackendError(null);
       setArtifactStatus(null);
       setArtifactNotice(null);
+      generatedArtifacts.current = null;
       try {
         const r = await GenerationApi.start(campaign, { placement, art, source: "frontend-generate-stage" });
         if (!alive) return;
@@ -346,12 +348,23 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
           revisions: normalizeArtifact(revisions),
         };
         if (normalized.revisions.ok && !Array.isArray(normalized.revisions.data)) normalized.revisions = { ok: false, reason: "Respuesta de revisiones inválida" };
+        const revisionRows = normalized.revisions.ok ? normalized.revisions.data : [];
+        const latestRevision = revisionRows.length ? revisionRows.reduce((a, b) => ((b.revision_number || 0) >= (a.revision_number || 0) ? b : a)) : null;
+        generatedArtifacts.current = {
+          source: "backend",
+          run,
+          previewHtml: normalized.preview.ok ? normalized.preview.data : null,
+          auditReport: normalized.audit.ok ? normalized.audit.data : null,
+          revisions: revisionRows,
+          latestRevision,
+          loadedAt: new Date().toISOString(),
+        };
         setArtifactStatus({
           preview: normalized.preview.ok,
           previewReason: normalized.preview.reason,
           audit: normalized.audit.ok,
           auditReason: normalized.audit.reason,
-          revisions: normalized.revisions.ok ? normalized.revisions.data.length : null,
+          revisions: normalized.revisions.ok ? revisionRows.length : null,
           revisionsReason: normalized.revisions.reason,
         });
         const failures = [
@@ -380,7 +393,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
   useEffectG(() => {
     if (generationStatus !== "prototype") return undefined;
     if (prototypePhase >= 5) {
-      const t = setTimeout(() => { if (!completed.current) { completed.current = true; onDone(); } }, 1500);
+      const t = setTimeout(() => { if (!completed.current) { completed.current = true; onDone(generatedArtifacts.current); } }, 1500);
       return () => clearTimeout(t);
     }
     let dur = DUR[prototypePhase];
@@ -401,7 +414,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
 
   useEffectG(() => {
     if (generationStatus !== "succeeded" || phase < 5 || completed.current) return undefined;
-    const t = setTimeout(() => { completed.current = true; onDone(); }, 1500);
+    const t = setTimeout(() => { completed.current = true; onDone(generatedArtifacts.current); }, 1500);
     return () => clearTimeout(t);
   }, [generationStatus, phase]);
 
@@ -415,7 +428,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
   function continueIfReady() {
     if (generationStatus === "succeeded" || generationStatus === "prototype") {
       completed.current = true;
-      onDone();
+      onDone(generatedArtifacts.current);
     }
   }
 

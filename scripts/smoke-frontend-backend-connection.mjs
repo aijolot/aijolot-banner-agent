@@ -14,6 +14,7 @@
 
 const API_ORIGIN = (process.env.AIJOLOT_API_ORIGIN || "http://localhost:8000").replace(/\/+$/, "").replace(/\/api\/v1$/i, "");
 const API_BASE = `${API_ORIGIN}/api/v1`;
+const REPO_ROOT = new URL("..", import.meta.url);
 const DEMO_USER_ID = "00000000-0000-0000-0000-000000000601";
 const DEMO_TEAM_ID = "00000000-0000-0000-0000-000000000001";
 const DEMO_STORE_ID = "00000000-0000-0000-0000-000000000101";
@@ -149,15 +150,19 @@ async function main() {
     const generationEvents = await api(`/generation-runs/${run.id}/events`);
     if (!generationEvents.some((event) => event.node_key === "research_best_practices")) throw new Error("KG/research event missing");
     let previewOk = false;
+    let previewHtml = "";
     try {
-      await fetch(apiUrl(`/campaigns/${campaign.id}/preview`), { headers: demoAuthHeaders }).then((r) => { if (!r.ok) throw Object.assign(new Error(`preview failed ${r.status}`), { status: r.status }); return r.text(); });
+      previewHtml = await fetch(apiUrl(`/campaigns/${campaign.id}/preview`), { headers: { ...demoAuthHeaders, Accept: "text/html" } }).then((r) => { if (!r.ok) throw Object.assign(new Error(`preview failed ${r.status}`), { status: r.status }); return r.text(); });
+      if (!/<[a-z][\s\S]*>/i.test(previewHtml) || !previewHtml.includes("aijolot-banner")) throw new Error("preview returned non-banner HTML");
       previewOk = true;
     } catch (err) {
       console.log(`ok: preview unavailable/fail-closed in local fallback: ${err.status || err.message}`);
     }
     let auditOk = false;
+    let audit = null;
     try {
-      await api(`/campaigns/${campaign.id}/audit-report`);
+      audit = await api(`/campaigns/${campaign.id}/audit-report`);
+      if (!audit || typeof audit !== "object" || !(audit.status || audit.runtime_status || audit.schema_report)) throw new Error("audit returned invalid report");
       auditOk = true;
     } catch (err) {
       console.log(`ok: audit unavailable/fail-closed in local fallback: ${err.status || err.message}`);
@@ -166,6 +171,11 @@ async function main() {
       revisions = await api(`/campaigns/${campaign.id}/revisions`);
     } catch (err) {
       console.log(`ok: revisions unavailable/fail-closed in local fallback: ${err.status || err.message}`);
+    }
+    if (revisions.length) {
+      if (!previewOk) throw new Error("backend revisions exist but preview route did not return HTML");
+      if (!auditOk) throw new Error("backend revisions exist but audit route did not return a report");
+      if (!revisions.some((revision) => revision.html_preview || revision.preview_storage_path)) throw new Error("backend revisions exist but no preview artifact is exposed");
     }
     console.log(`ok: generation/events/KG/preview/audit/revisions (${generationEvents.length} events, preview=${previewOk}, audit=${auditOk}, ${revisions.length} revisions)`);
   } catch (err) {
@@ -194,6 +204,15 @@ async function main() {
   } else {
     console.log("ok: no revisions to select variants from (fail-closed local demo)");
   }
+
+  const canvasSource = await import("node:fs/promises").then((fs) => fs.readFile(new URL("frontend/CanvasStage.jsx", REPO_ROOT), "utf8"));
+  if (!canvasSource.includes("srcDoc={iframeSafePreviewHtml(backendCreativeHtml)}") || !canvasSource.includes("Backend-backed creative") || !canvasSource.includes("Content-Security-Policy")) {
+    throw new Error("Canvas smoke failed: backend HTML preview is not rendered as primary creative");
+  }
+  if (!canvasSource.includes("Fallback local/prototipo")) {
+    throw new Error("Canvas smoke failed: local Banner fallback is not visibly labeled");
+  }
+  console.log("ok: Canvas source renders backend creative before local fallback");
 
   await attempt("regenerate (refinement)", () => api(`/campaigns/${campaign.id}/regenerate`, { method: "POST", body: JSON.stringify({ prompt: "haz el fondo más brillante", requested_by: DEMO_USER_ID }) }));
   await attempt("refinement request", () => api(`/campaigns/${campaign.id}/refinement-requests`, { method: "POST", body: JSON.stringify({ prompt: "subir contraste del CTA", requested_by: DEMO_USER_ID }) }));
