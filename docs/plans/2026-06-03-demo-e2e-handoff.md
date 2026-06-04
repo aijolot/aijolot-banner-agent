@@ -20,9 +20,16 @@
 - Sin PR todavía (el usuario pidió "solo commit, aún no PR").
 
 ## Fases hechas (✅) vs pendientes (⬜)
-- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F10 código publisher
-- ⬜ F6 concept+layout KG · F7 fondos AI · F8 prompts descriptivos+modelos · F9 refine agéntico · F11 frontend · F12 verificación final
+- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F6 concept+layout KG · F10 código publisher
+- ⬜ F7 fondos AI · F8 prompts descriptivos+modelos · F9 refine agéntico · F11 frontend · F12 verificación final
 - ⬜ **F10 e2e** (publish real de una campaña) — ya desbloqueado por F5; falta correr schedule→dry-run publish→publish real→storefront.
+
+## F6 — hecho (2026-06-03, commit 752345e)
+- Nuevo skill `backend/app/agents/skills/layout-retrieve/impl.py`: query `placement+goal+tone` contra `kg.retrieve(kinds=["liquid_pattern"])`.
+- `banner-concept-draft` acepta kwarg `layout_candidates`: `_resolve_layout` elige el candidato cuyo `metadata.category`/`applicable_when` matchea el placement (luego el top-ranked), arma `layout` = title+applicable_when, y registra todos los candidatos en el nuevo `Concept.source_refs` (con `selected` en el elegido). String determinista preservado como fallback.
+- `Concept.source_refs` (state.py) nuevo, default `[]` → backward compatible. Cableado en `run_orchestrator` (evento concept reporta `layout_source`/`layout_candidates`) y en `pipeline.node_concept_draft`.
+- E2E (`a1cf2aee-…`, placement Hero): eligió patrón `hero_layout` real de 4 candidatos, provenance persistida en `concept.source_refs`. Tests: **299 passed, 3 skipped**.
+- Nota: el floor estático de `kg.py` no tiene `liquid_pattern`, así que sin Supabase los candidatos quedan vacíos → layout determinista (tests in-memory intactos).
 
 ## F5 — hecho (2026-06-03)
 - Nuevo `backend/app/services/banners/run_orchestrator.py` (`RunOrchestrator`): ejecuta load_brand→intake→personalization→best-practices→concept→image→optimize→render(html+liquid)→audit nodo por nodo; persiste `campaign_revision`+`banner_variants`(default)+`banner_layout_variants`(A/B/C)+`audit_reports`+preview en Supabase Storage; promueve draft→selected al terminar (un fallo deja un draft inerte, no contamina la selección).
