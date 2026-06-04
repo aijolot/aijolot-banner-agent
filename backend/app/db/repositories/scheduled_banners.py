@@ -23,3 +23,19 @@ class ScheduledBannerRepository:
     def list_due(self, *, limit: int = 50) -> list[dict[str, Any]]:
         out = execute_data(self.client.table(self.table_name).select(self.columns).eq("status", "pending").order("target_publish_at").limit(limit))
         return [dict(row) for row in (out or [])] if isinstance(out, list) else ([dict(out)] if out else [])
+
+    def list_processing(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        out = execute_data(self.client.table(self.table_name).select(self.columns).eq("status", "processing").order("processing_started_at").limit(limit))
+        return [dict(row) for row in (out or [])] if isinstance(out, list) else ([dict(out)] if out else [])
+
+    def mark_published(self, row_id: str) -> dict[str, Any] | None:
+        payload = {"status": "published"}
+        out = execute_data(
+            self.client.table(self.table_name)
+            .update(payload)
+            .eq("id", row_id)
+            .select(self.columns)
+        )
+        if isinstance(out, list):
+            return dict(out[0]) if out else None
+        return dict(out) if out else None
