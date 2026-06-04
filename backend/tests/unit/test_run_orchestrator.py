@@ -203,6 +203,41 @@ def test_refinement_run_keeps_deterministic_shell() -> None:
     assert revisions.rows == {}  # orchestrator did not run
 
 
+class InMemoryCatalog:
+    def __init__(self, items, discount_rule=None) -> None:
+        self._snapshot = {"id": "snap-1", "items": items, "discount_rule": discount_rule or {}}
+
+    def get_latest_by_campaign_id(self, *, campaign_id):
+        return copy.deepcopy(self._snapshot)
+
+
+def test_concept_adapts_to_catalog_and_promo() -> None:
+    campaigns = InMemoryCampaigns()
+    campaigns.rows[CAMPAIGN_ID]["promo_label"] = "25% OFF"
+    revisions = InMemoryRevisions()
+    variants = InMemoryVariants()
+    layouts = InMemoryLayoutVariants()
+    audits = InMemoryAuditReports()
+    catalog = InMemoryCatalog([{"title": "Afnan 9PM EDP 100ml", "price": 1299, "sale_price": 999}])
+    orchestrator = RunOrchestrator(
+        revisions=revisions, variants=variants, layout_variants=layouts, audit_reports=audits,
+        campaigns=campaigns, catalog=catalog, asset_service=None, team_id="team-1",
+    )
+    service = GenerationRunService(
+        run_repository=InMemoryGenerationRunRepository(),
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns, orchestrator=orchestrator, team_id="team-1",
+    )
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+    assert run.status == "succeeded"
+    revision = next(iter(revisions.rows.values()))
+    copyd = revision["concept"]["copy"]
+    # Headline grounds in the real catalog product; CTA carries the promo.
+    assert "Afnan 9PM" in copyd["headline"]
+    assert "25% OFF" in copyd["cta"]
+
+
 def test_orchestrator_failure_is_recorded_honestly() -> None:
     service, *_ = _build_service()
 

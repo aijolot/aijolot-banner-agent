@@ -149,6 +149,7 @@ class GenerationRunService:
         from app.db.repositories.audit_reports import AuditReportRepository
         from app.db.repositories.banner_layout_variants import BannerLayoutVariantRepository
         from app.db.repositories.banner_variants import BannerVariantRepository
+        from app.db.repositories.campaign_catalog import CampaignCatalogRepository
         from app.db.repositories.campaign_revisions import CampaignRevisionRepository
         from app.services.banners.asset_service import BannerAssetService
         from app.services.banners.run_orchestrator import RunOrchestrator
@@ -164,6 +165,7 @@ class GenerationRunService:
             layout_variants=BannerLayoutVariantRepository(client),
             audit_reports=AuditReportRepository(client),
             campaigns=campaign_repository,
+            catalog=CampaignCatalogRepository(client),
             asset_service=asset_service,
             team_id=team_id,
         )

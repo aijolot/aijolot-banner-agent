@@ -102,6 +102,7 @@ class RunOrchestrator:
         layout_variants: LayoutVariantRepositoryProtocol,
         audit_reports: AuditReportRepositoryProtocol,
         campaigns: CampaignRepositoryProtocol,
+        catalog: Any = None,
         asset_service: Any = None,
         settings: Settings | None = None,
         cost_guard: CostGuard | None = None,
@@ -112,6 +113,7 @@ class RunOrchestrator:
         self.layout_variants = layout_variants
         self.audit_reports = audit_reports
         self.campaigns = campaigns
+        self.catalog = catalog
         self.asset_service = asset_service
         self.settings = settings or Settings.from_env()
         self.cost_guard = cost_guard or get_default_cost_guard(self.settings)
@@ -144,13 +146,25 @@ class RunOrchestrator:
             brand = self._resolve_brand(campaign_row)
             recorder.succeed(node, {"brand_id": brand.id, "name": brand.name})
 
-            # 2 — intake (brief already captured; synthesize, never re-prompt here)
+            # 2 — intake (brief already captured; synthesize, never re-prompt here).
+            # Fold the selected catalog products + promo/discount into the brief so
+            # the concept copy adapts to the real products and the offer.
             node = "intake_campaign_idea"
             recorder.start(node)
             campaign_state = self._campaign_from_row(campaign_row, brand)
+            catalog_context = self._load_catalog_context(campaign_id)
+            promo_text = self._promo_text(campaign_row, catalog_context)
+            if promo_text and promo_text.lower() not in campaign_state.cta.lower():
+                campaign_state.cta = _short(f"{campaign_state.cta} · {promo_text}", 60)
             recorder.succeed(
                 node,
-                {"goal": campaign_state.goal, "placement": campaign_state.placement, "source": "structured_brief"},
+                {
+                    "goal": campaign_state.goal,
+                    "placement": campaign_state.placement,
+                    "source": "structured_brief",
+                    "catalog_items": len((catalog_context or {}).get("items") or []),
+                    "promo": promo_text or None,
+                },
             )
 
             # 3 — personalization (default single segment for the initial run)
@@ -172,7 +186,7 @@ class RunOrchestrator:
             recorder.start(node)
             layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
             concept = await self._run_concept(
-                campaign_state, brand, state_variants, best_practices, layout_candidates
+                campaign_state, brand, state_variants, best_practices, layout_candidates, catalog_context
             )
             if is_refine and prompt:
                 # Record the refinement intent on the concept so the new revision
@@ -337,6 +351,7 @@ class RunOrchestrator:
         variants: list[StateVariant],
         best_practices: list[dict[str, Any]],
         layout_candidates: list[dict[str, Any]] | None = None,
+        catalog_context: dict[str, Any] | None = None,
     ) -> Any:
         skill = _load_runtime_skill("banner-concept-draft")
         return await skill.run(
@@ -345,7 +360,40 @@ class RunOrchestrator:
             variants=variants,
             best_practices=best_practices,
             layout_candidates=layout_candidates,
+            catalog_context=catalog_context,
         )
+
+    def _load_catalog_context(self, campaign_id: str) -> dict[str, Any] | None:
+        if self.catalog is None:
+            return None
+        try:
+            snapshot = self.catalog.get_latest_by_campaign_id(campaign_id=campaign_id)
+        except Exception:  # noqa: BLE001 — catalog grounding is best-effort
+            return None
+        if not snapshot:
+            return None
+        items = [i for i in (snapshot.get("items") or []) if i.get("title")]
+        return {"items": items, "discount_rule": snapshot.get("discount_rule") or {}}
+
+    @staticmethod
+    def _promo_text(campaign_row: dict[str, Any], catalog_context: dict[str, Any] | None) -> str:
+        # Prefer the campaign promo label; fall back to a % parsed from the
+        # promo rule or the catalog snapshot discount rule.
+        label = str(campaign_row.get("promo_label") or "").strip()
+        if label:
+            return _short(label, 40)
+        rule = catalog_context.get("discount_rule") if catalog_context else None
+        candidates: list[Any] = [campaign_row.get("promo_rule")]
+        if isinstance(rule, dict):
+            candidates.extend([rule.get("label"), rule.get("percent"), rule.get("value")])
+        for cand in candidates:
+            if cand in (None, ""):
+                continue
+            text = str(cand)
+            if isinstance(cand, (int, float)) and not isinstance(cand, bool):
+                return f"{int(cand)}% OFF"
+            return _short(text, 40)
+        return ""
 
     async def _generate_image(self, *, concept: Any, brand: Any, campaign_id: str) -> tuple[bytes, dict[str, Any], float]:
         from app.services.banners.image_gen import generate_image
