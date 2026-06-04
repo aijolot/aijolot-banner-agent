@@ -20,9 +20,16 @@
 - Sin PR todavía (el usuario pidió "solo commit, aún no PR").
 
 ## Fases hechas (✅) vs pendientes (⬜)
-- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F6 concept+layout KG · F7 fondos AI · F10 código publisher
-- ⬜ F8 prompts descriptivos+modelos · F9 refine agéntico · F11 frontend · F12 verificación final
+- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F6 concept+layout KG · F7 fondos AI · F8 prompts+generate-art · F10 código publisher
+- ⬜ F9 refine agéntico · F11 frontend · F12 verificación final
 - ⬜ **F10 e2e** (publish real de una campaña) — ya desbloqueado por F5; falta correr schedule→dry-run publish→publish real→storefront.
+
+## F8 — hecho (2026-06-03, commit 07d7c6a)
+- Skill `backend/app/agents/skills/art-prompt-propose/impl.py`: `run(concept, brand, shot_type, count, background_ref)` (hero=N estilos distintos; usage=misma descripción + ángulos `front/three_quarter/top_down/in_use` + `background_ref`) y `propose_models(gender, base_prompt)`. Gemini FLASH structured (`PromptOptionsOutput`) + fallback determinista; cada prompt saneado vía `image-prompt-refine`.
+- `ArtService` (`art_service.py`) + endpoints `POST /campaigns/{id}/art-prompts`, `/model-prompts`, `/generate-art`. `generate-art`: refine→`image_gen.generate_image` (seam compartido, cost-gate + fake fallback)→optimize+upload `asset_service`→adjunta a la revisión (`concept.generated_art` + `preview_storage_path`); para usage compone el background CSS de F7 detrás del PNG en `composed_html`.
+- Refactor DRY: extraído `app/services/banners/image_gen.py` (`generate_image`) del orquestador F5; ambos lo usan.
+- **Gotcha**: `banner_assets.asset_kind` CHECK = `generated_background|product_image|logo|rendered_preview|liquid_asset` (NO `generated_art`) → mapeo usage→`product_image`, hero→`generated_background`.
+- E2E (`a1cf2aee-…`): art-prompts/model-prompts source=gemini, generate-art subió imagen Gemini real a Supabase Storage (public_url) + composed_html. Tests: **312 passed, 3 skipped**.
 
 ## F7 — hecho (2026-06-03, commit 4c1c075)
 - Nuevo skill `backend/app/agents/skills/background-options-generate/impl.py`: Gemini FLASH structured (`BackgroundOptionsOutput`), gated por cost_guard, fail-closed a gradientes de `brand_context.palette`. Sanitización obligatoria (`sanitize_css`/`sanitize_html`): quita `@import`, `url(http…)`, `expression(`, `javascript:`, `<script>`/`<iframe>`, `on*=`; opción inválida tras sanear → gradiente determinista.
