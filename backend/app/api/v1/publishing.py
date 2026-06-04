@@ -29,16 +29,17 @@ def _publisher() -> ShopifyPublisher:
 _DEFAULT_PUBLISHER_FACTORY = _publisher
 
 
-def _require_context_when_default(request: Request) -> None:
+def _publisher_for_request(request: Request) -> ShopifyPublisher:
     if _publisher is _DEFAULT_PUBLISHER_FACTORY:
-        require_user_context(request)
+        context = require_user_context(request)
+        return configured_publisher(team_id=context.team_id)
+    return _publisher()
 
 
 @router.post("/campaigns/{campaign_id}/publish", response_model=PublishJobResponse)
 def publish_campaign(campaign_id: CampaignIdPath, request: Request) -> PublishJobResponse:
     try:
-        _require_context_when_default(request)
-        return _publisher().publish_campaign(str(campaign_id))
+        return _publisher_for_request(request).publish_campaign(str(campaign_id))
     except CampaignNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except (CampaignRevisionNotFound, CampaignNotScheduled) as exc:
@@ -54,8 +55,7 @@ def publish_campaign(campaign_id: CampaignIdPath, request: Request) -> PublishJo
 @router.post("/campaigns/{campaign_id}/unpublish", response_model=PublishJobResponse)
 def unpublish_campaign(campaign_id: CampaignIdPath, request: Request) -> PublishJobResponse:
     try:
-        _require_context_when_default(request)
-        return _publisher().unpublish_campaign(str(campaign_id))
+        return _publisher_for_request(request).unpublish_campaign(str(campaign_id))
     except CampaignNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except (CampaignRevisionNotFound, CampaignNotScheduled) as exc:

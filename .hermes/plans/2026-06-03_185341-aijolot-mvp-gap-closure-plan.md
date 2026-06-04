@@ -472,6 +472,10 @@ Coordinator note: Implemented by fresh subagent and independently reviewed. Chan
 
 **Commit:** `feat: add safe demo publishing path`
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented by fresh subagent and passed review after coordinator fixes. Changed `backend/app/core/settings.py`, `backend/app/services/shopify/publisher.py`, `backend/app/api/v1/publishing.py`, `backend/app/agents/skills/shopify-theme-publish/impl.py`, `backend/tests/unit/test_shopify_publisher.py`, `backend/tests/api/test_publishing.py`, `backend/tests/unit/agents/test_shopify_publish_skill.py`, `frontend/CanvasPanels.jsx`, and `frontend/CanvasStage.jsx`. Publishing now fails closed unless `AIJOLOT_PUBLISH_MODE=dry_run_demo` is explicitly set and request team context is available; default REST publishing passes request `team_id` into the service-role dry-run publisher to avoid unscoped/cross-team use. Dry-run publish requires scheduled campaign, active schedule, selected revision matching the schedule revision, supported placement, and generated Liquid/metafield payload; it persists a schema-compatible succeeded publish job with `live_shopify_mutation: false`, theme-file/metafield preview data, target info, and placeholder URL, but does not call Shopify or mark campaign status `published`. Dry-run unpublish fails closed without mutation. Agentic `shopify-theme-publish` skill now requires/passes `team_id`. Frontend labels publish actions and results as “Simulación de publicación / dry-run” and never claims live Shopify publish for dry-run. Validation: publishing API/unit/agent-skill tests passed (18 passed, 1 existing warning); final reviewer approved; `node --check`, JSX esbuild checks for `CanvasPanels.jsx`/`CanvasStage.jsx`, and `git diff --check` passed.
+
 ---
 
 ## Phase 7: Frontend Demo UX Gap Fixes

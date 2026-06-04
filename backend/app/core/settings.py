@@ -60,6 +60,7 @@ class Settings(BaseModel):
         "shopify_theme_id": "SHOPIFY_THEME_ID",
         "shopify_banner_metafield_namespace": "SHOPIFY_BANNER_METAFIELD_NAMESPACE",
         "shopify_banner_metafield_key": "SHOPIFY_BANNER_METAFIELD_KEY",
+        "aijolot_publish_mode": "AIJOLOT_PUBLISH_MODE",
         "soft_image_generation_limit_per_15_minutes": "SOFT_IMAGE_GENERATION_LIMIT_PER_15_MINUTES",
     }
 
@@ -93,6 +94,7 @@ class Settings(BaseModel):
     shopify_theme_id: str | None = None
     shopify_banner_metafield_namespace: str = "aijolot"
     shopify_banner_metafield_key: str = "banner_campaigns"
+    aijolot_publish_mode: str = "disabled"
 
     soft_image_generation_limit_per_15_minutes: int = Field(default=20, ge=0)
 
@@ -131,6 +133,7 @@ class Settings(BaseModel):
         "shopify_api_version",
         "shopify_banner_metafield_namespace",
         "shopify_banner_metafield_key",
+        "aijolot_publish_mode",
         mode="before",
     )
     @classmethod

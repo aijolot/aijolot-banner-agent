@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.services.shopify.publisher import CampaignNotScheduled, PublishUnsupported, ShopifyPublisher
+from app.services.shopify.publisher import CampaignNotScheduled, CampaignRevisionNotFound, PublishUnsupported, PublisherUnavailable, ShopifyPublisher
 
 CAMPAIGN_ID = "00000000-0000-0000-0000-000000000101"
 REVISION_ID = "00000000-0000-0000-0000-000000000201"
@@ -79,12 +79,12 @@ class Campaigns(Repo):
         return self.rows[campaign_id]
 
 
-def _publisher(status: str = "scheduled", target_type: str = "home") -> tuple[ShopifyPublisher, FakeShopifyClient, Repo, Campaigns]:
+def _publisher(status: str = "scheduled", target_type: str = "home", publish_mode: str = "live") -> tuple[ShopifyPublisher, FakeShopifyClient, Repo, Campaigns]:
     client = FakeShopifyClient()
     jobs = Repo()
     campaigns = Campaigns({CAMPAIGN_ID: {"id": CAMPAIGN_ID, "store_id": STORE_ID, "status": status, "selected_revision_id": REVISION_ID, "title": "Summer"}})
     revisions = Repo({REVISION_ID: {"id": REVISION_ID, "campaign_id": CAMPAIGN_ID, "liquid_config": {"slug": "summer", "variants": []}}})
-    stores = Repo({STORE_ID: {"id": STORE_ID, "theme_id": "123", "banner_metafield_namespace": "aijolot", "banner_metafield_key": "banner_campaigns"}})
+    stores = Repo({STORE_ID: {"id": STORE_ID, "shop_domain": "demo.example", "theme_id": "123", "banner_metafield_namespace": "aijolot", "banner_metafield_key": "banner_campaigns"}})
     schedules = Repo({CAMPAIGN_ID: {"id": SCHEDULE_ID, "campaign_id": CAMPAIGN_ID, "revision_id": REVISION_ID, "starts_at": "2026-06-10T10:00:00Z", "ends_at": "2026-06-12T10:00:00Z", "status": "pending"}})
     placements = Repo({CAMPAIGN_ID: {"campaign_id": CAMPAIGN_ID, "target_type": target_type, "slot": "hero"}})
     publisher = ShopifyPublisher(
@@ -95,6 +95,7 @@ def _publisher(status: str = "scheduled", target_type: str = "home") -> tuple[Sh
         schedules=schedules,
         placements=placements,
         publish_jobs=jobs,
+        publish_mode=publish_mode,
     )
     return publisher, client, jobs, campaigns
 
@@ -125,6 +126,26 @@ def test_publish_writes_config_metafield_and_records_job() -> None:
     assert payload["campaign_id"] == CAMPAIGN_ID
     assert payload["config"]["active_from"] == "2026-06-10T10:00:00Z"
     assert payload["config"]["active_until"] == "2026-06-12T10:00:00Z"
+
+
+def test_dry_run_publish_records_preview_without_shopify_mutation() -> None:
+    publisher, client, jobs, campaigns = _publisher(publish_mode="dry_run_demo")
+
+    result = publisher.publish_campaign(CAMPAIGN_ID)
+
+    assert result.status == "succeeded"
+    assert result.action == "publish"
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "scheduled"
+    assert client.calls == []
+    assert jobs.created[-1]["request_payload"]["publish_mode"] == "dry_run_demo"
+    payload = result.response_payload
+    assert payload["mode"] == "dry_run_demo"
+    assert payload["live_shopify_mutation"] is False
+    assert [row["key"] for row in payload["theme_files"]] == ["sections/aijolot-banner-agent.liquid", "snippets/aijolot-banner-agent-block.liquid"]
+    assert payload["metafield"]["namespace"] == "aijolot"
+    assert payload["metafield"]["key"] == "banner_campaigns"
+    assert payload["metafield"]["config"][0]["campaign_id"] == CAMPAIGN_ID
+    assert payload["published_url"].endswith(f"aijolot_campaign={CAMPAIGN_ID}&dry_run=1")
 
 
 def test_unpublish_clears_config_and_records_job() -> None:
@@ -172,6 +193,31 @@ def test_unpublish_requires_published_or_scheduled_campaign() -> None:
 
     with pytest.raises(CampaignNotScheduled):
         publisher.unpublish_campaign(CAMPAIGN_ID)
+
+
+def test_dry_run_unpublish_fails_closed_without_shopify_mutation() -> None:
+    publisher, client, jobs, campaigns = _publisher(status="scheduled", publish_mode="dry_run_demo")
+
+    with pytest.raises(PublisherUnavailable, match="dry-run demo"):
+        publisher.unpublish_campaign(CAMPAIGN_ID)
+
+    assert client.calls == []
+    assert jobs.created == []
+    assert campaigns.rows[CAMPAIGN_ID]["status"] == "scheduled"
+
+
+def test_publish_requires_selected_revision_matching_schedule() -> None:
+    missing_selected, _, _, campaigns = _publisher(publish_mode="dry_run_demo")
+    campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] = None
+
+    with pytest.raises(CampaignRevisionNotFound):
+        missing_selected.publish_campaign(CAMPAIGN_ID)
+
+    mismatched, _, _, mismatched_campaigns = _publisher(publish_mode="dry_run_demo")
+    mismatched_campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] = "00000000-0000-0000-0000-000000000202"
+
+    with pytest.raises(CampaignRevisionNotFound):
+        mismatched.publish_campaign(CAMPAIGN_ID)
 
 
 def test_search_result_placement_returns_clear_unsupported_error() -> None:

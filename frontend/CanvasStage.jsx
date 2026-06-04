@@ -101,6 +101,7 @@ function CanvasStage({ campaign, tweaks, placement, art, generationArtifacts, on
   const [refineMsg, setRefineMsg] = useStateCV("");
   const [refineInput, setRefineInput] = useStateCV("");
   const [published, setPublished] = useStateCV(false);
+  const [publishedDryRun, setPublishedDryRun] = useStateCV(false);
   const [scheduled, setScheduled] = useStateCV(false);
   const stageRef = useRefCV(null);
   // Backend revision/thread context resolved on mount (fail-closed if absent).
@@ -374,6 +375,7 @@ function CanvasStage({ campaign, tweaks, placement, art, generationArtifacts, on
 
   async function publish() {
     setPublished(false);
+    setPublishedDryRun(false);
     if (!backendPublishReady) {
       onNotice && onNotice({ tone: "amber", text: publishGuardReason || "Publicación fail-closed: backend aún no acepta publicar." });
       return;
@@ -384,7 +386,10 @@ function CanvasStage({ campaign, tweaks, placement, art, generationArtifacts, on
       if (r.fallback) {
         onNotice && onNotice({ tone: "amber", text: `Publicación fail-closed: ${r.reason}` });
       } else {
-        onNotice && onNotice({ tone: "green", text: "Publicación aceptada por backend" });
+        const responsePayload = r.data && r.data.response_payload;
+        const isDryRun = !!(responsePayload && (responsePayload.live_shopify_mutation === false || responsePayload.mode === "dry_run_demo" || responsePayload.dry_run));
+        setPublishedDryRun(isDryRun);
+        onNotice && onNotice({ tone: isDryRun ? "cyan" : "green", text: isDryRun ? "Simulación de publicación / dry-run aceptada por backend. No hubo mutación live en Shopify." : "Publicación live confirmada por backend" });
         canAdvance = true;
       }
     } catch (e) {
@@ -595,6 +600,7 @@ function CanvasStage({ campaign, tweaks, placement, art, generationArtifacts, on
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
           <ApprovalPanel approvers={approvers} onSet={setApprover} published={published} mode={approvalMode} threadStatus={threadStatus} />
           <PublishPanel allApproved={allApproved} missing={missing} published={published} scheduled={scheduled}
+            dryRun={publishedDryRun}
             backendScheduleReady={!!backendScheduleReady} backendPublishReady={!!backendPublishReady}
             guardrailReason={backendPublishReady ? "" : (publishGuardReason || scheduleGuardReason)} scheduleGuardReason={scheduleGuardReason}
             publishGuardReason={publishGuardReason} approvalMode={approvalMode} backendStatus={backendCampaignStatus}

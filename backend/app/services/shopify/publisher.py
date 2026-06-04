@@ -16,6 +16,8 @@ from app.schemas.schedules import PublishJobResponse
 from app.services.shopify import metafields, theme_files
 from app.services.supabase.client import SupabaseClientFactory
 
+SUPPORTED_LIQUID_PLACEMENTS = {"home", "collection", "product", "page", "store"}
+
 
 class PublishError(Exception):
     pass
@@ -61,6 +63,7 @@ class ShopifyPublisher:
         placements: Any,
         publish_jobs: Any,
         team_id: str | None = None,
+        publish_mode: str = "live",
     ) -> None:
         self.client = client
         self.campaigns = campaigns
@@ -70,6 +73,7 @@ class ShopifyPublisher:
         self.placements = placements
         self.publish_jobs = publish_jobs
         self.team_id = team_id
+        self.publish_mode = publish_mode
 
     def install_theme_files(self, store_id: str) -> PublishJobResponse:
         """Install controlled theme files without creating invalid FK publish_jobs rows."""
@@ -94,10 +98,9 @@ class ShopifyPublisher:
         revision = self._revision_for_schedule(campaign, schedule)
         store = self._store(str(campaign["store_id"]))
         placement = self.placements.get_by_campaign_id(campaign_id=campaign_id) if self.placements else None
-        if placement and placement.get("target_type") == "search":
-            raise PublishUnsupported("search result placement publishing is not supported in the Shopify Liquid MVP")
+        self._validate_publish_payload(revision=revision, placement=placement)
         config = self._campaign_config(campaign=campaign, revision=revision, placement=placement, schedule=schedule)
-        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"], "config": config}
+        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"], "config": config, "publish_mode": self.publish_mode}
         job = self._create_job(
             campaign_id=campaign_id,
             revision_id=str(revision["id"]),
@@ -108,6 +111,10 @@ class ShopifyPublisher:
         )
         if job.get("status") == "succeeded":
             return PublishJobResponse.model_validate(job)
+        if self.publish_mode == "dry_run_demo":
+            return self._complete_dry_run_publish(job=job, campaign=campaign, revision=revision, schedule=schedule, store=store, placement=placement, config=config)
+        if self.publish_mode != "live":
+            raise PublisherUnavailable("publishing is disabled; set AIJOLOT_PUBLISH_MODE=dry_run_demo for the safe demo path")
         try:
             if store.get("theme_id"):
                 theme_files.install_theme_files(self.client, theme_id=str(store["theme_id"]))
@@ -125,7 +132,51 @@ class ShopifyPublisher:
             self.campaigns.update(campaign_id=campaign_id, data={"status": "failed"}, team_id=self.team_id)
             raise
 
+    def _complete_dry_run_publish(
+        self,
+        *,
+        job: dict[str, Any],
+        campaign: dict[str, Any],
+        revision: dict[str, Any],
+        schedule: dict[str, Any],
+        store: dict[str, Any],
+        placement: dict[str, Any] | None,
+        config: dict[str, Any],
+    ) -> PublishJobResponse:
+        namespace = str(store.get("banner_metafield_namespace") or "aijolot")
+        key = str(store.get("banner_metafield_key") or "banner_campaigns")
+        shop_domain = str(store.get("shop_domain") or "demo-shopify-store.invalid")
+        response = {
+            "mode": "dry_run_demo",
+            "dry_run": True,
+            "live_shopify_mutation": False,
+            "theme_files": [
+                {"key": theme_files.SECTION_KEY, "operation": "upsert", "theme_id": str(store.get("theme_id") or "demo-theme")},
+                {"key": theme_files.SNIPPET_KEY, "operation": "upsert", "theme_id": str(store.get("theme_id") or "demo-theme")},
+            ],
+            "metafield": {
+                "owner": "shop",
+                "namespace": namespace,
+                "key": key,
+                "type": "json",
+                "config": [config],
+            },
+            "published_url": f"https://{shop_domain}/?aijolot_campaign={campaign['id']}&dry_run=1",
+            "target": {
+                "store_id": str(store["id"]),
+                "shop_domain": shop_domain,
+                "placement": dict(placement or {}),
+                "schedule_id": str(schedule["id"]),
+                "revision_id": str(revision["id"]),
+            },
+        }
+        # Dry-run publish never marks the campaign live; the publish job response carries the demo result.
+        row = self.publish_jobs.update(job_id=job["id"], data={"status": "succeeded", "response_payload": response, "finished_at": _now()}) or {**job, "status": "succeeded", "response_payload": response}
+        return PublishJobResponse.model_validate(row)
+
     def unpublish_campaign(self, campaign_id: str) -> PublishJobResponse:
+        if self.publish_mode == "dry_run_demo":
+            raise PublisherUnavailable("dry-run demo publishing does not perform Shopify unpublish mutations")
         campaign = self._campaign(campaign_id)
         schedule = self.schedules.get_active_by_campaign_id(campaign_id=campaign_id) if self.schedules else None
         revision = self._revision_for_schedule(campaign, schedule) if schedule and schedule.get("status") in {"pending", "active"} else None
@@ -176,6 +227,16 @@ class ShopifyPublisher:
         )
         return base
 
+    def _validate_publish_payload(self, *, revision: dict[str, Any], placement: dict[str, Any] | None) -> None:
+        liquid_config = revision.get("liquid_config")
+        if not isinstance(liquid_config, dict) or not liquid_config:
+            raise PublishUnsupported("selected revision has no generated Liquid/metafield payload")
+        target_type = placement.get("target_type") if placement else "home"
+        if target_type == "search":
+            raise PublishUnsupported("search result placement publishing is not supported in the Shopify Liquid MVP")
+        if target_type not in SUPPORTED_LIQUID_PLACEMENTS:
+            raise PublishUnsupported(f"placement target '{target_type}' is not supported by the Shopify Liquid MVP")
+
     def _campaign(self, campaign_id: str) -> dict[str, Any]:
         campaign = self.campaigns.get(campaign_id=campaign_id, team_id=self.team_id)
         if not campaign:
@@ -189,8 +250,11 @@ class ShopifyPublisher:
         return schedule
 
     def _revision_for_schedule(self, campaign: dict[str, Any], schedule: dict[str, Any]) -> dict[str, Any]:
-        revision_id = schedule.get("revision_id") or campaign.get("selected_revision_id")
-        revision = self.revisions.get(revision_id=revision_id) if revision_id else None
+        selected_revision_id = campaign.get("selected_revision_id")
+        schedule_revision_id = schedule.get("revision_id")
+        if not selected_revision_id or str(schedule_revision_id) != str(selected_revision_id):
+            raise CampaignRevisionNotFound(str(campaign["id"]))
+        revision = self.revisions.get(revision_id=str(selected_revision_id))
         if not revision or str(revision.get("campaign_id")) != str(campaign["id"]):
             raise CampaignRevisionNotFound(str(campaign["id"]))
         return revision
@@ -236,13 +300,26 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
 
 
-def configured_publisher() -> ShopifyPublisher:
-    # Intentionally fail closed: Shopify publishing needs a request-scoped/decrypted token adapter.
+def configured_publisher(*, team_id: str | None = None) -> ShopifyPublisher:
     settings = Settings.from_env()
+    if settings.aijolot_publish_mode != "dry_run_demo":
+        raise PublisherUnavailable("publishing is disabled; set AIJOLOT_PUBLISH_MODE=dry_run_demo to enable safe demo dry-run publishing")
+    if not team_id:
+        raise PublisherUnavailable("dry-run demo publishing requires request team context")
     if not (settings.supabase_url and settings.supabase_service_role_key):
-        raise PublisherUnavailable("publishing endpoints require Supabase and an injected Shopify client adapter")
-    _ = SupabaseClientFactory(settings).service_role_client()
-    raise PublisherUnavailable("publishing endpoints require an injected Shopify client adapter; refusing to read or print Shopify secrets")
+        raise PublisherUnavailable("dry-run demo publishing requires Supabase persistence configuration")
+    client = SupabaseClientFactory(settings).service_role_client()
+    return ShopifyPublisher(
+        client=None,
+        campaigns=CampaignRepository(client),
+        revisions=CampaignRevisionRepository(client),
+        stores=StoreRepository(client),
+        schedules=ScheduleRepository(client),
+        placements=CampaignPlacementRepository(client),
+        publish_jobs=PublishJobRepository(client),
+        team_id=team_id,
+        publish_mode="dry_run_demo",
+    )
 
 
 __all__ = [

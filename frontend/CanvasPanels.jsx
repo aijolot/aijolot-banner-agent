@@ -267,7 +267,7 @@ function DateField({ label, value, onChange, disabled, align = "left" }) {
   );
 }
 
-function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow, onSchedule, onEditSchedule, onView,
+function PublishPanel({ allApproved, missing, published, scheduled, dryRun = false, onPublishNow, onSchedule, onEditSchedule, onView,
   backendScheduleReady = false, backendPublishReady = false, scheduleGuardReason = "", publishGuardReason = "",
   approvalMode = "local", backendStatus = "draft" }) {
   const [mode, setMode] = useStateCP("schedule");
@@ -280,7 +280,7 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
   const activeReason = mode === "now" ? publishGuardReason : (scheduleError || scheduleGuardReason);
   const primaryLabel = !activeReady
     ? (mode === "now" ? "Publicación backend no disponible" : "Programación bloqueada")
-    : mode === "now" ? "Publicar en backend" : "Programar publicación";
+    : mode === "now" ? "Simular publicación / dry-run" : "Programar publicación";
   const primaryIcon = activeReady ? (mode === "now" ? "rocket" : "calendar-check") : "lock";
 
   return (
@@ -289,7 +289,7 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
         <Icon name="calendar-clock" size={17} color="#0891B2" />
         <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 15, color: "#002B57" }}>Publicación y agenda</span>
         {scheduled && !published && <span style={{ marginLeft: "auto" }}><Badge tone="purple" icon="clock">Programada</Badge></span>}
-        {published && <span style={{ marginLeft: "auto" }}><Badge tone="green" icon="check">En vivo</Badge></span>}
+        {published && <span style={{ marginLeft: "auto" }}><Badge tone={dryRun ? "cyan" : "green"} icon="check">{dryRun ? "Dry-run" : "En vivo"}</Badge></span>}
       </div>
       {!published && !scheduled && (
         <div style={{ display: "flex", alignItems: "flex-start", gap: 7, padding: "9px 11px", borderRadius: 10, background: activeReady ? "rgba(16,185,129,0.08)" : "rgba(245,158,11,0.08)", border: `1px solid ${activeReady ? "rgba(16,185,129,0.25)" : "rgba(245,158,11,0.25)"}`, fontFamily: "Inter", fontSize: 11.5, color: activeReady ? "#16A34A" : "#B45309", lineHeight: 1.35 }}>
@@ -300,9 +300,9 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
 
       {published ? (
         <>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 13px", borderRadius: 10, background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)" }}>
-            <Icon name="check-circle-2" size={16} color="#10B981" />
-            <span style={{ fontFamily: "Inter", fontSize: 12.5, color: "#16A34A", fontWeight: 600 }}>Publicado en Shopify · ahora</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "11px 13px", borderRadius: 10, background: dryRun ? "rgba(34,211,238,0.1)" : "rgba(16,185,129,0.1)", border: `1px solid ${dryRun ? "rgba(34,211,238,0.3)" : "rgba(16,185,129,0.3)"}` }}>
+            <Icon name="check-circle-2" size={16} color={dryRun ? "#0891B2" : "#10B981"} />
+            <span style={{ fontFamily: "Inter", fontSize: 12.5, color: dryRun ? "#0891B2" : "#16A34A", fontWeight: 600 }}>{dryRun ? "Simulación de publicación / dry-run · sin mutación live Shopify" : "Publicado en Shopify · ahora"}</span>
           </div>
           <Button variant="secondary" icon="bar-chart-3" onClick={onView} style={{ justifyContent: "center" }}>Ver performance</Button>
         </>
@@ -335,7 +335,7 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
       ) : (
         <>
           <div style={{ display: "flex", gap: 3, background: "rgba(248,250,252,0.9)", borderRadius: 11, padding: 3 }}>
-            {[["now", backendPublishReady ? "Publicar ahora" : "Publicar no disponible", "rocket"], ["schedule", "Programar", "calendar"]].map(([id, label, ic]) => (
+            {[["now", backendPublishReady ? "Simular publicación" : "Publicar no disponible", "rocket"], ["schedule", "Programar", "calendar"]].map(([id, label, ic]) => (
               <button key={id} onClick={() => setMode(id)} style={{
                 flex: 1, display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 10px", borderRadius: 9, cursor: "pointer",
                 border: `1px solid ${mode === id ? "rgba(34,211,238,.5)" : "transparent"}`, background: mode === id ? "rgba(34,211,238,.14)" : "transparent",
@@ -365,7 +365,7 @@ function PublishPanel({ allApproved, missing, published, scheduled, onPublishNow
             {primaryLabel}
           </Button>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 6, fontFamily: "Inter", fontSize: 11, color: activeReady ? "#16A34A" : "#B45309" }}>
-            <Icon name={activeReady ? "shield-check" : "lock"} size={11} /> {activeReady ? "Backend aceptará la acción si el endpoint responde OK." : (activeReason || "Acción fail-closed: no se marcará como programada/publicada localmente.")}
+            <Icon name={activeReady ? "shield-check" : "lock"} size={11} /> {activeReady ? (mode === "now" ? "Backend realizará una simulación dry-run; no debe mutar Shopify live." : "Backend aceptará la acción si el endpoint responde OK.") : (activeReason || "Acción fail-closed: no se marcará como programada/publicada localmente.")}
           </div>
         </>
       )}
