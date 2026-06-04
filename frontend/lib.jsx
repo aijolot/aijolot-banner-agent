@@ -471,7 +471,7 @@ const ReviewApi = {
       const thread = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/approval/request`), {
         revision_id: revisionId || null,
         requested_by: AIJOLOT_DEMO_IDS.user,
-        reviewers: [AIJOLOT_DEMO_IDS.user],
+        reviewers: [{ user_id: AIJOLOT_DEMO_IDS.user, role_label: "designer" }],
       });
       return { ok: true, fallback: false, data: thread };
     } catch (e) {

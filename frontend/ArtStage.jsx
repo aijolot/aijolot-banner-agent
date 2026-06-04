@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, ModelBank, LayoutDiagram, layoutCells, FoldPreview,
-   SEGMENTS, CATALOG, HERO_STYLES, MODELS, CatalogApi, ArtDirectionApi, isApiCampaign, AIJOLOT_DEMO_IDS, errorText */
+   SEGMENTS, CATALOG, HERO_STYLES, MODELS, CatalogApi, ArtDirectionApi, BackgroundApi, ArtApi, isApiCampaign, AIJOLOT_DEMO_IDS, errorText */
 // Aijolot Banner Agent — Stage: Art direction (Concept→Product→Background→Assembly).
 const { useState: useStateAR, useEffect: useEffectAR } = React;
 
@@ -83,7 +83,55 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
   const [catalogSelect, setCatalogSelect] = useStateAR(null);
   const [hydrateNotice, setHydrateNotice] = useStateAR(null);
   const [saveState, setSaveState] = useStateAR("idle");
+  const [aiBg, setAiBg] = useStateAR({ loading: false, options: [], source: "", selected: null, error: "" });
+  const [artGen, setArtGen] = useStateAR({ loading: false, asset: null, source: "", prompt: "", error: "" });
   const set = (patch) => { setSaveState("dirty"); setArt((a) => ({ ...a, ...patch })); };
+  const canArtApi = typeof isApiCampaign === "function" && isApiCampaign(campaign) && typeof ArtApi !== "undefined";
+
+  async function generateBackgrounds() {
+    if (aiBg.loading) return;
+    if (!canArtApi || typeof BackgroundApi === "undefined") {
+      setAiBg((s) => ({ ...s, error: "Requiere campaña backend con revisión generada." }));
+      onNotice && onNotice({ tone: "amber", text: "Fondos AI requieren una campaña backend con revisión generada (corré Generar primero)." });
+      return;
+    }
+    setAiBg((s) => ({ ...s, loading: true, error: "" }));
+    const res = await BackgroundApi.generate(campaign, { count: 3 });
+    const options = (res && res.data && res.data.options) || [];
+    if (res && res.ok && !res.fallback && options.length) {
+      setAiBg({ loading: false, options, source: res.data.source || "deterministic", selected: options[0].name, error: "" });
+      onNotice && onNotice({ tone: "green", text: "Fondos AI generados (" + (res.data.source || "deterministic") + ")" });
+    } else {
+      setAiBg({ loading: false, options, source: "", selected: null, error: (res && res.reason) || "Sin opciones." });
+      onNotice && onNotice({ tone: "amber", text: (res && res.reason) || "No se pudieron generar fondos AI." });
+    }
+  }
+
+  async function generateArtImage() {
+    if (artGen.loading) return;
+    if (!canArtApi) {
+      onNotice && onNotice({ tone: "amber", text: "Generar imagen requiere una campaña backend con revisión generada." });
+      return;
+    }
+    setArtGen((s) => ({ ...s, loading: true, error: "" }));
+    const bgOption = aiBg.options.find((o) => o.name === aiBg.selected);
+    const shotType = art.bg === "hero" ? "hero" : "usage";
+    const subject = selectedItem ? `${selectedItem.title}${productMeta ? ", " + productMeta : ""}` : (campaign && campaign.title) || "producto destacado";
+    const res = await ArtApi.generateArt(campaign, {
+      prompt: subject,
+      shot_type: shotType,
+      background_ref: bgOption ? bgOption.name : null,
+      background_css: bgOption ? bgOption.css : null,
+    });
+    if (res && res.ok && !res.fallback && res.data) {
+      const asset = res.data.asset || (res.data.assets && res.data.assets[0]) || null;
+      setArtGen({ loading: false, asset, source: res.data.provider || "", prompt: res.data.prompt || subject, error: "" });
+      onNotice && onNotice({ tone: "green", text: "Imagen generada (" + (res.data.provider || "provider") + ") y adjunta a la revisión" });
+    } else {
+      setArtGen({ loading: false, asset: null, source: "", prompt: "", error: (res && res.reason) || "Falló." });
+      onNotice && onNotice({ tone: "amber", text: (res && res.reason) || "No se pudo generar la imagen." });
+    }
+  }
   const allModels = [...MODELS, ...createdModels];
   const selectedItem = catalog.items.find((item) => item.id === catalogSelect) || catalog.items[0] || catalogFallbackItems()[0];
   const previewSeg = selectedItem ? { ...seg, product: { ...seg.product, name: selectedItem.title, sku: selectedItem.sku || selectedItem.handle || selectedItem.id } } : seg;
@@ -251,6 +299,58 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
         </div>
       </GlassCard>
 
+      {/* F7/F8 — AI Studio: backgrounds + image generation against the backend */}
+      <GlassCard style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "Space Grotesk", fontSize: 13, fontWeight: 600, color: "#002B57" }}>
+            <Icon name="wand-sparkles" size={15} /> Estudio AI · Fondos y arte
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {aiBg.source ? <Badge tone={aiBg.source === "gemini" ? "purple" : "slate"}>Fondos {aiBg.source}</Badge> : null}
+            {artGen.source ? <Badge tone="green" icon="image">Imagen {artGen.source}</Badge> : null}
+            {!canArtApi ? <Badge tone="amber" icon="triangle-alert">Requiere revisión backend</Badge> : null}
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Button variant="secondary" icon="palette" onClick={generateBackgrounds} disabled={aiBg.loading}>
+            {aiBg.loading ? "Generando fondos…" : "Generar 3 fondos AI"}
+          </Button>
+          <Button variant="default" icon="sparkles" onClick={generateArtImage} disabled={artGen.loading}>
+            {artGen.loading ? "Generando imagen…" : `Generar imagen (${art.bg === "hero" ? "hero" : "usage"})`}
+          </Button>
+        </div>
+
+        {aiBg.options.length ? (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(180px,1fr))", gap: 8 }}>
+            {aiBg.options.map((o, i) => {
+              const scoped = String(o.css || "").split(".aijolot-banner").join(`.aijolot-bg-${i}`);
+              const on = aiBg.selected === o.name;
+              return (
+                <button key={i} onClick={() => setAiBg((s) => ({ ...s, selected: o.name }))} style={{ textAlign: "left", padding: 0, borderRadius: 11, overflow: "hidden", cursor: "pointer", border: "2px solid " + (on ? "#22D3EE" : "#EEF2F6"), background: "#fff" }}>
+                  <style dangerouslySetInnerHTML={{ __html: scoped }} />
+                  <div className={`aijolot-bg-${i}`} style={{ height: 56, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter", fontSize: 10, color: "rgba(255,255,255,.85)" }}>preview</div>
+                  <div style={{ padding: "7px 9px" }}>
+                    <div style={{ fontFamily: "Inter", fontSize: 12, fontWeight: 700, color: "#002B57", display: "flex", alignItems: "center", gap: 5 }}>{on ? <Icon name="check" size={12} color="#0891B2" /> : null}{o.name}</div>
+                    <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>{o.description}</div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+
+        {artGen.asset && (artGen.asset.public_url || artGen.asset.storage_path) ? (
+          <div style={{ display: "flex", gap: 12, alignItems: "center", padding: 10, borderRadius: 11, background: "rgba(248,250,252,0.8)", border: "1px solid #EEF2F6" }}>
+            <img src={artGen.asset.public_url || ""} alt="" style={{ width: 120, height: 68, objectFit: "cover", borderRadius: 8, background: "#0b1622", flexShrink: 0 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: "Inter", fontSize: 12, fontWeight: 600, color: "#002B57" }}>Imagen generada · {artGen.asset.format || "webp"} {artGen.asset.size_key || ""}px</div>
+              <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8", wordBreak: "break-all" }}>{artGen.prompt}</div>
+            </div>
+          </div>
+        ) : null}
+      </GlassCard>
+
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.5fr) minmax(320px,1fr)", gap: 16, alignItems: "start" }}>
         {/* preview */}
         <GlassCard style={{ padding: 18, display: "flex", flexDirection: "column", gap: 12 }}>
@@ -313,7 +413,7 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
                 ))}
               </div>
             ) : (
-              <ModelBank models={allModels} selected={art.model} onSelect={(id) => set({ model: id })} onCreate={createModel} localPresetNotice="Modelos: presets locales de UI (sin endpoint backend de banco/listado)." />
+              <ModelBank models={allModels} selected={art.model} onSelect={(id) => set({ model: id })} onCreate={createModel} campaign={campaign} onNotice={onNotice} />
             )}
           </LayerRow>
 
