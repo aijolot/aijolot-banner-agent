@@ -35,10 +35,6 @@ from app.workflows.banner_creation import (
     frontend_step_for_node,
 )
 
-# Nominal estimate for a single paid hero image generation (USD). Only reserved
-# against the cost guard when a *real* provider is selected.
-EST_IMAGE_USD = 0.04
-
 # Nodes this orchestrator actually executes (pre-HITL). The trailing review/
 # publish nodes are owned by the HITL + publisher flow (F10) and are not run
 # here; the run still reports `review_publish` as the terminal frontend step
@@ -324,42 +320,17 @@ class RunOrchestrator:
         )
 
     async def _generate_image(self, *, concept: Any, brand: Any, campaign_id: str) -> tuple[bytes, dict[str, Any], float]:
-        from app.agents.tools import nano_banana_image
-        from app.services.gemini.fake_image_provider import FakeImageProvider
-        from app.services.gemini.image_provider import ImageProviderUnavailable
+        from app.services.banners.image_gen import generate_image
 
         prompt_skill = _load_runtime_skill("image-prompt-refine")
         refined_prompt = await prompt_skill.run(concept, brand_context=brand)
-        image_skill = _load_runtime_skill("nano-banana-image-generate")
-
-        provider = nano_banana_image.select_provider(settings=self.settings)
-        is_real = type(provider).__name__ != "FakeImageProvider"
-        cost = 0.0
-        if is_real:
-            reservation = self.cost_guard.check_and_reserve(EST_IMAGE_USD)
-            if reservation.allowed:
-                cost = reservation.estimated_usd
-            else:
-                provider = FakeImageProvider()  # cost cap hit → free fallback
-                is_real = False
-
-        try:
-            result = await image_skill.run(
-                refined_prompt, concept=concept, campaign_id=campaign_id, provider=provider
-            )
-        except ImageProviderUnavailable:
-            # Real provider not usable (e.g. no GOOGLE_API_KEY): degrade to the
-            # free fake provider so the banner still renders. The run stays
-            # structurally real; only the hero pixels are a deterministic stub.
-            if not is_real:
-                raise
-            cost = 0.0
-            result = await image_skill.run(
-                refined_prompt, concept=concept, campaign_id=campaign_id, provider=FakeImageProvider()
-            )
-        meta = {k: v for k, v in result.items() if k != "image_bytes"}
-        meta["size_bytes"] = result.get("metadata", {}).get("size_bytes")
-        return result["image_bytes"], meta, cost
+        return await generate_image(
+            refined_prompt,
+            settings=self.settings,
+            cost_guard=self.cost_guard,
+            campaign_id=campaign_id,
+            concept=concept,
+        )
 
     async def _optimize_assets(
         self,
