@@ -43,6 +43,15 @@ class GenerationRunRepository:
             return dict(data[0]) if data else None
         return dict(data) if data else None
 
+    def update(self, *, run_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        payload = {key: value for key, value in data.items() if key in self.writable_columns}
+        if not payload:
+            return self.get(run_id=run_id)
+        out = execute_data(self.client.table(self.table_name).update(payload).eq("id", run_id).select(self.columns))
+        if isinstance(out, list):
+            return dict(out[0]) if out else None
+        return dict(out) if out else None
+
     def get_latest_by_campaign_id(self, *, campaign_id: str) -> dict[str, Any] | None:
         data = execute_data(
             self.client.table(self.table_name)

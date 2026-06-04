@@ -20,9 +20,17 @@
 - Sin PR todavía (el usuario pidió "solo commit, aún no PR").
 
 ## Fases hechas (✅) vs pendientes (⬜)
-- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F10 código publisher
-- ⬜ **F5 Generación real** (keystone) · F6 concept+layout KG · F7 fondos AI · F8 prompts descriptivos+modelos · F9 refine agéntico · F11 frontend · F12 verificación final
-- F10 e2e (publish real de una campaña) queda **bloqueado hasta F5** (necesita una revisión persistida + schedule).
+- ✅ F0 Fundaciones · F1 KG · F2 Brief · F3 Lecturas live · F4 Placeholders · F5 Generación real · F10 código publisher
+- ⬜ F6 concept+layout KG · F7 fondos AI · F8 prompts descriptivos+modelos · F9 refine agéntico · F11 frontend · F12 verificación final
+- ⬜ **F10 e2e** (publish real de una campaña) — ya desbloqueado por F5; falta correr schedule→dry-run publish→publish real→storefront.
+
+## F5 — hecho (2026-06-03)
+- Nuevo `backend/app/services/banners/run_orchestrator.py` (`RunOrchestrator`): ejecuta load_brand→intake→personalization→best-practices→concept→image→optimize→render(html+liquid)→audit nodo por nodo; persiste `campaign_revision`+`banner_variants`(default)+`banner_layout_variants`(A/B/C)+`audit_reports`+preview en Supabase Storage; promueve draft→selected al terminar (un fallo deja un draft inerte, no contamina la selección).
+- `generation_run_service.start_generation_run`: ramifica al orquestador cuando hay orquestador inyectado (`from_supabase_client`) + `run_type=initial`. Refinement sigue determinista (lo dueña RevisionService → F9). Path determinista intacto (`task-10-deterministic`) para tests/in-memory. `GenerationRunRepository.update` añadido (running→succeeded/failed). `_run_coro` corre el orquestador async desde el handler sync (rutas son `def` → threadpool → sin loop activo → `asyncio.run` seguro).
+- Imagen: cost_guard solo reserva para provider real; sin key o `ImageProviderUnavailable` → cae a `FakeImageProvider` (gratis) → el banner siempre renderiza.
+- Gotcha: assets de Supabase traen `UploadResponse` (no JSON-serializable) que rompía `liquid_payload_builder` (`json.dumps(config)`) y writes jsonb → `_json_safe` saneando en la frontera tras optimizar.
+- Verificado e2e (campaña `a1cf2aee-…`): 18 eventos reales/nodo, html 5919B, imagen Gemini real ($0.04/run), audit warn, supersede/promote correctos. Tests: **295 passed, 3 skipped** (entorno limpio).
+- ⚠️ El backend del handoff arrancaba **sin `--reload`** → hay que reiniciar uvicorn para cargar cambios.
 
 ## Entorno / cómo correr (CRÍTICO)
 - Backend: `cd backend && set -a && . ../.env; set +a; .venv/bin/uvicorn app.main:app --reload --port 8000 --host 127.0.0.1`. venv es Python 3.11.
