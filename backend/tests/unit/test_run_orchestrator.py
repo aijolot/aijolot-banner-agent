@@ -238,6 +238,35 @@ def test_concept_adapts_to_catalog_and_promo() -> None:
     assert "25% OFF" in copyd["cta"]
 
 
+def test_generates_one_banner_variant_per_personalization_variant() -> None:
+    campaigns = InMemoryCampaigns()
+    campaigns.rows[CAMPAIGN_ID]["structured_brief"]["personalization_variants"] = [
+        {"key": "male", "label": "Hombre", "audience": "hombres 18-30", "customer_tag": "gender:male"},
+        {"key": "female", "label": "Mujer", "audience": "mujeres 18-30", "customer_tag": "gender:female"},
+    ]
+    revisions = InMemoryRevisions()
+    variants = InMemoryVariants()
+    layouts = InMemoryLayoutVariants()
+    audits = InMemoryAuditReports()
+    orchestrator = RunOrchestrator(
+        revisions=revisions, variants=variants, layout_variants=layouts, audit_reports=audits,
+        campaigns=campaigns, asset_service=None, team_id="team-1",
+    )
+    service = GenerationRunService(
+        run_repository=InMemoryGenerationRunRepository(),
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns, orchestrator=orchestrator, team_id="team-1",
+    )
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+    assert run.status == "succeeded"
+    revision = next(iter(revisions.rows.values()))
+    rows = variants.list_by_revision_id(revision_id=revision["id"])
+    assert {r["segment_key"] for r in rows} == {"male", "female"}
+    assert {r["customer_tag"] for r in rows} == {"gender:male", "gender:female"}
+    assert all(r.get("headline") for r in rows)
+
+
 def test_orchestrator_failure_is_recorded_honestly() -> None:
     service, *_ = _build_service()
 

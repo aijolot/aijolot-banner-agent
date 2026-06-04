@@ -266,10 +266,10 @@ def _product_lines(catalog_context: Any) -> str:
     return "; ".join(titles)
 
 
-def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str) -> str:
+def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, audience_override: str = "") -> str:
     brief = _brief(campaign)
     goal = _get(brief, "goal", "")
-    audience = _get(brief, "audience", "")
+    audience = audience_override or _get(brief, "audience", "")
     tone = _get(brief, "tone", "") or ", ".join(brand_context.voice.tone)
     urgency = _get(brief, "urgency", "")
     cta = _get(brief, "cta", "")
@@ -292,7 +292,7 @@ def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_co
     )
 
 
-async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any) -> dict[str, str] | None:
+async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any, audience_override: str = "") -> dict[str, str] | None:
     if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
         return None
     try:
@@ -302,7 +302,7 @@ async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_co
         if not guard.check_and_reserve(EST_CONCEPT_COPY_USD).allowed:
             return None
         result = await gemini_text.generate(
-            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint),
+            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint, audience_override=audience_override),
             model=gemini_text.FLASH_MODEL,
             structured=_ConceptCopy,
         )
@@ -317,6 +317,41 @@ async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_co
         if value:
             out[key] = _truncate(value, limit)
     return out or None
+
+
+async def copy_for_audience(
+    *,
+    campaign: Any,
+    brand_context: BrandContext,
+    catalog_context: Any = None,
+    best_practices: list[dict[str, Any]] | None = None,
+    layout_hint: str = "",
+    audience: str,
+    settings: Any = None,
+    cost_guard: Any = None,
+) -> dict[str, str]:
+    """Variant-specific banner copy for one audience (F11 — N variants by tag).
+
+    Deterministic base (audience-overridden) refined by Gemini when available.
+    Returns {eyebrow, headline, subheadline, cta}.
+    """
+    brief = _brief(campaign)
+    overridden = {
+        "goal": _get(brief, "goal", ""), "audience": audience or _get(brief, "audience", ""),
+        "cta": _get(brief, "cta", ""), "tone": _get(brief, "tone", ""),
+        "urgency": _get(brief, "urgency", ""), "placement": _get(brief, "placement", ""),
+    }
+    base = draft_concept(campaign=overridden, brand_context=brand_context, best_practices=best_practices, catalog_context=catalog_context)
+    copy = {k: base.copy.get(k, "") for k in ("eyebrow", "headline", "subheadline", "cta")}
+    copy["eyebrow"] = copy.get("eyebrow") or (audience or "").upper()[:32]
+    gem = await _gemini_copy(
+        campaign=overridden, brand_context=brand_context, catalog_context=catalog_context,
+        best_practices=best_practices, layout_hint=layout_hint or base.layout,
+        settings=settings, cost_guard=cost_guard, audience_override=audience,
+    )
+    if gem:
+        copy.update({k: v for k, v in gem.items() if v})
+    return copy
 
 
 async def run(

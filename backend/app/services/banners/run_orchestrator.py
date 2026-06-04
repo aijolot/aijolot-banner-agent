@@ -214,7 +214,10 @@ class RunOrchestrator:
             )
             revision_id = str(revision["id"])
             layout_rows = self._create_layout_variants(revision_id, concept)
-            variant_rows = self._create_banner_variants(revision_id, concept, campaign_state)
+            variant_rows = await self._create_variant_banners(
+                revision_id=revision_id, concept=concept, campaign_state=campaign_state,
+                campaign_row=campaign_row, brand=brand, catalog_context=catalog_context, best_practices=best_practices,
+            )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
             # 6 — image (cost-gated; degrades to free fake provider)
@@ -295,6 +298,7 @@ class RunOrchestrator:
                     "facade_version": "f9-refine-orchestrator" if is_refine else "f5-run-orchestrator",
                     "image_provider": image_meta.get("provider"),
                     "audit_status": audit_report.status,
+                    "variants": len(variant_rows),
                     "refine_targets": sorted(target_set) if is_refine else None,
                 },
             )
@@ -536,22 +540,74 @@ class RunOrchestrator:
         ]
         return self.layout_variants.create_many(variants=rows)
 
-    def _create_banner_variants(self, revision_id: str, concept: Any, campaign: StateCampaign) -> list[dict[str, Any]]:
-        copy = concept.copy or {}
-        rows = [
-            {
-                "revision_id": revision_id,
-                "segment_key": "default",
-                "segment_label": "Default audience",
-                "audience_rule": {},
-                "eyebrow": copy.get("eyebrow") or copy.get("audience"),
-                "headline": copy.get("headline") or campaign.goal,
-                "subheadline": copy.get("subheadline"),
-                "cta_text": copy.get("cta") or campaign.cta,
-                "cta_url": "/collections/all",
-                "palette": dict(concept.palette_usage or {}),
-            }
-        ]
+    def _variant_specs(self, campaign_row: dict[str, Any], campaign: StateCampaign) -> list[dict[str, Any]]:
+        structured = campaign_row.get("structured_brief") or {}
+        if not isinstance(structured, dict):
+            structured = dict(getattr(structured, "model_dump", lambda: {})() or {})
+        raw = structured.get("personalization_variants") or []
+        specs: list[dict[str, Any]] = []
+        for entry in raw:
+            key = str((entry or {}).get("key") or "").strip()
+            if not key:
+                continue
+            specs.append(
+                {
+                    "key": key,
+                    "label": str(entry.get("label") or key.title()),
+                    "audience": str(entry.get("audience") or campaign.audience),
+                    "customer_tag": entry.get("customer_tag"),
+                }
+            )
+        if not specs:
+            specs = [{"key": "default", "label": "Default audience", "audience": campaign.audience, "customer_tag": None}]
+        return specs
+
+    async def _create_variant_banners(
+        self,
+        *,
+        revision_id: str,
+        concept: Any,
+        campaign_state: StateCampaign,
+        campaign_row: dict[str, Any],
+        brand: Any,
+        catalog_context: dict[str, Any] | None,
+        best_practices: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """One banner_variant per personalization variant, each with its own copy."""
+        specs = self._variant_specs(campaign_row, campaign_state)
+        concept_skill = _load_runtime_skill("banner-concept-draft")
+        base_copy = concept.copy or {}
+        rows: list[dict[str, Any]] = []
+        for index, spec in enumerate(specs):
+            if index == 0 and spec["audience"] == campaign_state.audience:
+                # Reuse the already-generated primary concept copy for the base variant.
+                copy = {k: base_copy.get(k) for k in ("eyebrow", "headline", "subheadline", "cta")}
+            else:
+                copy = await concept_skill.copy_for_audience(
+                    campaign=campaign_state,
+                    brand_context=brand,
+                    catalog_context=catalog_context,
+                    best_practices=best_practices,
+                    layout_hint=concept.layout,
+                    audience=spec["audience"],
+                    settings=self.settings,
+                    cost_guard=self.cost_guard,
+                )
+            rows.append(
+                {
+                    "revision_id": revision_id,
+                    "segment_key": spec["key"],
+                    "segment_label": spec["label"],
+                    "customer_tag": spec.get("customer_tag"),
+                    "audience_rule": {"audience": spec["audience"], "tag": spec.get("customer_tag")},
+                    "eyebrow": copy.get("eyebrow") or spec["label"],
+                    "headline": copy.get("headline") or campaign_state.goal,
+                    "subheadline": copy.get("subheadline"),
+                    "cta_text": copy.get("cta") or campaign_state.cta,
+                    "cta_url": "/collections/all",
+                    "palette": dict(concept.palette_usage or {}),
+                }
+            )
         return self.variants.create_many(variants=_json_safe(rows))
 
     def _liquid_config(self, concept: Any, liquid_section: str, placement: str) -> dict[str, Any]:
