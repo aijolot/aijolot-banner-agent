@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, ModelBank, LayoutDiagram, layoutCells, FoldPreview,
-   SEGMENTS, CATALOG, HERO_STYLES, MODELS, CatalogApi, ArtDirectionApi, BackgroundApi, ArtApi, isApiCampaign, AIJOLOT_DEMO_IDS, errorText */
+   SEGMENTS, CATALOG, HERO_STYLES, MODELS, CatalogApi, ArtDirectionApi, BackgroundApi, ArtApi, GenerationApi, isApiCampaign, AIJOLOT_DEMO_IDS, errorText */
 // Aijolot Banner Agent — Stage: Art direction (Concept→Product→Background→Assembly).
 const { useState: useStateAR, useEffect: useEffectAR } = React;
 
@@ -85,8 +85,10 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
   const [saveState, setSaveState] = useStateAR("idle");
   const [aiBg, setAiBg] = useStateAR({ loading: false, options: [], source: "", selected: null, error: "" });
   const [artGen, setArtGen] = useStateAR({ loading: false, asset: null, source: "", prompt: "", error: "" });
+  const [liveConcept, setLiveConcept] = useStateAR(null);
   const set = (patch) => { setSaveState("dirty"); setArt((a) => ({ ...a, ...patch })); };
   const canArtApi = typeof isApiCampaign === "function" && isApiCampaign(campaign) && typeof ArtApi !== "undefined";
+  const brief = (campaign && campaign.structured_brief) || {};
 
   async function generateBackgrounds() {
     if (aiBg.loading) return;
@@ -136,6 +138,20 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
   const selectedItem = catalog.items.find((item) => item.id === catalogSelect) || catalog.items[0] || catalogFallbackItems()[0];
   const previewSeg = selectedItem ? { ...seg, product: { ...seg.product, name: selectedItem.title, sku: selectedItem.sku || selectedItem.handle || selectedItem.id } } : seg;
   const productMeta = selectedItem ? [selectedItem.sku, selectedItem.vendor, selectedItem.handle].filter(Boolean).join(" · ") : "";
+  // Real preview model: concept copy + chosen AI background + generated image +
+  // selected product. Falls back to the demo segment only when none exist yet.
+  const liveCopy = (liveConcept && liveConcept.copy) || {};
+  const selectedBgOption = aiBg.options.find((o) => o.name === aiBg.selected) || null;
+  const live = (liveConcept || selectedBgOption || (artGen.asset && artGen.asset.public_url)) ? {
+    headline: liveCopy.headline || brief.goal || null,
+    eyebrow: String(liveCopy.eyebrow || liveCopy.audience || brief.audience || "").toUpperCase().slice(0, 40) || null,
+    sub: liveCopy.subheadline || null,
+    promo: liveCopy.cta || brief.cta || null,
+    bgCss: selectedBgOption ? String(selectedBgOption.css || "").split(".aijolot-banner").join(".aijolot-livebg") : null,
+    scopeClass: selectedBgOption ? "aijolot-livebg" : null,
+    imageUrl: (artGen.asset && artGen.asset.public_url) || null,
+    ink: "#ffffff",
+  } : null;
 
   useEffectAR(() => {
     let cancelled = false;
@@ -191,6 +207,15 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
           onNotice && onNotice({ tone: "amber", text: reason });
         }
       }
+
+      try {
+        if (typeof GenerationApi !== "undefined" && GenerationApi.latestRevision) {
+          const rev = await GenerationApi.latestRevision(campaign);
+          if (!cancelled && rev && !rev.fallback && rev.data && rev.data.concept) {
+            setLiveConcept(rev.data.concept);
+          }
+        }
+      } catch (_e) { /* concept is optional for the preview */ }
 
       try {
         const saved = await ArtDirectionApi.get(campaign);
@@ -357,7 +382,16 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
           <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "Space Grotesk", fontSize: 12.5, color: "#94A3B8" }}>
             <Icon name="eye" size={14} /> Vista de composición · {art.bg === "hero" ? "Hero shot" : "Usage shot"}{cells > 1 ? ` · ${layout.cols.length} col / ${cells} celdas` : ""}
           </div>
-          <FoldPreview art={art} layout={layout} seg={previewSeg} allModels={allModels} />
+          <FoldPreview art={art} layout={layout} seg={previewSeg} allModels={allModels} live={live} />
+          {live ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: "Inter", fontSize: 11, color: "#16A34A", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 9, padding: "6px 9px" }}>
+              <Icon name="check" size={12} /> Vista real: {liveConcept ? "copy del concepto backend" : "borrador"}{selectedBgOption ? " · fondo AI elegido" : ""}{artGen.asset ? " · imagen generada" : ""}{selectedItem ? " · " + selectedItem.title : ""}
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "center", gap: 7, fontFamily: "Inter", fontSize: 11, color: "#B45309", background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 9, padding: "6px 9px" }}>
+              <Icon name="info" size={12} /> Vista demo (sin revisión backend aún): generá el banner para ver copy/fondo/imagen reales.
+            </div>
+          )}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             <Badge tone="slate" icon="image">{art.bg === "hero" ? "Fondo Hero generado" : "Fondo Usage + modelo"}</Badge>
             <Badge tone="slate" icon="fold-vertical">{art.fold}% sobre el pliegue</Badge>

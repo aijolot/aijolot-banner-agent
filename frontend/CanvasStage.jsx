@@ -172,6 +172,23 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   }, [campaign && campaign.id]);
 
   const seg = SEGMENTS[segId];
+  // Real banner data from the persisted backend revision: concept copy, the
+  // generated image, and the attached AI background. Null → demo fallback.
+  const liveConcept = revisionMode === "backend" && revision && revision.concept ? revision.concept : null;
+  const liveCopy = (liveConcept && liveConcept.copy) || {};
+  const liveGenArt = (liveConcept && liveConcept.generated_art) || [];
+  const liveLastArt = liveGenArt.length ? liveGenArt[liveGenArt.length - 1] : null;
+  const liveBgObj = liveConcept && liveConcept.background;
+  const live = liveConcept ? {
+    eyebrow: String(liveCopy.eyebrow || liveCopy.audience || "").toUpperCase().slice(0, 40) || null,
+    headline: liveCopy.headline || null,
+    sub: liveCopy.subheadline || null,
+    cta: liveCopy.cta || null,
+    promo: liveCopy.cta || null,
+    brandName: "",
+    imageUrl: (liveLastArt && liveLastArt.public_url) || null,
+    bgCss: (liveBgObj && liveBgObj.css) || null,
+  } : null;
   const approvedCount = approvers.filter((a) => a.status === "approved").length;
   const allApproved = approvedCount === approvers.length;
   const missing = approvers.length - approvedCount;
@@ -435,11 +452,11 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                 {cellCount > 1 ? (
                   <BannerLayout layout={gridLayout} gap={12} cell={(i) => (
                     <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={tweaks.bannerFont} accent={bannerAccent}
-                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} />
+                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} live={live} />
                   )} />
                 ) : (
                   <Banner seg={seg} variant={layoutVariant} slot font={tweaks.bannerFont} accent={bannerAccent}
-                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} />
+                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} live={live} />
                 )}
 
                 {/* refine shimmer overlay */}
