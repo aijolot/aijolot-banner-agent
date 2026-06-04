@@ -163,13 +163,23 @@ class ShopifyPublisher:
             raise
 
     def _campaign_config(self, *, campaign: dict[str, Any], revision: dict[str, Any], placement: dict[str, Any] | None, schedule: dict[str, Any]) -> dict[str, Any]:
+        from app.services.shopify.theme_files import ANCHOR_BY_PLACEMENT_KEY
+
         base = dict(revision.get("liquid_config") or {})
+        placement_config = dict(placement or {})
+        # Resolve the theme anchor key so the placement-aware snippets filter this
+        # campaign to the right spot. Controlled enum string (safe in Liquid).
+        if placement_config and not placement_config.get("anchor"):
+            key = placement_config.get("placement_type_key")
+            anchor = ANCHOR_BY_PLACEMENT_KEY.get(str(key)) if key else None
+            if anchor:
+                placement_config["anchor"] = anchor
         base.update(
             {
                 "campaign_id": str(campaign["id"]),
                 "revision_id": str(revision["id"]),
                 "title": campaign.get("title"),
-                "placement": dict(placement or {}),
+                "placement": placement_config,
                 "active_from": schedule.get("starts_at"),
                 "active_until": schedule.get("ends_at"),
             }

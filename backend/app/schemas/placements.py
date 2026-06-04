@@ -22,6 +22,7 @@ class PlacementTypeSummary(BaseModel):
     supported_slots: list[dict[str, Any]] = Field(default_factory=list)
     default_dimensions: dict[str, Any] = Field(default_factory=dict)
     config_schema: dict[str, Any] = Field(default_factory=dict)
+    anchor_key: str | None = None
     is_active: bool = True
 
 
