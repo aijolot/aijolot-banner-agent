@@ -62,11 +62,20 @@ async function api(path, init = {}) {
   return body;
 }
 
+const FAIL_CLOSED_STATUSES = new Set([404, 409, 422, 503]);
+
+function assertFailClosed(label, err) {
+  if (!FAIL_CLOSED_STATUSES.has(err.status)) {
+    throw new Error(`${label} returned non-fail-closed error ${err.status || "unknown"}: ${err.message}`);
+  }
+}
+
 async function expectFailure(label, fn) {
   try {
     await fn();
   } catch (err) {
-    console.log(`ok: ${label} failed closed with ${err.status || "error"}`);
+    assertFailClosed(label, err);
+    console.log(`ok: ${label} failed closed with ${err.status}`);
     return err;
   }
   throw new Error(`${label} unexpectedly succeeded; deterministic demo should fail closed unless real provider/state is configured`);
@@ -143,55 +152,69 @@ async function main() {
   console.log("ok: catalog snapshot and art direction");
 
   let revisions = [];
-  try {
-    const run = await api(`/campaigns/${campaign.id}/generation-runs`, { method: "POST", body: JSON.stringify({ metadata: { source: "frontend-smoke" } }) });
-    await api(`/campaigns/${campaign.id}/generation-runs/latest`);
-    await api(`/generation-runs/${run.id}`);
-    const generationEvents = await api(`/generation-runs/${run.id}/events`);
-    if (!generationEvents.some((event) => event.node_key === "research_best_practices")) throw new Error("KG/research event missing");
-    let previewOk = false;
-    let previewHtml = "";
-    try {
-      previewHtml = await fetch(apiUrl(`/campaigns/${campaign.id}/preview`), { headers: { ...demoAuthHeaders, Accept: "text/html" } }).then((r) => { if (!r.ok) throw Object.assign(new Error(`preview failed ${r.status}`), { status: r.status }); return r.text(); });
-      if (!/<[a-z][\s\S]*>/i.test(previewHtml) || !previewHtml.includes("aijolot-banner")) throw new Error("preview returned non-banner HTML");
-      previewOk = true;
-    } catch (err) {
-      console.log(`ok: preview unavailable/fail-closed in local fallback: ${err.status || err.message}`);
-    }
-    let auditOk = false;
-    let audit = null;
-    try {
-      audit = await api(`/campaigns/${campaign.id}/audit-report`);
-      if (!audit || typeof audit !== "object" || !(audit.status || audit.runtime_status || audit.schema_report)) throw new Error("audit returned invalid report");
-      auditOk = true;
-    } catch (err) {
-      console.log(`ok: audit unavailable/fail-closed in local fallback: ${err.status || err.message}`);
-    }
-    try {
-      revisions = await api(`/campaigns/${campaign.id}/revisions`);
-    } catch (err) {
-      console.log(`ok: revisions unavailable/fail-closed in local fallback: ${err.status || err.message}`);
-    }
-    if (revisions.length) {
-      if (!previewOk) throw new Error("backend revisions exist but preview route did not return HTML");
-      if (!auditOk) throw new Error("backend revisions exist but audit route did not return a report");
-      if (!revisions.some((revision) => revision.html_preview || revision.preview_storage_path)) throw new Error("backend revisions exist but no preview artifact is exposed");
-    }
-    console.log(`ok: generation/events/KG/preview/audit/revisions (${generationEvents.length} events, preview=${previewOk}, audit=${auditOk}, ${revisions.length} revisions)`);
-  } catch (err) {
-    console.log(`ok: generation start/events failed closed and must be surfaced by frontend: ${err.status || err.message}`);
+  const run = await api(`/campaigns/${campaign.id}/generation-runs`, { method: "POST", body: JSON.stringify({ metadata: { source: "frontend-smoke" } }) });
+  if (!run || !UUID_RE.test(run.id) || !["queued", "running", "succeeded", "completed"].includes(run.status)) {
+    throw new Error(`generation did not return a valid run: ${JSON.stringify(run)}`);
   }
+  await api(`/campaigns/${campaign.id}/generation-runs/latest`);
+  await api(`/generation-runs/${run.id}`);
+  const generationEvents = await api(`/generation-runs/${run.id}/events`);
+  const eventKeys = generationEvents.map((event) => event.node_key || "");
+  if (!generationEvents.length) throw new Error("generation events empty");
+  if (!eventKeys.some((key) => /research|kg|knowledge|context/i.test(key))) throw new Error(`KG/research event missing: ${eventKeys.join(", ")}`);
+  let previewOk = false;
+  let previewHtml = "";
+  try {
+    const response = await fetch(apiUrl(`/campaigns/${campaign.id}/preview`), { headers: { ...demoAuthHeaders, Accept: "text/html" } });
+    if (!response.ok) {
+      const err = Object.assign(new Error(`preview failed ${response.status}`), { status: response.status });
+      throw err;
+    }
+    previewHtml = await response.text();
+    if (!/<[a-z][\s\S]*>/i.test(previewHtml) || !previewHtml.includes("aijolot-banner")) throw new Error("preview returned non-banner HTML from a 200 response");
+    previewOk = true;
+  } catch (err) {
+    if (!err.status) throw err;
+    assertFailClosed("preview", err);
+    console.log(`ok: preview unavailable/fail-closed in local fallback: ${err.status}`);
+  }
+  let auditOk = false;
+  let audit = null;
+  try {
+    audit = await api(`/campaigns/${campaign.id}/audit-report`);
+    if (!audit || typeof audit !== "object" || !(audit.status || audit.runtime_status || audit.schema_report)) throw new Error("audit returned invalid report from a 200 response");
+    auditOk = true;
+  } catch (err) {
+    if (!err.status) throw err;
+    assertFailClosed("audit", err);
+    console.log(`ok: audit unavailable/fail-closed in local fallback: ${err.status}`);
+  }
+  try {
+    revisions = await api(`/campaigns/${campaign.id}/revisions`);
+  } catch (err) {
+    assertFailClosed("revisions", err);
+    console.log(`ok: revisions unavailable/fail-closed in local fallback: ${err.status}`);
+  }
+  if (revisions.length) {
+    if (!previewOk) throw new Error("backend revisions exist but preview route did not return HTML");
+    if (!auditOk) throw new Error("backend revisions exist but audit route did not return a report");
+    if (!revisions.some((revision) => revision.html_preview || revision.preview_storage_path)) throw new Error("backend revisions exist but no preview artifact is exposed");
+  } else if (previewOk || auditOk) {
+    throw new Error("preview/audit loaded but revisions endpoint returned no persisted revisions; persistence contract is inconsistent");
+  }
+  console.log(`ok: generation/events/KG/preview/audit/revisions (${generationEvents.length} events, preview=${previewOk}, audit=${auditOk}, ${revisions.length} revisions)`);
 
   // Newly-wired stage interactions. Each of these is best-effort in the local
   // no-Supabase demo: they either succeed against the request-scoped fallback or
-  // fail closed with 503/404. The frontend surfaces both honestly, so the smoke
-  // script accepts either outcome but asserts the call shape is correct.
+  // fail closed with 404/409/422/503. The frontend surfaces both honestly, so
+  // the smoke script accepts either outcome but rejects auth/server regressions.
   async function attempt(label, fn) {
     try {
       await fn();
       console.log(`ok: ${label} succeeded against backend`);
     } catch (err) {
-      console.log(`ok: ${label} failed closed with ${err.status || "error"}`);
+      assertFailClosed(label, err);
+      console.log(`ok: ${label} failed closed with ${err.status}`);
     }
   }
 
@@ -248,7 +271,8 @@ async function main() {
     if (perf.live_analytics) throw new Error("deterministic demo unexpectedly reported live analytics");
     console.log(`ok: performance loaded with non-live label: ${label}`);
   } catch (err) {
-    console.log(`ok: performance unavailable/fail-closed in local fallback: ${err.status || err.message}`);
+    assertFailClosed("performance", err);
+    console.log(`ok: performance unavailable/fail-closed in local fallback: ${err.status}`);
   }
 
   console.log("frontend-backend connection smoke passed");

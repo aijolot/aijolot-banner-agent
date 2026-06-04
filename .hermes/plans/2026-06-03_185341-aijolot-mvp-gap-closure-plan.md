@@ -586,6 +586,10 @@ Coordinator note: Implemented by fresh subagent and passed review after coordina
 
 **Commit:** `test: add mvp demo smoke coverage`
 
+**Progress:** [x] Completed 2026-06-03
+
+Coordinator note: Implemented by fresh subagent and passed review after coordinator fixes. Changed `scripts/smoke-frontend-backend-connection.mjs`, created `scripts/smoke-frontend-ui.mjs`, updated `docs/architecture/frontend-backend-contract.md`, and created `docs/demo/mvp-showcase-runbook.md`. Endpoint smoke now requires a valid generation run, non-empty generation events, KG/research context, and consistent preview/audit/revision persistence semantics: invalid 200 preview/audit responses fail the smoke, persisted revisions require preview and audit, and persistence-only optional routes must either succeed or fail closed with 404/409/422/503. UI static smoke checks demo-critical frontend labels/guardrails for API path/auth, resume/create routing, backend/fallback labels, generation fail-closed states, backend creative vs local fallback, approval/schedule/publish dry-run guardrails, and non-live performance labels. Runbook includes exact setup/smoke/backend/frontend/browser commands and provider truth table. Validation: `git diff --check`, `node scripts/smoke-frontend-ui.mjs`, `python3 scripts/smoke-demo-flow.py`, `node scripts/smoke-frontend-backend-connection.mjs`, and backend API tests passed (110 passed, 1 existing warning); final reviewer approved.
+
 ---
 
 ## Phase 9: Optional Post-Critical Enhancements Only If Time Remains

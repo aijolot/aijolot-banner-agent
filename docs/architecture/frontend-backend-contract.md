@@ -204,7 +204,28 @@ For frontend-facing endpoint wiring against a running backend, use:
 node scripts/smoke-frontend-backend-connection.mjs
 ```
 
-This script uses the same `/api/v1` base/auth/path-normalization rules as the static frontend and verifies intake streaming, UUID campaign handoff, placement, catalog/art direction, generation events/KG context, fail-closed schedule/publish, and non-live performance labels. Preview, audit, and revisions are attempted and reported as either loaded or visibly fail-closed in the no-Supabase local fallback. It also exercises the newly-wired stage interactions — variant selection, regenerate/refinement, approval-thread request/comment/approve, performance snapshot, and the V2 optimization proposal — accepting either backend success or a fail-closed `503`/`404`/`422` as correct for the deterministic local demo.
+This script uses the same `/api/v1` base/auth/path-normalization rules as the static frontend and verifies intake streaming, UUID campaign handoff, placement, catalog/art direction, generation success, generation events/KG context, preview/audit/revision consistency, fail-closed schedule/publish, and non-live performance labels. If persistence is configured and revisions exist, preview HTML and audit report must also exist; without persistence, preview/audit/revisions must fail closed rather than returning inconsistent partial state. It also exercises the newly-wired stage interactions — variant selection, regenerate/refinement, approval-thread request/comment/approve, performance snapshot, and the V2 optimization proposal — accepting either backend success or a fail-closed `503`/`404`/`409`/`422` as correct for optional persistence/approval/publish paths in the deterministic local demo.
+
+For browser-free UI regression confidence, use:
+
+```bash
+node scripts/smoke-frontend-ui.mjs
+```
+
+This is a source-level smoke (no browser, no network). It asserts the static frontend still contains demo-critical labels and guardrails for resume/create routing, `/api/v1` demo auth/path normalization, backend/fallback campaign labels, intake fallback, placement validation, generation fail-closed states, backend creative vs local canvas fallback, approval/local-prototype labels, schedule/publish guardrails, dry-run Shopify labels, and non-live performance labels.
+
+For the final showcase checklist and command sequence, see `docs/demo/mvp-showcase-runbook.md`.
+
+## Provider truth table
+
+| Area | MVP default | Provider-backed mode | Frontend/demo label rule |
+| --- | --- | --- | --- |
+| Agent skills | Deterministic local skill pipeline/fallback for smoke. | ADK/Gemini orchestration only when backend is intentionally configured. | Do not claim live model generation unless generation events/artifacts prove it. |
+| Image/art provider | Fake/deterministic artifacts or local fallback. | Gemini/image provider if configured outside the smoke path. | Fallback art must stay visibly local/prototype. |
+| KG/research | Static KG/best-practices retrieval is sufficient. | Vector/pgvector KG when Supabase/vector seed is configured and event output proves it. | Show static/vector provenance through generation events, not a direct frontend KG query. |
+| Persistence | Local fallback/TestClient for deterministic smoke; fail-closed for persistence-only browser routes. | Local Supabase with migrations/seed. | If revisions exist, preview/audit must exist; if not configured, UI shows fail-closed/fallback. |
+| Shopify | Dry-run/fail-closed publisher. | Live test-store mutation only with explicit safe config and manual rollback. | Default publish label is dry-run/no live mutation or fail-closed. |
+| Performance | Manual/mock/seed/agent non-live metrics. | Live analytics only if separately implemented/configured. | Always show `no-live` unless live analytics are verified. |
 
 ## Newly-wired stage interactions
 
