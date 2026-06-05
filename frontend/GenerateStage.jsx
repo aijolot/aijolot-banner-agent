@@ -296,9 +296,13 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
         let run = r.data;
         setBackendRun(run);
         setGenerationStatus(run && run.status === "succeeded" ? "succeeded" : run && FAILED_STATUSES.includes(run.status) ? "failed" : "running");
-        onNotice && onNotice({ tone: "green", text: "Generación iniciada en backend" });
+        onNotice && onNotice({ tone: "green", text: "Generación iniciada en backend · suele tardar 2-3 min (compone el hero, art-direction y auto-revisa en 3 breakpoints)" });
 
-        for (let attempt = 0; alive && attempt < 20; attempt += 1) {
+        // Generation does heavy real work (per-variant Nano Banana hero composition,
+        // art-direction, headline styling, and the screenshot self-review loop) — it
+        // routinely takes 2-3 min. Poll generously (~6 min) so we wait for the real
+        // terminal status instead of giving up while the run is still "running".
+        for (let attempt = 0; alive && attempt < 150; attempt += 1) {
           try {
             const events = await GenerationApi.events(run.id);
             if (!alive) return;
@@ -330,7 +334,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
           }
 
           if (run && TERMINAL_RUN_STATUSES.includes(run.status)) break;
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+          await new Promise((resolve) => setTimeout(resolve, 2500));
         }
 
         if (!alive) return;
