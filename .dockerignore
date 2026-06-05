@@ -1,0 +1,42 @@
+# Keep the build context small and never ship secrets or local caches.
+
+# Secrets & local env
+.env
+.env.*
+!.env.example
+
+# VCS / CI
+.git/
+.github/
+.hermes/
+
+# Python caches & local venvs
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.venv/
+**/venv/
+**/*.egg-info/
+
+# Node (none in repo today, but guard against it)
+**/node_modules/
+**/dist/
+**/build/
+
+# Tests are not needed in the runtime image
+backend/tests/
+
+# Local runtime artifacts & generated media
+storage/
+tmp/
+demo/.runtime/
+.aijolot-demo-smoke.json
+
+# Docs / notes / editor
+docs/
+obsidian/
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,94 @@
+name: Deploy to Cloud Run
+
+# Builds the single-container image (FastAPI backend + static frontend),
+# pushes it to Artifact Registry, and deploys it to Cloud Run. Authenticates
+# to GCP with Workload Identity Federation (keyless — no long-lived SA key).
+#
+# Required GitHub repo VARIABLES (Settings -> Secrets and variables -> Actions -> Variables):
+#   GCP_PROJECT_ID        e.g. aijolot-banner-agent
+#   GCP_PROJECT_NUMBER    numeric project number
+#   GCP_REGION            e.g. us-central1
+#   GCP_ARTIFACT_REPO     e.g. containers
+#   CLOUD_RUN_SERVICE     e.g. banner-agent
+#   GCP_WIF_PROVIDER      full provider resource name:
+#                         projects/<NUM>/locations/global/workloadIdentityPools/<POOL>/providers/<PROVIDER>
+#   GCP_DEPLOY_SA         deploy service account email (does the deploy):
+#                         github-deployer@<PROJECT_ID>.iam.gserviceaccount.com
+#   GCP_RUNTIME_SA        Cloud Run runtime service account (least-privilege):
+#                         banner-agent-runtime@<PROJECT_ID>.iam.gserviceaccount.com
+#   RUNTIME_ENV_SECRET    Secret Manager secret holding the runtime .env, e.g. banner-agent-runtime-env
+#
+# No GitHub secrets are needed — runtime config lives in Secret Manager.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+# WIF needs an OIDC token; only read the repo contents.
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-cloud-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/${{ vars.GCP_ARTIFACT_REPO }}/${{ vars.CLOUD_RUN_SERVICE }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ vars.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - name: Build image
+        run: |
+          docker build \
+            --tag "$IMAGE:${{ github.sha }}" \
+            --tag "$IMAGE:latest" \
+            .
+
+      - name: Push image
+        run: |
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
+
+      - name: Deploy to Cloud Run
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ vars.CLOUD_RUN_SERVICE }}
+          region: ${{ vars.GCP_REGION }}
+          image: ${{ env.IMAGE }}:${{ github.sha }}
+          flags: >-
+            --port=8080
+            --cpu=2
+            --memory=2Gi
+            --timeout=600
+            --concurrency=20
+            --min-instances=0
+            --max-instances=4
+            --allow-unauthenticated
+            --service-account=${{ vars.GCP_RUNTIME_SA }}
+            --set-secrets=/secrets/app.env=${{ vars.RUNTIME_ENV_SECRET }}:latest
+
+      - name: Show service URL
+        run: |
+          gcloud run services describe "${{ vars.CLOUD_RUN_SERVICE }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --format 'value(status.url)'
