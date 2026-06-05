@@ -152,10 +152,10 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
           setThreadId(thread.id || thread.thread_id);
           setThreadStatus(thread.status || null);
           setApprovalMode("backend");
-          const backendApprovers = mapBackendApprovers(thread);
-          const backendComments = mapBackendComments(thread);
-          if (backendApprovers) setApprovers(backendApprovers);
-          if (backendComments) setComments(backendComments);
+          // Real thread → show ONLY real data. No backend reviewers/comments means an
+          // empty panel, not the demo seeds (Mara Voss / Diego Salas would be fake here).
+          setApprovers(mapBackendApprovers(thread) || []);
+          setComments(mapBackendComments(thread) || []);
           onNotice && onNotice({ tone: "green", text: "Hilo de aprobación backend cargado" });
         } else {
           setApprovalMode("local");
@@ -358,16 +358,24 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     const backend = GenerationApi.bannerEdit(campaign, text, null, revision && revision.id)
       .catch((e) => ({ ok: true, fallback: true, reason: "Backend no aceptó la edición (" + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) + ").", data: null }));
     setTimeout(async () => {
+      // Optimistic shim for responsiveness — but snapshot prior state so we can roll
+      // back if the backend edit doesn't actually land (no false "applied" success).
+      const prevApplied = applied;
+      let prevComments = null;
       const next = { ...applied };
       if (/bril|luz|clar|ilumin/.test(t)) next.brighter = true;
       if (/bot|cta|contrast|resalt/.test(t)) next.ctaContrast = true;
       if (/oscur|sobrio/.test(t)) next.brighter = false;
       setApplied(next);
-      setComments((arr) => arr.map((c) => {
-        const ct = c.text.toLowerCase();
-        if (!c.resolved && ((/bril|luz/.test(t) && /bril|luz/.test(ct)) || (/bot|cta|contrast|resalt/.test(t) && /bot|cta|contrast|resalt/.test(ct)))) return { ...c, resolved: true };
-        return c;
-      }));
+      setComments((arr) => {
+        prevComments = arr;
+        return arr.map((c) => {
+          const ct = c.text.toLowerCase();
+          if (!c.resolved && ((/bril|luz/.test(t) && /bril|luz/.test(ct)) || (/bot|cta|contrast|resalt/.test(t) && /bot|cta|contrast|resalt/.test(ct)))) return { ...c, resolved: true };
+          return c;
+        });
+      });
+      const rollback = () => { setApplied(prevApplied); if (prevComments) setComments(prevComments); };
       const r = await backend;
       let run = r && r.data && r.data.generation_run;
       let editedRevision = r && r.data && r.data.revision;
@@ -388,12 +396,14 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
           setRefineMsg(`Editado (${label}) · revisión #${editedRevision ? editedRevision.revision_number : "?"}`);
           onNotice && onNotice({ tone: "green", text: `Edición aplicada en backend (${label}); el resto se preservó.` });
         } else {
+          rollback();  // backend didn't apply → undo the optimistic shim
           setRefineMsg("La edición no terminó.");
-          onNotice && onNotice({ tone: "amber", text: (run && run.error_message) || "El backend no confirmó la edición." });
+          onNotice && onNotice({ tone: "amber", text: (run && run.error_message) || "El backend no confirmó la edición; revertí el cambio." });
         }
       } else {
-        setRefineMsg("Ajuste local (sin backend).");
-        onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "Edición aplicada solo localmente." });
+        rollback();  // no backend → don't leave a false "applied" state
+        setRefineMsg("Edición no aplicada (sin backend).");
+        onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "El backend no aceptó la edición; no se aplicó." });
       }
       setRefining(false);
     }, 1200);

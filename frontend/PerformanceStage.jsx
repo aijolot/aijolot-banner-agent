@@ -156,12 +156,23 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
       onNotice && onNotice({ tone: "amber", text: msg });
       return;
     }
+    // Ground the proposal in REAL segment data: target the lowest-CTR segment from the
+    // latest snapshot. No fabricated lift % — the projection is qualitative.
+    const segs = normalizeSegmentBreakdown(backendPerf && backendPerf.latest_snapshot && backendPerf.latest_snapshot.segment_breakdown);
+    if (!segs.length) {
+      const msg = "Sin datos de segmento reales en el snapshot; no fundamento una propuesta V2 (no invento métricas).";
+      setProposalState("error"); setProposalNotice(msg);
+      onNotice && onNotice({ tone: "amber", text: msg });
+      return;
+    }
+    const worst = segs.slice().sort((a, b) => (Number(a.ctr) || 0) - (Number(b.ctr) || 0))[0];
+    const segName = worst.seg;
     try {
       const r = await PerformanceApi.proposal(campaign, {
         source_revision_id: revisionId,
-        segment_key: "femenino",
-        rationale: "Femenino tiene alto volumen pero CTR bajo; botón flotante contraste + layout minimal.",
-        projected_lift: { ctr: "+18%", segment: "femenino" },
+        segment_key: segName,
+        rationale: `${segName} tiene el CTR más bajo (${Number(worst.ctr || 0).toFixed(1)}%) en el snapshot actual; propongo una V2 con CTA en color de mayor contraste y layout más directo.`,
+        projected_lift: { segment: segName },
         status: "sent_to_approval",
       });
       if (r.fallback) {
@@ -199,6 +210,8 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   ] : METRICS.map((m) => ({ ...m, label: `${m.label} (demo)`, delta: `Fallback demo · ${m.delta}`, backend: false }));
   const segmentRows = normalizeSegmentBreakdown(latestSnapshot && latestSnapshot.segment_breakdown);
   const chartSegments = segmentRows.length ? segmentRows : SEG_PERF;
+  // Lowest-CTR real segment (drives the V2 proposal copy); null when no real data.
+  const lowCtrSeg = segmentRows.length ? segmentRows.slice().sort((a, b) => (Number(a.ctr) || 0) - (Number(b.ctr) || 0))[0].seg : null;
   const maxConv = Math.max(1, ...chartSegments.map((s) => Number(s.conv) || 0));
   const trendValues = extractTrendValues(latestSnapshot && latestSnapshot.trend);
   const chartTrend = trendValues.length > 1 ? trendValues : CTR_TREND;
@@ -206,6 +219,7 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   const insights = backendPerf && Array.isArray(backendPerf.insights) ? backendPerf.insights : [];
   const proposals = backendPerf && Array.isArray(backendPerf.proposals) ? backendPerf.proposals : [];
   const activeProposal = proposals[0];
+  const v2Seg = (activeProposal && activeProposal.segment_key) || lowCtrSeg;
   const memoryCards = insights.length || proposals.length ? insights.map((m) => ({ tag: m.tag || m.segment_key || "Insight backend", text: m.insight || "Insight backend", lift: m.lift_label || "backend", source: compactSourceLabel(m) })).concat(proposals.map((p) => ({ tag: `Propuesta · ${p.status || "draft"}`, text: p.rationale, lift: proposalLiftLabel(p.projected_lift) || p.segment_key || "backend", source: compactSourceLabel(p) }))) : MEMORY.map((m) => ({ ...m, tag: `${m.tag} · demo`, source: "Fallback demo no-live" }));
 
   return (
@@ -289,13 +303,13 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
               <Badge tone={activeProposal ? "cyan" : "purple"} icon="sparkles">{activeProposal ? `Backend · ${compactSourceLabel(activeProposal)}` : "Propuesta del agente demo no-live"}</Badge>
             </div>
             <p style={{ fontFamily: "Inter", fontSize: 13.5, color: "#475569", margin: "8px 0 0", lineHeight: 1.55, maxWidth: 620 }}>
-              {activeProposal ? activeProposal.rationale : <>El segmento <b>Femenino</b> tiene muchas impresiones pero CTR por debajo del promedio. Propongo una Versión 2: <b>botón flotante en color contraste</b> y layout <b>minimal</b>, según lo que convirtió mejor en campañas pasadas.</>}
+              {activeProposal ? activeProposal.rationale : (v2Seg ? <>El segmento <b>{v2Seg}</b> tiene el CTR más bajo del snapshot actual. Propongo una Versión 2 con <b>CTA en color de mayor contraste</b> y layout más directo.</> : <>Registra un snapshot con desglose por segmento y el agente propondrá una Versión 2 fundamentada en datos reales (no inventa métricas).</>)}
             </p>
             {v2 === "ready" && (
               <div className="fade-up" style={{ marginTop: 16, maxWidth: 560 }}>
                 <Banner seg={SEGMENTS.femenino} variant="C" ctaContrast font={tweaks.bannerFont} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontFamily: "Inter", fontSize: 12, color: "#7C3AED", fontWeight: 600 }}>
-                  <Icon name="trending-up" size={14} /> Proyección: +18% CTR en segmento Femenino
+                  <Icon name="trending-up" size={14} /> Objetivo: subir el CTR del segmento {v2Seg || "con menor desempeño"} (preview ilustrativa)
                 </div>
               </div>
             )}

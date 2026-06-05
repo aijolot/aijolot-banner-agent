@@ -2,7 +2,7 @@
    Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, GenerateStage,
    CanvasStage, PerformanceStage, Icon, Badge, PlacementApi, CampaignApi, isApiCampaign */
 // Aijolot Banner Agent — app orchestrator.
-const { useState: useStateA } = React;
+const { useState: useStateA, useRef: useRefA } = React;
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "bannerFont": "Space Grotesk",
@@ -58,6 +58,25 @@ function App() {
   const [art] = useStateA(() => ({ bg: "usage", fold: 60 }));
   const [campaign, setCampaign] = useStateA(null);
   const [apiNotice, setApiNotice] = useStateA(null);
+  // Dedupe placement persistence: placement→brief advance AND campaign-ready (when a
+  // prototype becomes a backend UUID during intake) both used to save, racing. Save
+  // once per (campaign, placement) pair.
+  const placementSavedKey = useRefA("");
+
+  async function persistPlacement(camp, plc) {
+    if (!isApiCampaign(camp) || !plc) return;
+    const key = camp.id + "::" + (plc.id || plc.name || "");
+    if (placementSavedKey.current === key) return;
+    placementSavedKey.current = key;
+    try {
+      const r = await PlacementApi.save(camp, plc);
+      if (!r.fallback && PlacementApi.get) await PlacementApi.get(camp);
+      setApiNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Ubicación guardada y recuperable en backend" });
+    } catch (e) {
+      placementSavedKey.current = "";  // allow a retry on a later trigger
+      setApiNotice({ tone: "amber", text: "No se pudo guardar ubicación en backend: " + (e.message || e.status || "error") });
+    }
+  }
 
   function onNav(id) { setNav(id); }
   async function handleNewCampaign() {
@@ -74,15 +93,7 @@ function App() {
   }
   async function handlePlacementNext(p) {
     setPlacement(p);
-    if (isApiCampaign(campaign)) {
-      try {
-        const r = await PlacementApi.save(campaign, p);
-        if (!r.fallback && PlacementApi.get) await PlacementApi.get(campaign);
-        setApiNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Ubicación guardada y recuperable en backend" });
-      } catch (e) {
-        setApiNotice({ tone: "amber", text: "No se pudo guardar ubicación en backend: " + (e.message || e.status || "error") });
-      }
-    }
+    await persistPlacement(campaign, p);
     setStage("brief");
   }
   function hydrateCampaignSelection(c, nextStage) {
@@ -98,13 +109,7 @@ function App() {
     }
     if (opts && opts.localOnly) return;
     if (!placement) return;
-    try {
-      const r = await PlacementApi.save(c, placement);
-      if (!r.fallback && PlacementApi.get) await PlacementApi.get(c);
-      setApiNotice(r.fallback ? { tone: "amber", text: r.reason } : { tone: "green", text: "Ubicación guardada y recuperable en backend" });
-    } catch (e) {
-      setApiNotice({ tone: "amber", text: "No se pudo guardar ubicación en backend: " + (e.message || e.status || "error") });
-    }
+    await persistPlacement(c, placement);
   }
 
   let body;
