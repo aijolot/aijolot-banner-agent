@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, CampaignApi, isApiCampaign */
+/* global React, Icon, GlassCard, Button, Badge, CampaignApi, StoreApi, isApiCampaign */
 // Aijolot Banner Agent — editable Campaign objects (GH-28).
 // Renders the structured brief from GH-27 as inline-editable fields, validates
 // client-side, persists edits via PATCH /api/v1/campaigns/{id}, and advances to Art.
@@ -52,6 +52,62 @@ function Row({ icon, label, error, children }) {
 }
 
 const inputStyle = { width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 10px", fontFamily: "Inter", fontSize: 13, color: "#002B57", outline: "none", background: "#fff" };
+
+// Per-variant featured product picker. Resolves products LIVE from Shopify by
+// search term (StoreApi.searchProducts → on-demand integration that also persists
+// them), so any product is selectable even beyond the bulk-sync window.
+function VariantProductPicker({ variant, onPick, onNotice }) {
+  const [q, setQ] = useStateCC("");
+  const [busy, setBusy] = useStateCC(false);
+  const [results, setResults] = useStateCC([]);
+  const [open, setOpen] = useStateCC(false);
+  async function search() {
+    const term = q.trim();
+    if (!term) return;
+    setBusy(true);
+    const res = await StoreApi.searchProductsSafe(term);
+    setBusy(false);
+    if (!res.ok) { onNotice && onNotice({ tone: "amber", text: "Búsqueda de productos no disponible: " + res.reason }); return; }
+    setResults((res.data && res.data.items) || []);
+    setOpen(true);
+  }
+  function pick(p) {
+    onPick({ product_gid: p.shopify_gid || null, product_title: p.title || "", product_image_url: p.image_url || null });
+    setOpen(false); setResults([]); setQ("");
+  }
+  const chosen = variant.product_title;
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 5 }}>
+      {chosen ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, background: "rgba(16,185,129,.08)", border: "1px solid rgba(16,185,129,.3)", borderRadius: 8, padding: "5px 8px" }}>
+          {variant.product_image_url ? <img src={variant.product_image_url} alt="" style={{ width: 26, height: 26, borderRadius: 5, objectFit: "cover", flexShrink: 0 }} /> : <Icon name="package" size={14} color="#10B981" />}
+          <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#047857", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{chosen}</span>
+          <button onClick={() => onPick({ product_gid: null, product_title: "", product_image_url: null })} title="Quitar producto" style={{ border: "none", background: "transparent", color: "#94A3B8", cursor: "pointer", padding: 2, display: "flex" }}><Icon name="x" size={13} /></button>
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 6 }}>
+          <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); search(); } }} placeholder="Buscar producto Shopify (ej. Mandarin Sky)" style={{ ...inputStyle, fontSize: 11.5, padding: "5px 8px" }} />
+          <button onClick={search} disabled={busy || !q.trim()} style={{ fontFamily: "Inter", fontSize: 11, fontWeight: 600, padding: "5px 10px", borderRadius: 8, border: "1px solid #E2E8F0", background: "#fff", color: "#0891B2", cursor: busy ? "default" : "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
+            <Icon name={busy ? "loader" : "search"} size={12} />{busy ? "…" : "Buscar"}
+          </button>
+        </div>
+      )}
+      {open && !chosen ? (
+        <div style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 8, boxShadow: "0 8px 20px rgba(15,23,42,.12)", overflow: "hidden", maxHeight: 180, overflowY: "auto" }}>
+          {results.length ? results.map((p) => (
+            <button key={p.shopify_gid || p.id} onClick={() => pick(p)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", border: "none", borderBottom: "1px solid #F1F5F9", background: "#fff", padding: "6px 8px", cursor: "pointer" }}>
+              {p.image_url ? <img src={p.image_url} alt="" style={{ width: 28, height: 28, borderRadius: 5, objectFit: "cover", flexShrink: 0 }} /> : <Icon name="package" size={14} color="#94A3B8" />}
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ display: "block", fontFamily: "Inter", fontSize: 11.5, color: "#002B57", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</span>
+                <span style={{ display: "block", fontFamily: "Inter", fontSize: 10, color: "#94A3B8" }}>{p.vendor || ""}{p.metadata && p.metadata.price ? ` · ${p.metadata.price} ${p.metadata.currency || ""}` : ""}</span>
+              </span>
+            </button>
+          )) : <div style={{ fontFamily: "Inter", fontSize: 11, color: "#94A3B8", padding: "8px 10px" }}>Sin resultados para “{q}”.</div>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
   const [saveState, setSaveState] = useStateCC("saved");
@@ -107,6 +163,11 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
   function setVariantAudience(i, value) {
     const next = pVariants.map((v, idx) => (idx === i ? { ...v, audience: value } : v));
     setField("personalization_variants", next);
+  }
+  function setVariantProduct(i, product) {
+    const next = pVariants.map((v, idx) => (idx === i ? { ...v, ...product } : v));
+    setField("personalization_variants", next);
+    persistFields({ personalization_variants: next });
   }
   function persistVariants() { persistFields({ personalization_variants: pVariants }); }
 
@@ -174,13 +235,16 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
           {pVariants.length ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
               {pVariants.map((v, i) => (
-                <div key={v.key || i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontFamily: "Inter", fontSize: 10.5, fontWeight: 700, color: "#0891B2", background: "rgba(34,211,238,.1)", border: "1px solid rgba(34,211,238,.3)", borderRadius: 9999, padding: "3px 9px", whiteSpace: "nowrap" }}>{v.label || v.key}</span>
-                  <input value={v.audience || ""} onChange={(e) => setVariantAudience(i, e.target.value)} onBlur={persistVariants} style={{ ...inputStyle, fontSize: 12 }} placeholder={`Audiencia para ${v.label || v.key}`} />
-                  <span style={{ fontFamily: "Space Grotesk", fontSize: 9.5, color: "#94A3B8", whiteSpace: "nowrap" }}>{v.customer_tag}</span>
+                <div key={v.key || i} style={{ display: "flex", flexDirection: "column", gap: 5, padding: "7px 8px", borderRadius: 9, background: "#fff", border: "1px solid #EEF2F6" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontFamily: "Inter", fontSize: 10.5, fontWeight: 700, color: "#0891B2", background: "rgba(34,211,238,.1)", border: "1px solid rgba(34,211,238,.3)", borderRadius: 9999, padding: "3px 9px", whiteSpace: "nowrap" }}>{v.label || v.key}</span>
+                    <input value={v.audience || ""} onChange={(e) => setVariantAudience(i, e.target.value)} onBlur={persistVariants} style={{ ...inputStyle, fontSize: 12 }} placeholder={`Audiencia para ${v.label || v.key}`} />
+                    <span style={{ fontFamily: "Space Grotesk", fontSize: 9.5, color: "#94A3B8", whiteSpace: "nowrap" }}>{v.customer_tag}</span>
+                  </div>
+                  <VariantProductPicker variant={v} onPick={(p) => setVariantProduct(i, p)} onNotice={onNotice} />
                 </div>
               ))}
-              <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>El agente genera un banner por variante y lo sirve según el tag del cliente.</div>
+              <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>El agente genera un banner por variante (con su producto destacado) y lo sirve según el tag del cliente.</div>
             </div>
           ) : (
             <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>Sin personalización: una sola audiencia. Elige una dimensión para segmentar (ej. Género → Hombre / Mujer).</div>

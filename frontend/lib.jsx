@@ -318,6 +318,15 @@ const StoreApi = {
   async list() { return AijolotApi.get(AijolotApi.v1("/stores")); },
   async get(storeId) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}`)); },
   async resources(storeId, resourceType) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/shopify/resources?resource_type=${encodeURIComponent(resourceType || "collection")}`)); },
+  // On-demand product integration: resolve any Shopify product live by search term
+  // (bypasses the bulk-sync cap) and persist it. Returns { matched, written, items }.
+  async searchProducts(query, storeId, limit) {
+    return AijolotApi.post(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/shopify/products/search`), { query, limit: limit || 8 });
+  },
+  async searchProductsSafe(query, storeId, limit) {
+    try { return { ok: true, data: await this.searchProducts(query, storeId, limit) }; }
+    catch (e) { return { ok: false, reason: errorText(e), data: { items: [] } }; }
+  },
   async placementTypes(storeId) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/placement-types`)); },
   async placementTargets(storeId, placementTypeKey) { return AijolotApi.get(AijolotApi.v1(`/stores/${storeId || AIJOLOT_DEMO_IDS.store}/placement-types/${encodeURIComponent(placementTypeKey)}/targets`)); },
   async listSafe() {
