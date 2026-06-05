@@ -635,6 +635,18 @@ const ArtApi = {
   },
 };
 
+// --- banner-edit: scoped, non-destructive edit (text/background/image) ---
+GenerationApi.bannerEdit = async function (campaign, prompt, targetNodes, sourceRevisionId) {
+  if (!isApiCampaign(campaign)) return fallbackResult("La edición de banner requiere una campaña UUID.", null);
+  const input = { prompt: prompt || "Editar banner" };
+  if (Array.isArray(targetNodes) && targetNodes.length) input.target_nodes = targetNodes;
+  if (sourceRevisionId) input.source_revision_id = sourceRevisionId;
+  try {
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/banner-edit`), input);
+    return { ok: true, fallback: false, data };
+  } catch (e) { return fallbackResult("Edición de banner no disponible (" + errorText(e) + ").", null); }
+};
+
 // --- F9 agentic refine (regenerate with classified target nodes) ---
 GenerationApi.agenticRefine = async function (campaign, prompt, targetNodes) {
   if (!isApiCampaign(campaign)) return fallbackResult("El refinamiento agéntico requiere una campaña UUID.", null);

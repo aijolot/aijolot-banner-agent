@@ -163,6 +163,27 @@ def _build_stack():
     return svc, campaigns, revisions
 
 
+def test_banner_edit_scoped_creates_new_revision_and_supersedes() -> None:
+    svc, campaigns, revisions = _build_stack()
+    svc.generation_runs.start_generation_run(CAMPAIGN_ID)
+    initial = revisions.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+
+    # Background-only edit: new revision, background attached, copy preserved.
+    result = svc.edit(CAMPAIGN_ID, RegenerateRequest(prompt="cambia el fondo a algo más oscuro", target_nodes=["background"]))
+
+    assert result.generation_run.status == "succeeded"
+    assert result.generation_run.metadata["facade_version"] == "f-banner-edit"
+    assert result.generation_run.metadata.get("edit_targets") == ["background"]
+    new_rev = revisions.get(revision_id=result.revision.id)
+    assert new_rev["revision_number"] > initial["revision_number"]
+    assert new_rev["status"] == "selected"
+    assert new_rev["html_preview"] and "<" in new_rev["html_preview"]
+    assert new_rev["concept"].get("background", {}).get("css")
+    # source superseded, campaign points at the edit
+    assert revisions.get(revision_id=initial["id"])["status"] == "superseded"
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == new_rev["id"]
+
+
 def test_agentic_regenerate_creates_real_new_revision() -> None:
     svc, campaigns, revisions = _build_stack()
 

@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from app.agents.state import BannerSessionState, Campaign as StateCampaign, Variant as StateVariant
+from app.agents.state import BannerAssets, BannerSessionState, Campaign as StateCampaign, Concept as StateConcept, Variant as StateVariant
 from app.core.settings import Settings
 from app.services.gemini.cost_guard import CostGuard, get_default_cost_guard
 from app.workflows.banner_creation import (
@@ -313,6 +313,136 @@ class RunOrchestrator:
                 total_cost_usd=round(total_cost, 6),
                 metadata={"facade_version": "f5-run-orchestrator", "failed_node": node},
             )
+
+    async def edit_revision(
+        self,
+        *,
+        run_id: str,
+        campaign_row: dict[str, Any],
+        source_revision: dict[str, Any],
+        prompt: str,
+        targets: list[str],
+    ) -> OrchestratorOutcome:
+        """Banner-edit: a scoped, non-destructive edit of an assembled revision.
+
+        Edits ONLY the targeted layer(s) (copy / background / image), carries the
+        rest forward from the source, re-renders + re-audits, and persists a new
+        superseding revision. Reuses the orchestrator's render/audit/persist path.
+        """
+        campaign_id = str(campaign_row["id"])
+        target_set = set(targets or [])
+        recorder = _EventRecorder(run_id=run_id)
+        total_cost = 0.0
+        node = ""
+        try:
+            node = "load_brand_context"
+            recorder.start(node)
+            brand = self._resolve_brand(campaign_row)
+            campaign_state = self._campaign_from_row(campaign_row, brand)
+            recorder.succeed(node, {"brand_id": brand.id, "targets": sorted(target_set)})
+
+            # concept dict carried forward (preserves background/generated_art/etc.)
+            cdict = dict(source_revision.get("concept") or {})
+            cdict.setdefault("copy", {})
+            cdict.setdefault("palette_usage", {})
+            cdict.setdefault("layout", "Hero split layout")
+            cdict.setdefault("image_prompt", "")
+            cdict.setdefault("hierarchy_notes", "")
+
+            node = "draft_banner_concept"
+            recorder.start(node)
+            edited = []
+            if {"copy", "concept", "layout"} & target_set:
+                fresh = await self._run_concept(campaign_state, brand, [StateVariant(customer_tag="all", intent_delta="default")], [], None, None)
+                fresh_dict = _concept_dict(fresh)
+                if {"copy", "concept"} & target_set:
+                    cdict["copy"] = {**cdict.get("copy", {}), **fresh_dict.get("copy", {})}
+                    edited.append("copy")
+                if "layout" in target_set:
+                    cdict["layout"] = fresh_dict.get("layout", cdict["layout"])
+                    cdict["source_refs"] = fresh_dict.get("source_refs", cdict.get("source_refs", []))
+                    edited.append("layout")
+            if "background" in target_set:
+                bg = await self._refine_background(_dict_to_concept(cdict), brand)
+                if bg:
+                    cdict["background"] = bg
+                    edited.append("background")
+            cdict["copy"]["revision_note"] = _short(prompt, 280)
+            recorder.succeed(node, {"edited": edited or ["(none — image only)"]})
+
+            revision = self._create_revision(campaign_id=campaign_id, run_id=run_id, concept=_dict_to_concept(cdict), background=cdict.get("background"))
+            # _create_revision dumps the Concept model (drops extras); re-store the
+            # full dict so background/generated_art survive.
+            revision = self.revisions.update(revision_id=str(revision["id"]), data={"concept": _json_safe(cdict)}) or revision
+            revision_id = str(revision["id"])
+            self._create_layout_variants(revision_id, _dict_to_concept(cdict))
+            variant_rows = self._copy_or_regenerate_variants(revision_id, source_revision, cdict, campaign_state, brand, "copy" in target_set)
+
+            # image: regenerate only when targeted (or no source image to preserve)
+            node = "generate_image"
+            recorder.start(node)
+            source_url = _last_generated_image(source_revision)
+            if "image" in target_set or not source_url:
+                image_bytes, image_meta, image_cost = await self._generate_image(concept=_dict_to_concept(cdict), brand=brand, campaign_id=campaign_id)
+                total_cost += image_cost
+                assets = await self._optimize_assets(image_bytes=image_bytes, concept=_dict_to_concept(cdict), campaign_id=campaign_id, revision_id=revision_id, banner_variant_id=(str(variant_rows[0]["id"]) if variant_rows else None), image_meta=image_meta)
+                assets.optimization_report = _json_safe(assets.optimization_report)
+                assets.asset_records = _json_safe(assets.asset_records)
+                preview_path = _first_asset_path(assets)
+                recorder.succeed(node, {"provider": image_meta.get("provider"), "regenerated": True})
+            else:
+                assets = _assets_from_url(source_url, cdict.get("copy", {}).get("headline") or "Banner")
+                preview_path = source_revision.get("preview_storage_path")
+                recorder.succeed(node, {"preserved_image": True})
+
+            node = "render_html"
+            recorder.start(node)
+            concept_model = _dict_to_concept(cdict)
+            html_standalone = await self._render_html(concept_model, assets, brand)
+            liquid_section = await self._render_liquid(concept_model, [StateVariant(customer_tag="all", intent_delta="default")], brand, assets, campaign_state.placement)
+            self.revisions.update(revision_id=revision_id, data=_json_safe({"html_preview": html_standalone, "preview_storage_path": preview_path, "liquid_config": self._liquid_config(concept_model, liquid_section, campaign_state.placement), "concept": cdict}))
+            recorder.succeed(node, {"html_bytes": len(html_standalone)})
+
+            node = "audit"
+            recorder.start(node)
+            audit_report = await self._run_audit(html_standalone, concept_model, assets, brand, campaign_state, [StateVariant(customer_tag="all", intent_delta="default")])
+            self._persist_audit(campaign_id=campaign_id, revision_id=revision_id, run_id=run_id, audit_report=audit_report)
+            recorder.succeed(node, {"status": audit_report.status})
+
+            self._promote_revision(campaign_id=campaign_id, revision_id=revision_id)
+            return OrchestratorOutcome(
+                status="succeeded", frontend_step=_TERMINAL_FRONTEND_STEP, events=recorder.events,
+                revision_id=revision_id, total_cost_usd=round(total_cost, 6),
+                metadata={"facade_version": "f-banner-edit", "edited_targets": sorted(target_set), "audit_status": audit_report.status},
+            )
+        except Exception as exc:  # noqa: BLE001
+            if node:
+                recorder.fail(node, {"error": type(exc).__name__, "detail": _short(str(exc), 280)})
+            return OrchestratorOutcome(status="failed", frontend_step=recorder.last_frontend_step or "render_audit", events=recorder.events, error_message=f"{type(exc).__name__}: {exc}"[:500], metadata={"facade_version": "f-banner-edit", "failed_node": node})
+
+    def _copy_or_regenerate_variants(self, revision_id, source_revision, cdict, campaign_state, brand, regenerate_copy):
+        """Carry source variants verbatim (scoped) unless copy is the edit target."""
+        source_variants = []
+        try:
+            source_variants = self.variants.list_by_revision_id(revision_id=str(source_revision["id"]))  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001
+            source_variants = []
+        if not regenerate_copy and source_variants:
+            rows = []
+            for v in source_variants:
+                row = {k: v.get(k) for k in ("segment_key", "segment_label", "customer_tag", "audience_rule", "eyebrow", "headline", "subheadline", "cta_text", "cta_url", "palette")}
+                row["revision_id"] = revision_id
+                rows.append(row)
+            return self.variants.create_many(variants=_json_safe(rows))
+        # copy edit (or no source variants): regenerate from the edited concept
+        copy = cdict.get("copy", {})
+        rows = [{
+            "revision_id": revision_id, "segment_key": "default", "segment_label": "Default audience",
+            "audience_rule": {}, "eyebrow": copy.get("eyebrow"), "headline": copy.get("headline") or campaign_state.goal,
+            "subheadline": copy.get("subheadline"), "cta_text": copy.get("cta") or campaign_state.cta,
+            "cta_url": "/collections/all", "palette": dict(cdict.get("palette_usage") or {}),
+        }]
+        return self.variants.create_many(variants=_json_safe(rows))
 
     # --- node helpers -----------------------------------------------------
 
@@ -746,6 +876,42 @@ def _concept_dict(concept: Any) -> dict[str, Any]:
     if hasattr(concept, "model_dump"):
         return concept.model_dump()
     return dict(concept or {})
+
+
+def _dict_to_concept(cdict: dict[str, Any]) -> StateConcept:
+    """Build a Concept model from a stored concept dict (extras ignored)."""
+    return StateConcept(
+        layout=str(cdict.get("layout") or "Hero split layout"),
+        copy=dict(cdict.get("copy") or {}),
+        palette_usage=dict(cdict.get("palette_usage") or {}),
+        image_prompt=str(cdict.get("image_prompt") or "featured product scene"),
+        hierarchy_notes=str(cdict.get("hierarchy_notes") or ""),
+        source_refs=list(cdict.get("source_refs") or []),
+    )
+
+
+def _last_generated_image(revision: dict[str, Any]) -> str | None:
+    """Most recent generated product image URL stored on the revision concept."""
+    concept = revision.get("concept") or {}
+    art = concept.get("generated_art") or []
+    for entry in reversed(art):
+        url = (entry or {}).get("public_url") if isinstance(entry, dict) else None
+        if url:
+            return str(url)
+    return None
+
+
+def _assets_from_url(url: str, alt: str) -> BannerAssets:
+    """Reconstruct a minimal BannerAssets pointing at a preserved image URL."""
+    return BannerAssets(
+        webp={1280: url},
+        avif={},
+        fallback_jpg={1280: url},
+        alt_text_suggestion=alt,
+        total_weight_kb_1280_webp=0.0,
+        asset_records=[{"public_url": url, "size_key": 1280, "format": "webp", "storage_path": url}],
+        optimization_report={"preserved": True},
+    )
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

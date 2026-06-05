@@ -235,6 +235,57 @@ class GenerationRunService:
         run = self._start_orchestrated_run(campaign_id, request, campaign, prompt=prompt, targets=targets)
         return run, self._last_revision_id
 
+    def start_banner_edit_run(
+        self,
+        campaign_id: str,
+        *,
+        source_revision: dict[str, Any],
+        prompt: str,
+        targets: list[str],
+        started_by: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """Banner-edit: scoped, non-destructive edit of an assembled revision."""
+        campaign = self._get_campaign(campaign_id)
+        if self.orchestrator is None or campaign is None:
+            raise MissingSettingsError(("orchestrator",))
+        now = _utc_now_iso()
+        base_metadata = {"prompt": prompt or "", "edit_targets": list(targets or [])}
+        run_row = self.run_repository.create(
+            data={
+                "campaign_id": campaign_id,
+                "parent_run_id": parent_run_id,
+                "run_type": "refinement",
+                "status": "running",
+                "frontend_step": "render_audit",
+                "adk_trace_id": str(uuid4()),
+                "started_by": started_by,
+                "started_at": now,
+                "metadata": {**base_metadata, "facade_version": "f-banner-edit"},
+            }
+        )
+        run_id = str(run_row["id"])
+        try:
+            outcome = _run_coro(
+                self.orchestrator.edit_revision(run_id=run_id, campaign_row=campaign, source_revision=source_revision, prompt=prompt, targets=targets)
+            )
+        except BaseException as exc:  # noqa: BLE001
+            outcome = _failed_outcome(f"{type(exc).__name__}: {exc}")
+        self._last_revision_id = outcome.revision_id
+        if outcome.events:
+            self.event_repository.create_many(events=outcome.events)
+        updated = self.run_repository.update(
+            run_id=run_id,
+            data={
+                "status": outcome.status,
+                "frontend_step": outcome.frontend_step,
+                "finished_at": _utc_now_iso(),
+                "error_message": outcome.error_message,
+                "metadata": {**base_metadata, **outcome.metadata},
+            },
+        ) or {**run_row, "status": outcome.status, "frontend_step": outcome.frontend_step}
+        return self._run_response_from_record(updated), outcome.revision_id
+
     def _start_orchestrated_run(
         self,
         campaign_id: str,
