@@ -9,12 +9,19 @@ from fastapi import APIRouter, HTTPException, Path, Request
 
 from app.core.auth import require_user_context
 from app.core.settings import MissingSettingsError
+from app.schemas.art_concepts import ArtConceptsRequest, ArtConceptsResponse
 from app.schemas.art_prompts import (
     ArtPromptsRequest,
     ArtPromptsResponse,
     GenerateArtRequest,
     GenerateArtResponse,
     ModelPromptsRequest,
+)
+from app.services.banners.art_concept_service import (
+    ArtConceptService,
+    CampaignNotFound as ArtConceptCampaignNotFound,
+    configured_service as configured_art_concept_service,
+    configured_service_for_team as configured_art_concept_service_for_team,
 )
 from app.services.banners.art_service import (
     ArtService,
@@ -41,6 +48,20 @@ def _service_for_request(request: Request) -> ArtService:
     if _default_service is _DEFAULT_SERVICE_FACTORY:
         return configured_service_for_team(context.team_id)
     return _default_service()
+
+
+def _art_concept_service() -> ArtConceptService:
+    return configured_art_concept_service()
+
+
+_DEFAULT_ART_CONCEPT_FACTORY = _art_concept_service
+
+
+def _art_concept_for_request(request: Request) -> ArtConceptService:
+    context = require_user_context(request)
+    if _art_concept_service is _DEFAULT_ART_CONCEPT_FACTORY:
+        return configured_art_concept_service_for_team(context.team_id)
+    return _art_concept_service()
 
 
 def _raise_http(exc: Exception) -> None:
@@ -75,6 +96,20 @@ def propose_model_prompts(
     except (CampaignNotFound, RevisionNotFound, MissingSettingsError) as exc:
         _raise_http(exc)
         raise
+
+
+@router.post("/campaigns/{campaign_id}/art-concepts", response_model=ArtConceptsResponse)
+def propose_art_concepts(
+    campaign_id: CampaignIdPath,
+    http_request: Request,
+    request: ArtConceptsRequest | None = None,
+) -> ArtConceptsResponse:
+    try:
+        return _art_concept_for_request(http_request).propose_concepts(str(campaign_id), request or ArtConceptsRequest())
+    except ArtConceptCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from None
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
 
 
 @router.post("/campaigns/{campaign_id}/generate-art", response_model=GenerateArtResponse)

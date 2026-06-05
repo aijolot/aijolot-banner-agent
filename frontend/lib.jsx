@@ -625,6 +625,14 @@ const ArtApi = {
       return { ok: true, fallback: false, data };
     } catch (e) { return fallbackResult("Generación de arte no disponible (" + errorText(e) + ").", null); }
   },
+  // Art Direction: per-variant concept proposal (+ optional feedback iteration).
+  async artConcepts(campaign, input) {
+    if (!isApiCampaign(campaign)) return fallbackResult("La propuesta de concepto requiere una campaña UUID.", { concepts: [] });
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/art-concepts`), input || {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Propuesta de concepto no disponible (" + errorText(e) + ").", { concepts: [] }); }
+  },
 };
 
 // --- F9 agentic refine (regenerate with classified target nodes) ---
