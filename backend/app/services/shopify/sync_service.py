@@ -95,7 +95,72 @@ class ShopifyCatalogSyncService:
             "warnings": warnings,
         }
 
+    def search_and_sync_products(
+        self, store_id: str, *, query: str, limit: int = 25, dry_run: bool = False
+    ) -> dict[str, Any]:
+        """On-demand product integration.
+
+        Resolve products LIVE from Shopify by a search term (Admin `products(query:)`),
+        regardless of the bulk-sync cap, and persist the matches into our DB
+        (shopify_resource_cache, resource_type='product') with their images, price and
+        inventory. This lets the designer feature any catalog product — even one beyond
+        the 1000-item bulk window — without re-syncing the whole store.
+
+        Stats note: the Admin product object exposes images, price and totalInventory
+        (all fetched). View/sell-through analytics are NOT on this object (they require
+        the Analytics/ShopifyQL API + scope); they are left absent rather than fabricated.
+        """
+
+        store = self.store_repository.get(store_id=store_id, team_id=self.team_id)
+        if store is None:
+            raise StoreNotFound(store_id)
+
+        term = (query or "").strip()
+        if not term:
+            return {"store_id": store_id, "query": term, "matched": 0, "written": 0, "items": []}
+
+        try:
+            nodes = self._search_products(term, limit=limit)
+        except ShopifyApiError as exc:
+            return {
+                "store_id": store_id,
+                "query": term,
+                "matched": 0,
+                "written": 0,
+                "items": [],
+                "warnings": [f"product search failed: {exc}"],
+            }
+
+        rows = [gq.product_to_row(n) for n in nodes]
+        written = 0
+        if rows and not dry_run:
+            written = self.cache_repository.upsert_many(
+                store_id=store_id, resource_type="product", rows=rows
+            )
+        return {
+            "store_id": store_id,
+            "source": "shopify_admin_graphql",
+            "query": term,
+            "matched": len(rows),
+            "written": written,
+            "items": rows,
+        }
+
     # --- fetch helpers (paginated) ---
+    def _search_products(self, term: str, *, limit: int = 25) -> list[dict[str, Any]]:
+        """Live Shopify product search by term, bounded to `limit` results."""
+        capped = max(1, min(int(limit or 25), _PAGE_SIZE))
+        data = self.client.graphql(
+            gq.PRODUCTS_QUERY, {"first": capped, "after": None, "query": term}
+        )
+        conn = data.get("products") or {}
+        nodes: list[dict[str, Any]] = []
+        for edge in conn.get("edges", []):
+            node = edge.get("node")
+            if node:
+                nodes.append(node)
+        return nodes
+
     def _paginate(self, query: str, root_key: str) -> list[dict[str, Any]]:
         nodes: list[dict[str, Any]] = []
         after: str | None = None

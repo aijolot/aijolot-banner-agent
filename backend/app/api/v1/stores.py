@@ -22,6 +22,21 @@ class ShopifySyncRequest(BaseModel):
     dry_run: bool = Field(default=False, description="Fetch + map but do not write the cache")
 
 
+class ProductSearchSyncRequest(BaseModel):
+    query: str = Field(min_length=1, description="Product search term (matched live against the Shopify catalog by title)")
+    limit: int = Field(default=25, ge=1, le=50, description="Max products to resolve + persist")
+    dry_run: bool = Field(default=False, description="Resolve from Shopify but do not write the cache")
+
+
+class ProductSearchSyncReport(BaseModel):
+    store_id: str
+    query: str
+    matched: int
+    written: int
+    items: list[ShopifyResourceSummary] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
 def _default_service() -> ShopifyResourceService:
     return configured_service()
 
@@ -60,6 +75,50 @@ def list_shopify_resources(
         return _service_for_request(request).list_resources(str(store_id), resource_type=resource_type, query=q)
     except StoreNotFound:
         raise HTTPException(status_code=404, detail=f"store '{store_id}' not found")
+
+
+@router.post("/{store_id}/shopify/products/search", response_model=ProductSearchSyncReport)
+def search_sync_products(store_id: StoreIdPath, body: ProductSearchSyncRequest, request: Request) -> ProductSearchSyncReport:
+    """On-demand product integration: resolve products LIVE from Shopify by search
+    term (bypassing the bulk-sync cap) and persist them into our cache so they become
+    selectable for a campaign."""
+    context = require_user_context(request)
+    from app.services.shopify.sync_service import ShopifyCatalogSyncService
+
+    try:
+        service = ShopifyCatalogSyncService.from_env(team_id=context.team_id)
+        report = service.search_and_sync_products(
+            str(store_id), query=body.query, limit=body.limit, dry_run=body.dry_run
+        )
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from None
+    except StoreNotFound:
+        raise HTTPException(status_code=404, detail=f"store '{store_id}' not found")
+
+    items = [
+        ShopifyResourceSummary(
+            id=str(row.get("shopify_gid") or row.get("handle") or row.get("title")),
+            store_id=str(store_id),
+            resource_type="product",
+            shopify_gid=row.get("shopify_gid"),
+            handle=row.get("handle"),
+            title=str(row.get("title") or "Untitled"),
+            vendor=row.get("vendor"),
+            tags=list(row.get("tags") or []),
+            image_url=row.get("image_url"),
+            status=row.get("status"),
+            metadata=dict(row.get("raw") or {}),
+        )
+        for row in (report.get("items") or [])
+    ]
+    return ProductSearchSyncReport(
+        store_id=str(store_id),
+        query=str(report.get("query") or body.query),
+        matched=int(report.get("matched") or 0),
+        written=int(report.get("written") or 0),
+        items=items,
+        warnings=list(report.get("warnings") or []),
+    )
 
 
 @router.post("/{store_id}/shopify/sync", response_model=SyncReport)
