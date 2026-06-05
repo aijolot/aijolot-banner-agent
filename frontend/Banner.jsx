@@ -27,13 +27,18 @@ function discountParts(promo) {
   return { big: s.slice(0, 10) || "—", small: "" };
 }
 
-function Banner({ seg, variant = "A", slot = false, font, accent, idSuffix = "", brighter = false, ctaContrast = false, live = null }) {
+function Banner({ seg, variant = "A", slot = false, font, bodyFont, accent, idSuffix = "", brighter = false, ctaContrast = false, live = null }) {
   const p = seg.palette;
+  // When the backend background defines a legible copy color, use it for the live
+  // banner so the headline keeps the designed contrast over the creative background.
+  const inkColor = (live && live.textColor) || p.ink;
+  const subColor = (live && live.textColor) || p.sub;
   const vars = {
-    "--bg-a": p.bgA, "--bg-b": p.bgB, "--ink": p.ink, "--sub": p.sub,
+    "--bg-a": p.bgA, "--bg-b": p.bgB, "--ink": inkColor, "--sub": subColor,
     "--accent": accent || p.accent, "--chip": accent || p.chip,
     "--glow": p.glow, "--bottle": p.bottle, "--cap": p.cap,
     "--disp": font || "Space Grotesk",
+    "--body": bodyFont || "Inter",
   };
   // Real banner: backend concept copy + generated image + chosen background +
   // brand name. Falls back to the demo segment when no revision exists yet.
@@ -55,10 +60,10 @@ function Banner({ seg, variant = "A", slot = false, font, accent, idSuffix = "",
       <div className="hb-grain" />
       <div className="hb-inner">
         <div className="hb-copy">
-          <span className="hb-eyebrow">{eyebrow}</span>
+          <span className="hb-eyebrow" style={{ fontFamily: "var(--body)" }}>{eyebrow}</span>
           <h2 className="hb-headline">{headline}</h2>
-          <p className="hb-sub">{sub}</p>
-          <a className="hb-cta" onClick={(e) => e.preventDefault()} href="#">
+          <p className="hb-sub" style={{ fontFamily: "var(--body)" }}>{sub}</p>
+          <a className="hb-cta" style={{ fontFamily: "var(--body)" }} onClick={(e) => e.preventDefault()} href="#">
             {cta}
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
           </a>

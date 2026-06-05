@@ -31,7 +31,11 @@ _HTML_FORBIDDEN = (
     re.compile(r"<\s*script\b[^>]*>", re.IGNORECASE),
     re.compile(r"<\s*iframe\b[^>]*>.*?<\s*/\s*iframe\s*>", re.IGNORECASE | re.S),
     re.compile(r"<\s*iframe\b[^>]*>", re.IGNORECASE),
+    # SVG <foreignObject> can smuggle arbitrary HTML/script into an inline svg.
+    re.compile(r"<\s*foreignObject\b[^>]*>.*?<\s*/\s*foreignObject\s*>", re.IGNORECASE | re.S),
+    re.compile(r"<\s*foreignObject\b[^>]*>", re.IGNORECASE),
     re.compile(r"\son\w+\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)", re.IGNORECASE),
+    # javascript: in any href/xlink:href (SVG <a>/<use>) or inline.
     re.compile(r"javascript\s*:", re.IGNORECASE),
 )
 
@@ -142,10 +146,16 @@ def _build_prompt(concept: Any, brand_context: Any, count: int) -> str:
         "summer-vibes banner, NOT a dark corporate 'premium' look). Use the brand palette only as accents; you "
         "MAY introduce theme-appropriate hues beyond it when the campaign theme calls for it. "
         "Make the options visually distinct and high-energy, not subtle.\n"
+        "Go BEYOND plain gradients: across the options, propose genuinely different treatments — at least one "
+        "should use a PATTERN (e.g. an inline data-URI SVG `background-image` of repeating shapes, diagonal/curved "
+        "LINES, dots/halftone, organic blobs, confetti, sunbursts, or a geometric motif) layered over a color base, "
+        "so they feel art-directed, not just color washes.\n"
         "Requirements for EACH option:\n"
         "- CSS MUST be a single rule scoped to `.aijolot-banner` (you may add nested selectors under it).\n"
-        "- Build richness with MULTIPLE layered gradients (linear + radial + conic), bright multi-stop color, "
-        "soft blobs/highlights; NO external assets, NO url() to the web, NO @import, NO <script>, NO images.\n"
+        "- You MAY use `background-image: url(\"data:image/svg+xml,...\")` with an inline SVG pattern (URL-encode it), "
+        "and/or layered gradients (linear + radial + conic). You MAY also put a decorative inline `<svg>` in the html "
+        "wrapper as a backdrop layer. NO external assets, NO url() to the web (http/https), NO @import, NO <script>, "
+        "NO event handlers, NO raster images.\n"
         "- The whole surface must stay BRIGHT and saturated edge to edge. Do NOT cover the copy area with a dark "
         "scrim/overlay (no near-black `rgba(0,0,0,..)` or `rgba(17,17,17,..)` layers, no dark vignette). If the copy "
         "needs contrast, keep the background light and set a DARK text `color`, or add a subtle WHITE/light glass "

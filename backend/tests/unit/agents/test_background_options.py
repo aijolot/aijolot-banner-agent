@@ -52,6 +52,31 @@ def test_sanitize_html_strips_scripts_and_handlers() -> None:
     assert "aijolot-banner" in clean
 
 
+def test_sanitize_css_keeps_data_uri_svg_pattern() -> None:
+    skill = _load_skill("background-options-generate")
+    svg = "%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='40'%3E%3Ccircle cx='20' cy='20' r='3' fill='%23fff'/%3E%3C/svg%3E"
+    dirty = f".aijolot-banner{{background-color:#FF7F3E;background-image:url(\"data:image/svg+xml,{svg}\");}}"
+    clean = skill.sanitize_css(dirty)
+    # The inline SVG pattern data-URI must survive (only web http(s)// urls are stripped).
+    assert "data:image/svg+xml" in clean
+    assert "background-image:url(" in clean.replace(" ", "")
+    assert skill._is_valid_css(clean)
+
+
+def test_sanitize_html_keeps_safe_svg_strips_foreignobject() -> None:
+    skill = _load_skill("background-options-generate")
+    dirty = (
+        '<section class="aijolot-banner">'
+        '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="10" cy="10" r="5" fill="#fff"/>'
+        '<foreignObject><body onload="x()">hi</body></foreignObject></svg></section>'
+    )
+    clean = skill.sanitize_html(dirty)
+    assert "<svg" in clean.lower()  # decorative svg kept
+    assert "<circle" in clean.lower()
+    assert "foreignobject" not in clean.lower()  # smuggled HTML container removed
+    assert "onload" not in clean.lower()
+
+
 def test_fallback_options_without_key(monkeypatch) -> None:
     skill = _load_skill("background-options-generate")
 

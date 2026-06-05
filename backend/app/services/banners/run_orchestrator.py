@@ -196,10 +196,12 @@ class RunOrchestrator:
             # Always generate + attach an AI background so the assembled banner
             # (and the canvas) shows a real themed background, not a flat default.
             background = await self._refine_background(concept, brand)
+            fonts = await self._propose_fonts(concept, brand)
             recorder.succeed(
                 node,
                 {
                     "layout": _short(concept.layout),
+                    "fonts": f"{fonts.get('display')}/{fonts.get('body')}",
                     "headline": _short(concept.copy.get("headline", "")),
                     "layout_source": (concept.source_refs[0]["title"] if concept.source_refs else None),
                     "layout_candidates": len(layout_candidates),
@@ -269,6 +271,8 @@ class RunOrchestrator:
                 concept_dict["background"] = background
             if image_url:
                 concept_dict["generated_art"] = [{"public_url": image_url, "storage_path": preview_path, "shot_type": "hero"}]
+            if fonts:
+                concept_dict["art_direction"] = {"fonts": fonts}
             self.revisions.update(
                 revision_id=revision_id,
                 data=_json_safe(
@@ -775,6 +779,39 @@ class RunOrchestrator:
                 "preview_storage_path": None,
             }
         )
+
+    async def _propose_fonts(self, concept: Any, brand: Any) -> dict[str, Any]:
+        """Propose a display+body font pairing that fits the campaign concept.
+
+        Not locked to the brand fonts — the agent may pick a Google Font from a
+        curated allow-list when it better serves the concept. Deterministic default
+        (Space Grotesk / Inter) when Gemini is unavailable or off-list.
+        """
+        from app.schemas.typography import BODY_FONTS, DISPLAY_FONTS, FontPairing, coerce_pairing
+
+        default = {"display": "Space Grotesk", "body": "Inter", "rationale": "", "source": "deterministic"}
+        if not self.settings.has_google_api_key():
+            return default
+        copy = getattr(concept, "copy", None) or {}
+        headline = copy.get("headline") if isinstance(copy, dict) else ""
+        tone = _brand_tone(brand) or ""
+        prompt = (
+            "You are an art director choosing type for an ecommerce promo banner. "
+            f"Campaign headline: {_short(headline, 90)}. Mood/tone: {_short(tone, 80)}. "
+            f"Layout: {_short(getattr(concept, 'layout', ''), 90)}.\n"
+            f"Pick ONE display font (headline) from: {', '.join(DISPLAY_FONTS)}.\n"
+            f"Pick ONE body font (subhead) from: {', '.join(BODY_FONTS)}.\n"
+            "Choose the pairing that best fits the campaign mood (you are NOT limited to the brand's fonts). "
+            "Return JSON with display, body, and a one-line rationale."
+        )
+        try:
+            from app.agents.tools import gemini_text
+
+            result = await gemini_text.generate(prompt, model=gemini_text.FLASH_MODEL, structured=FontPairing)
+        except Exception:  # noqa: BLE001 — typography is best-effort
+            return default
+        display, body = coerce_pairing(getattr(result, "display", ""), getattr(result, "body", ""))
+        return {"display": display, "body": body, "rationale": _short(getattr(result, "rationale", ""), 120), "source": "gemini"}
 
     async def _refine_background(self, concept: Any, brand: Any) -> dict[str, Any] | None:
         skill = _load_runtime_skill("background-options-generate")

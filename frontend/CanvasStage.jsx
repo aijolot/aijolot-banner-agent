@@ -188,6 +188,10 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   // Per-variant featured product image (when the variant chose its own product),
   // else the shared generated art. So switching Hombre/Mujer swaps the perfume photo.
   const variantProduct = (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.featured_product) || {};
+  // Agent-proposed typography (may be a non-brand Google Font chosen to fit the concept).
+  const liveFonts = (liveConcept && liveConcept.art_direction && liveConcept.art_direction.fonts) || null;
+  const displayFont = (liveFonts && liveFonts.display) || tweaks.bannerFont || "Space Grotesk";
+  const bodyFont = (liveFonts && liveFonts.body) || "Inter";
   const live = liveConcept ? {
     eyebrow: String((selectedVariant ? variantCopy.eyebrow : null) || liveCopy.eyebrow || liveCopy.audience || "").toUpperCase().slice(0, 40) || null,
     headline: (selectedVariant ? variantCopy.headline : null) || liveCopy.headline || null,
@@ -197,7 +201,29 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     brandName: "",
     imageUrl: variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
     bgCss: (liveBgObj && liveBgObj.css) || null,
+    displayFont, bodyFont,
+    // The background CSS was authored with a legible copy color (its first `color:`),
+    // but that color lands on the empty .hb-bg layer. Lift it onto the actual copy so
+    // the headline keeps the contrast the agent designed for this background.
+    textColor: (() => {
+      const css = (liveBgObj && liveBgObj.css) || "";
+      const m = css.match(/[^-]color\s*:\s*(#[0-9a-fA-F]{3,6}|rgba?\([^)]+\))/);
+      return m ? m[1] : null;
+    })(),
   } : null;
+  // Load the agent-chosen Google Fonts once per pairing (idempotent <link> inject).
+  useEffectCV(() => {
+    if (!liveConcept) return;
+    const families = [displayFont, bodyFont].filter(Boolean);
+    families.forEach((fam) => {
+      const id = "gf-" + fam.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+      if (document.getElementById(id)) return;
+      const link = document.createElement("link");
+      link.id = id; link.rel = "stylesheet";
+      link.href = "https://fonts.googleapis.com/css2?family=" + encodeURIComponent(fam).replace(/%20/g, "+") + ":wght@400;600;700;800;900&display=swap";
+      document.head.appendChild(link);
+    });
+  }, [liveConcept, displayFont, bodyFont]);
   const approvedCount = approvers.filter((a) => a.status === "approved").length;
   const allApproved = approvedCount === approvers.length;
   const missing = approvers.length - approvedCount;
@@ -475,11 +501,11 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
               <div ref={stageRef} onClick={addComment} style={{ position: "relative", cursor: commentMode ? "crosshair" : "default" }}>
                 {cellCount > 1 ? (
                   <BannerLayout layout={gridLayout} gap={12} cell={(i) => (
-                    <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={tweaks.bannerFont} accent={bannerAccent}
+                    <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
                       brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} live={live} />
                   )} />
                 ) : (
-                  <Banner seg={seg} variant={layoutVariant} slot font={tweaks.bannerFont} accent={bannerAccent}
+                  <Banner seg={seg} variant={layoutVariant} slot font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
                     brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} live={live} />
                 )}
 
