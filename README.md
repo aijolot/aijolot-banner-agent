@@ -12,7 +12,7 @@ See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full system design (diagrams,
 
 The backend MVP is implemented on the feature branch. The documented demo path is deterministic/offline by default and uses seeded fixtures; real Gemini (text + image), Supabase, Shopify, and Lighthouse are opt-in/manual via provider flags and credentials.
 
-The frontend is a static React 18 UMD/Babel prototype (not a Next.js app), but its API layer (`frontend/lib.jsx`) now sends demo auth headers on every `/api/v1` call and drives the real agentic backend: SSE-streamed brief intake, per-variant art concepts, AI backgrounds, art generation, generation runs, agentic refine, scoped banner-edit, approval, schedule, and publish/unpublish. Each AI node degrades to a deterministic fallback when provider env/credentials are absent. Backend tests: 325 passed, 3 skipped (clean env).
+The frontend is a static React 18 UMD/Babel prototype (not a Next.js app), but its API layer (`frontend/lib.jsx`) now sends demo auth headers on every `/api/v1` call and drives the real agentic backend: SSE-streamed brief intake, per-variant (product-grounded) art concepts, AI backgrounds, Nano Banana Pro art generation, generation runs, agentic refine, scoped banner-edit, approval, schedule, and publish/unpublish. Generation and editing run as **async background jobs** the frontend polls, and a shared `frontend/banner_template.js` renders the live banner identically in the browser and in the backend's headless visual self-review. Each AI node degrades to a deterministic fallback when provider env/credentials are absent. Backend tests: 357 passed, 3 skipped (clean env).
 
 Important constraints:
 
@@ -175,8 +175,14 @@ Implemented capability groups:
 - Brand context CRUD/import with Supabase-first storage and Markdown fallback.
 - Campaign create/list/intake/get/patch with Supabase-first persistence and team-isolated no-Supabase fallback.
 - SSE-streamed conversational brief intake producing the Campaign Brief (v0.3.0): goal/audience/CTA/tone/urgency plus personalization variants and promo, Gemini-backed with deterministic fallback.
-- Per-variant art direction: art concepts, art/model prompts, sanitized AI background options, and art generation.
-- Variant-aware generation: one `banner_variant` per personalization variant with variant-specific copy and shared palette.
+- Per-variant art direction: art concepts, art/model prompts, sanitized AI background options (incl. SVG-pattern backgrounds), agent-chosen typography, and art generation.
+- Variant-aware, product-grounded generation: one `banner_variant` per personalization variant, each grounded on its own featured Shopify product, with variant-specific copy and a shared palette.
+- Nano Banana Pro image generation with chroma-key background removal for transparent, composited product heroes.
+- Percentage-first, breakpoint-aware composition via a shared `banner_template.js` (browser + backend headless parity).
+- Autonomous visual self-review loop: headless screenshots at 3 breakpoints critiqued by a Gemini vision model, with deterministic contrast/layout/overflow corrections.
+- Async generation/edit as background jobs with run + event polling.
+- Live on-demand Shopify product resolution (search + persist) and banner-image rehosting to Shopify Files for real publish.
+- Multivariant publish: Liquid served by `customer.tags` (one audience-specific variant per tag).
 - Store/resource cache APIs using seeded/cached Shopify resources.
 - Placement validation and campaign placement persistence.
 - Catalog snapshot persistence from cached resources.
