@@ -684,9 +684,12 @@ for each row execute function public.set_updated_at();
 
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
-  ('brand-assets', 'brand-assets', false, 52428800, array['image/png', 'image/jpeg', 'image/webp', 'image/avif', 'image/svg+xml', 'application/pdf']::text[]),
-  ('campaign-assets', 'campaign-assets', false, 52428800, array['image/png', 'image/jpeg', 'image/webp', 'image/avif', 'text/html', 'application/json']::text[]),
-  ('rendered-previews', 'rendered-previews', false, 10485760, array['text/html', 'image/png', 'image/jpeg', 'image/webp']::text[])
+  -- public = true: banner imagery and previews are embedded via <img src> in the
+  -- Canvas and in the published Shopify storefront, so they must be fetchable over
+  -- the /object/public/ endpoint. These buckets hold non-sensitive marketing art only.
+  ('brand-assets', 'brand-assets', true, 52428800, array['image/png', 'image/jpeg', 'image/webp', 'image/avif', 'image/svg+xml', 'application/pdf']::text[]),
+  ('campaign-assets', 'campaign-assets', true, 52428800, array['image/png', 'image/jpeg', 'image/webp', 'image/avif', 'text/html', 'application/json']::text[]),
+  ('rendered-previews', 'rendered-previews', true, 10485760, array['text/html', 'image/png', 'image/jpeg', 'image/webp']::text[])
 on conflict (id) do update set
   public = excluded.public,
   file_size_limit = excluded.file_size_limit,

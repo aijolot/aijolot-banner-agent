@@ -193,9 +193,9 @@ class RunOrchestrator:
                 # is traceable and the canvas can surface what changed.
                 concept.copy["revision_note"] = _short(prompt, 280)
                 concept.hierarchy_notes = f"Refine: {_short(prompt, 120)}; {concept.hierarchy_notes}"
-            background = None
-            if is_refine and "background" in target_set:
-                background = await self._refine_background(concept, brand)
+            # Always generate + attach an AI background so the assembled banner
+            # (and the canvas) shows a real themed background, not a flat default.
+            background = await self._refine_background(concept, brand)
             recorder.succeed(
                 node,
                 {
@@ -261,6 +261,14 @@ class RunOrchestrator:
             liquid_variants = _liquid_variants_from_rows(variant_rows)
             liquid_section = await self._render_liquid(concept, liquid_variants, brand, assets, campaign_state.placement)
             preview_path = _first_asset_path(assets)
+            image_url = _first_asset_public_url(assets)
+            # Surface the generated image + background onto the concept so the
+            # canvas Banner renders them (not just the standalone html_preview).
+            concept_dict = _concept_dict(concept)
+            if background:
+                concept_dict["background"] = background
+            if image_url:
+                concept_dict["generated_art"] = [{"public_url": image_url, "storage_path": preview_path, "shot_type": "hero"}]
             self.revisions.update(
                 revision_id=revision_id,
                 data=_json_safe(
@@ -268,10 +276,11 @@ class RunOrchestrator:
                         "html_preview": html_standalone,
                         "preview_storage_path": preview_path,
                         "liquid_config": self._liquid_config(concept, liquid_section, campaign_state.placement),
+                        "concept": concept_dict,
                     }
                 ),
             )
-            recorder.succeed(node, {"html_bytes": len(html_standalone), "has_liquid": bool(liquid_section)})
+            recorder.succeed(node, {"html_bytes": len(html_standalone), "has_liquid": bool(liquid_section), "image": bool(image_url), "background": (background or {}).get("name")})
 
             # 9 — audit
             node = "audit"
@@ -981,6 +990,17 @@ def _first_asset_path(assets: Any) -> str | None:
         if path:
             return str(path)
     return None
+
+
+def _first_asset_public_url(assets: Any) -> str | None:
+    """Public URL of the largest webp asset (for the canvas image)."""
+    records = getattr(assets, "asset_records", None) or []
+    webp = [r for r in records if isinstance(r, dict) and str(r.get("format") or "").lower() == "webp" and r.get("public_url")]
+    pool = webp or [r for r in records if isinstance(r, dict) and r.get("public_url")]
+    if not pool:
+        return None
+    best = max(pool, key=lambda r: int(r.get("size_key") or r.get("width") or 0))
+    return str(best.get("public_url"))
 
 
 def _short(value: Any, limit: int = 120) -> str:
