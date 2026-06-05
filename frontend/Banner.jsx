@@ -65,7 +65,7 @@ function Banner({ seg, variant = "A", slot = false, font, bodyFont, accent, idSu
     // top, copy below). Desktop is a wide banner with absolute %-composed copy/hero.
     const stacked = breakpoint === "tablet" || breakpoint === "mobile";
     if (stacked) {
-      const ar = breakpoint === "mobile" ? (L.aspectRatioMobile || 0.82) : (L.aspectRatioTablet || 1.15);
+      const ar = breakpoint === "mobile" ? (L.aspectRatioMobile || 0.82) : (L.aspectRatioTablet || 1.0);
       const liveVars = { ...vars, "--banner-ar": String(ar) };
       return (
         <div className={`hb-banner hb-live hb-live-stack${scope ? " " + scope : ""}`} style={liveVars} role="img"

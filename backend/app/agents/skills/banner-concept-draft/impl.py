@@ -240,7 +240,7 @@ def draft_concept(
         copy={
             "headline": headline,
             "subheadline": subcopy,
-            "cta": _truncate(_remove_prohibited(cta, prohibited_words) or "Shop now", 28),
+            "cta": _truncate(_remove_prohibited(cta, prohibited_words) or "Shop now", 40),
             "audience": _remove_prohibited(audience, prohibited_words),
             "rationale": _remove_prohibited(f"Connects {goal} to {audience} with {urgency} urgency.", prohibited_words),
         },
@@ -312,7 +312,7 @@ async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_co
         return None
     prohibited = brand_context.voice.prohibited_words or []
     out: dict[str, str] = {}
-    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 28)):
+    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 40)):
         value = _remove_prohibited(str(_get(result, key, "")), prohibited)
         if value:
             out[key] = _truncate(value, limit)

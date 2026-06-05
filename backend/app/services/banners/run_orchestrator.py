@@ -273,9 +273,25 @@ class RunOrchestrator:
             if image_url:
                 concept_dict["generated_art"] = [{"public_url": image_url, "storage_path": preview_path, "shot_type": "hero"}]
             if art_direction:
+                layout = art_direction.get("layout") or {}
+                review_report = None
+                # Visual self-review: render the banner at the 3 breakpoints, have a
+                # vision model critique each, and auto-correct the desktop composition.
+                # Best-effort + gated on vision availability (needs Chromium + Gemini).
+                if self.settings.has_google_api_key():
+                    try:
+                        review_spec = self._banner_review_spec(concept, background, variant_rows, art_direction, image_url)
+                        from app.services.banners.banner_review import review_and_correct
+
+                        reviewed = await review_and_correct(review_spec, max_iters=2)
+                        layout = reviewed.get("layout") or layout
+                        review_report = reviewed.get("report")
+                    except Exception:  # noqa: BLE001 — never fail assembly over review
+                        review_report = None
                 concept_dict["art_direction"] = {
                     "fonts": art_direction.get("fonts") or fonts,
-                    "layout": art_direction.get("layout") or {},
+                    "layout": layout,
+                    **({"review": review_report} if review_report else {}),
                 }
             self.revisions.update(
                 revision_id=revision_id,
@@ -783,6 +799,37 @@ class RunOrchestrator:
                 "preview_storage_path": None,
             }
         )
+
+    @staticmethod
+    def _banner_review_spec(
+        concept: Any,
+        background: dict[str, Any] | None,
+        variant_rows: list[dict[str, Any]],
+        art_direction: dict[str, Any],
+        image_url: str | None,
+    ) -> dict[str, Any]:
+        """Build the render spec the visual review screenshots (primary variant)."""
+        row = variant_rows[0] if variant_rows else {}
+        fp = (row.get("audience_rule") or {}).get("featured_product") or {}
+        copy = getattr(concept, "copy", None) or {}
+        bg_css = (background or {}).get("css") or ""
+        import re as _re
+
+        m = _re.search(r"[^-]color\s*:\s*(#[0-9a-fA-F]{3,6}|rgba?\([^)]+\))", bg_css)
+        fonts = art_direction.get("fonts") or {}
+        return {
+            "eyebrow": row.get("eyebrow") or copy.get("eyebrow") or "",
+            "headline": row.get("headline") or copy.get("headline") or "",
+            "sub": row.get("subheadline") or copy.get("subheadline") or "",
+            "cta": row.get("cta_text") or copy.get("cta") or "",
+            "promo": row.get("cta_text") or copy.get("cta") or "",
+            "imageUrl": fp.get("product_hero_url") or fp.get("product_image_url") or image_url,
+            "bgCss": bg_css,
+            "displayFont": fonts.get("display") or "Space Grotesk",
+            "bodyFont": fonts.get("body") or "Inter",
+            "textColor": m.group(1) if m else None,
+            "layout": art_direction.get("layout") or {},
+        }
 
     async def _propose_art_direction(self, concept: Any, brand: Any) -> dict[str, Any]:
         """Propose typography + banner composition (positions in %, never px).
