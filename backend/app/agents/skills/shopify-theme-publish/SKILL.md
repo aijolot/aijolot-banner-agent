@@ -7,14 +7,15 @@ description: Publish Liquid Section + optimized image assets to a Shopify theme 
 
 Push approved banner assets and Liquid config to the live Shopify theme.
 
-> **Node Metadata** | node: 12 | type: deterministic | model: none | ticket: GH-19 | version: 0.2.0 | status: draft | policy: write-action
+> **Node Metadata** | node: 12 | type: deterministic | model: none | ticket: GH-19 | version: 0.3.0 | status: draft | policy: write-action
 
 ## Node Invariants
 
-1. **HITL approval is mandatory upstream.** This node MUST NOT execute unless `state.hitl_decision.action in {"approve", "schedule-resolved"}`. The Coordinator enforces this gate.
-2. **Idempotent.** Payload hash check before upsert — re-running with the same assets does not create duplicates.
-3. **Fail-closed.** Missing Shopify credentials, invalid campaign state, or API errors block publish — never silently succeed.
-4. **No LLM.** Pure API integration via Shopify Admin GraphQL.
+1. **HITL approval is mandatory upstream.** This node MUST NOT execute unless `state.hitl_decision.action in {"approve", "schedule-resolved"}` (campaign status `scheduled`/`published`). The Coordinator enforces this gate.
+2. **Dry-run is the default.** `SHOPIFY_PUBLISH_DRY_RUN=true` (or `?dry_run=true`) simulates: it computes the config + idempotency key + a job row and returns `would_write_metafield`/`would_install`, WITHOUT touching the live theme/metafield. A real publish requires an explicit `dry_run=false`.
+3. **Idempotent.** Payload hash check before upsert — re-running with the same assets does not duplicate (`create_or_get` job by stable key).
+4. **Fail-closed.** Missing Shopify credentials, invalid campaign state, or API errors block publish — never silently succeed; the token never appears in payloads/logs.
+5. **No LLM.** Pure API integration via Shopify Admin GraphQL.
 
 ## Graph Entry Conditions
 
@@ -129,6 +130,44 @@ Write actions performed:
 - Shopify Admin GraphQL `themeFilesUpsert` (Liquid section + image assets)
 - Shopify metafield update (`aijolot:banner_campaigns`)
 
+## Publish Operations (F10 surface)
+
+| Operation | Endpoint | Effect |
+|-----------|----------|--------|
+| Install placeholders | `POST /stores/{id}/shopify/install-theme-files` | Idempotent `put_theme_asset` of `aijolot-*` snippets/sections (append-only; never overwrites merchant templates). `?dry_run=` supported. |
+| Publish | `POST /campaigns/{id}/publish` | Writes the `aijolot.banner_campaigns` shop metafield + theme assets. `?dry_run=true` simulates. |
+| Unpublish | `POST /campaigns/{id}/unpublish` | Removes the campaign from the metafield array (cleans the anchor). `?dry_run=` supported. |
+
+The publisher is request-scoped (`configured_publisher(team_id=…)`); `dry_run`
+from `SHOPIFY_PUBLISH_DRY_RUN` is overridable per request. `search_results_banner`
+remains rejected at publish (anchor preview only).
+
+## Reuse vs Adopt — Shopify "build with AI"  [DECISION]
+
+Evaluation of giving the agent Shopify's build-with-ai offering for publishing
+(per the URL the operator referenced — grounded in what the page states, dated 2026-06-04):
+
+- The page offers: AI app builders (v0/Lovable/Replit/Manus) for storefronts;
+  chat assistants (ChatGPT/Claude/Perplexity) for merchant store management
+  ("add products, check orders, update prices"); the **Shopify AI Toolkit**
+  (a dev CLI/MCP across Claude Code/Cursor/Gemini CLI/VS Code/Codex); and
+  **Sidekick** (merchant assistant). `[FACT]` (from the page).
+- The page does **not** name a programmatic API/MCP for an agent to publish
+  themes/sections/banners/metafields. `[FACT]` (absence on the page).
+- Our publish primitive — Admin GraphQL `themeFilesUpsert` + `metafieldsSet` —
+  is the correct, supported, already-verified-e2e path for programmatic banner
+  publish. `[FACT]` (F10 e2e: metafield written + cleared).
+
+**Decision: REUSE the native Admin GraphQL publisher.** The build-with-ai tools
+are merchant-facing (Sidekick) or developer-workflow (AI Toolkit CLI) — not a
+replacement for the agent's programmatic, idempotent, dry-run-gated publish.
+`[INFERENCE]` from the above.
+
+**Adopt-later candidate:** the Shopify AI Toolkit (MCP) could complement *developer*
+workflows (scaffolding/extending the theme), not the runtime publish path. Mark
+`[HYPOTHESIS]` — validate the MCP's capabilities + auth model before adopting; do
+not assume it can replace `themeFilesUpsert`.
+
 ## References
 
 - Service: `configured_publisher()` → `backend/app/services/shopify/publisher.py`
@@ -137,3 +176,10 @@ Write actions performed:
 - Config: `SHOPIFY_*` env vars → `backend/app/core/settings.py`
 - Upstream skills: `schedule-or-publish-route` (node 11), `hitl-review-handoff` (node 10)
 - Design reference: Source Technical Design §8 — publish_to_shopify via Admin API themeFilesUpsert
+
+## Version History
+
+| Version | Date       | Change                                                              | Owner   |
+|---------|------------|---------------------------------------------------------------------|---------|
+| 0.2.0   | 2026-05    | Initial publish contract (themeFilesUpsert + metafield, HITL gate)  | AIjolot |
+| 0.3.0   | 2026-06-04 | F10 surface (dry-run default + ?dry_run, install-theme, unpublish, request-scoped publisher); Reuse-vs-Adopt decision on Shopify build-with-ai | AIjolot |
