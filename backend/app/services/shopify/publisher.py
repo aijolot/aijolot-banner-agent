@@ -131,6 +131,10 @@ class ShopifyPublisher:
         try:
             if store.get("theme_id"):
                 theme_files.install_theme_files(self.client, theme_id=str(store["theme_id"]))
+            # Re-host any locally-served banner image on Shopify Files so a live
+            # storefront can actually load it (a localhost/private Supabase URL would
+            # 404 for visitors). Best-effort: keeps the original URL on failure.
+            config = self._rehost_assets(config)
             response = metafields.publish_campaign_config(
                 self.client,
                 namespace=str(store.get("banner_metafield_namespace") or "aijolot"),
@@ -216,6 +220,35 @@ class ShopifyPublisher:
             }
         )
         return base
+
+    def _rehost_assets(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Swap locally-hosted banner image URLs for Shopify Files CDN URLs.
+
+        Best-effort and isolated: any error returns the config unchanged so the
+        publish still proceeds. Only touches truly-local URLs — a hosted Supabase
+        URL is already storefront-reachable and is left as-is.
+        """
+        try:
+            from app.services.shopify import shopify_files
+
+            return shopify_files.rehost_config_assets(
+                self.client, config, fetch_bytes=self._fetch_asset_bytes
+            )
+        except Exception:  # noqa: BLE001 — never fail a publish over asset hosting
+            return config
+
+    @staticmethod
+    def _fetch_asset_bytes(url: str) -> bytes | None:
+        import httpx
+
+        try:
+            with httpx.Client(timeout=20.0) as http:
+                response = http.get(url)
+            if response.status_code >= 400:
+                return None
+            return response.content or None
+        except Exception:  # noqa: BLE001 — best-effort fetch
+            return None
 
     def _campaign(self, campaign_id: str) -> dict[str, Any]:
         campaign = self.campaigns.get(campaign_id=campaign_id, team_id=self.team_id)
