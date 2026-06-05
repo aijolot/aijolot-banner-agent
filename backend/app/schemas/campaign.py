@@ -35,6 +35,7 @@ class StructuredBrief(BaseModel):
     urgency: str = ""  # low | medium | high
     placement: str = ""
     deadline: str | None = None  # ISO date (YYYY-MM-DD) or None
+    promo: str = ""  # parsed offer/discount label, e.g. "15% OFF" (→ campaign.promo_label)
     # Optional personalization dimension: one banner_variant is generated per
     # entry (1 campaign, N variants served by customer tag). Empty → single default.
     personalization_dimension: str = ""  # e.g. "gender"
@@ -78,5 +79,6 @@ class BriefPatch(BaseModel):
     placement: str | None = None
     deadline: str | None = None
     title: str | None = None
+    promo: str | None = None
     personalization_dimension: str | None = None
     personalization_variants: list[dict[str, Any]] | None = None

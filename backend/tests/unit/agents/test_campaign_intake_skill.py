@@ -33,6 +33,40 @@ def test_skill_uses_deterministic_fallback_by_default(monkeypatch):
     assert result.question
 
 
+def test_brief_captures_promo_and_proposes_variants_on_split_cue(monkeypatch):
+    monkeypatch.delenv("AIJOLOT_INTAKE_PROVIDER", raising=False)
+    skill = _load_skill()
+
+    result = asyncio.run(skill.run([{
+        "author_type": "user",
+        "body": "Promo de verano con 15% de descuento, personalizar por género hombre y mujer, jóvenes, botón Comprar ya, en el hero",
+    }]))
+
+    brief = result.structured_brief
+    assert brief.promo == "15% OFF"
+    assert brief.personalization_dimension == "gender"
+    assert {v.key for v in brief.personalization_variants} == {"male", "female"}
+    assert {v.customer_tag for v in brief.personalization_variants} == {"gender:male", "gender:female"}
+    assert result.metadata["promo"] == "15% OFF"
+    assert result.metadata["proposed_variants"] == ["male", "female"]
+    # origin tags present + no fabricated facts
+    assert result.metadata["origin_tags"]["personalization_variants"] == "[KG-RETRIEVED]"
+
+
+def test_brief_does_not_force_variants_without_split_cue(monkeypatch):
+    monkeypatch.delenv("AIJOLOT_INTAKE_PROVIDER", raising=False)
+    skill = _load_skill()
+
+    # A single-audience mention is NOT a split → Recommend-Nothing.
+    result = asyncio.run(skill.run([{
+        "author_type": "user",
+        "body": "Banner para mujeres jóvenes, botón Comprar ya, en el hero, urgente",
+    }]))
+
+    assert result.structured_brief.personalization_variants == []
+    assert result.metadata["proposed_variants"] == []
+
+
 def test_skill_returns_monkeypatched_gemini_structured_success(monkeypatch):
     monkeypatch.setenv("AIJOLOT_INTAKE_PROVIDER", "gemini")
     skill = _load_skill()
@@ -56,7 +90,10 @@ def test_skill_returns_monkeypatched_gemini_structured_success(monkeypatch):
 
     result = asyncio.run(skill.run([{"author_type": "user", "body": "haz banner completo"}]))
 
-    assert result.metadata == {"provider": "gemini", "fallback": False}
+    assert result.metadata["provider"] == "gemini"
+    assert result.metadata["fallback"] is False
+    assert result.metadata["proposed_variants"] == []  # no split cue → Recommend-Nothing
+    assert "origin_tags" in result.metadata
     assert result.complete is True
     assert result.question is None
     assert result.structured_brief.cta == "Comprar ahora"

@@ -383,11 +383,15 @@ class RunOrchestrator:
 
     @staticmethod
     def _promo_text(campaign_row: dict[str, Any], catalog_context: dict[str, Any] | None) -> str:
-        # Prefer the campaign promo label; fall back to a % parsed from the
-        # promo rule or the catalog snapshot discount rule.
+        # Prefer the campaign promo label, then the brief's parsed promo, then a %
+        # from the promo rule or the catalog snapshot discount rule.
         label = str(campaign_row.get("promo_label") or "").strip()
         if label:
             return _short(label, 40)
+        structured = campaign_row.get("structured_brief") or {}
+        brief_promo = structured.get("promo") if isinstance(structured, dict) else ""
+        if brief_promo:
+            return _short(str(brief_promo), 40)
         rule = catalog_context.get("discount_rule") if catalog_context else None
         candidates: list[Any] = [campaign_row.get("promo_rule")]
         if isinstance(rule, dict):

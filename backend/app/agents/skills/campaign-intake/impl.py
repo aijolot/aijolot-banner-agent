@@ -19,6 +19,13 @@ _PROVIDER_ENV = "AIJOLOT_INTAKE_PROVIDER"
 _PROMPT_PATH = Path(__file__).resolve().parents[2] / "prompts" / "intake.md"
 
 
+class GeminiVariant(BaseModel):
+    key: str = ""
+    label: str = ""
+    audience: str = ""
+    customer_tag: str | None = None
+
+
 class GeminiIntakeOutput(BaseModel):
     """Strict JSON shape requested from Gemini for one intake turn."""
 
@@ -29,6 +36,9 @@ class GeminiIntakeOutput(BaseModel):
     urgency: Literal["low", "medium", "high"] | str | None = None
     placement: str | None = None
     deadline: str | None = None
+    promo: str | None = None
+    personalization_dimension: str | None = None
+    personalization_variants: list[GeminiVariant] | None = None
     question: str | None = None
 
 
@@ -81,12 +91,20 @@ def _fallback(messages: list[dict[str, Any]], current_brief: StructuredBrief | N
     for message in source_messages:
         if _author(message) == "user":
             brief = extract_into(brief, _message_text(message))
-    question = None if brief.is_complete() else _agent_reply(brief)
+    ready = _brief_ready(brief)
+    question = None if ready else _gate_question(brief)
     return CampaignIntakeResult(
         structured_brief=brief,
         question=question,
-        complete=brief.is_complete(),
-        metadata={"provider": "deterministic", "fallback": True, "reason": reason},
+        complete=ready,
+        metadata={
+            "provider": "deterministic",
+            "fallback": True,
+            "reason": reason,
+            "promo": brief.promo or None,
+            "proposed_variants": [v.key for v in brief.personalization_variants],
+            "origin_tags": _origin_tags(brief, "deterministic"),
+        },
     )
 
 
@@ -105,7 +123,7 @@ def _normalize_urgency(value: Any) -> str:
 
 def _merge_output(current_brief: StructuredBrief | None, output: GeminiIntakeOutput) -> StructuredBrief:
     data = (current_brief or StructuredBrief()).model_dump()
-    for key in ("goal", "audience", "cta", "tone", "urgency", "placement", "deadline"):
+    for key in ("goal", "audience", "cta", "tone", "urgency", "placement", "deadline", "promo"):
         value = getattr(output, key)
         if value is not None:
             if key == "urgency":
@@ -119,11 +137,68 @@ def _merge_output(current_brief: StructuredBrief | None, output: GeminiIntakeOut
                     data[key] = stripped
             else:
                 data[key] = value
+    # Personalization variants — proposal, preserve-filled (never clobber a
+    # designer-confirmed set). Coerce Gemini variants to the schema shape.
+    if not data.get("personalization_variants") and output.personalization_variants:
+        variants = [
+            {"key": v.key, "label": v.label or v.key.title(), "audience": v.audience, "customer_tag": v.customer_tag}
+            for v in output.personalization_variants
+            if (v.key or "").strip()
+        ]
+        if variants:
+            data["personalization_variants"] = variants
+            if output.personalization_dimension:
+                data["personalization_dimension"] = output.personalization_dimension
     # The app schema uses empty strings for missing text fields.
-    for key in ("goal", "audience", "cta", "tone", "urgency", "placement"):
+    for key in ("goal", "audience", "cta", "tone", "urgency", "placement", "promo"):
         if data.get(key) is None:
             data[key] = ""
     return StructuredBrief(**data)
+
+
+def _variants_coherent(brief: StructuredBrief) -> bool:
+    """Brief-Ready variant check: each variant has key+audience, tags distinct."""
+    variants = brief.personalization_variants or []
+    if not variants:
+        return True  # no split is coherent (single default audience)
+    tags = []
+    for v in variants:
+        key = getattr(v, "key", "") or ""
+        audience = getattr(v, "audience", "") or ""
+        if not key.strip() or not audience.strip():
+            return False
+        tags.append(getattr(v, "customer_tag", None) or key)
+    return len(set(tags)) == len(tags)
+
+
+def _brief_ready(brief: StructuredBrief) -> bool:
+    """Brief-Ready gate: required fields complete AND variant set coherent."""
+    return brief.is_complete() and _variants_coherent(brief)
+
+
+def _gate_question(brief: StructuredBrief) -> str:
+    """One question for the highest-priority Brief-Ready blocker."""
+    if not brief.is_complete():
+        from app.services.campaign_store import _agent_reply
+
+        return _agent_reply(brief)
+    # Required fields complete but variants incoherent.
+    return (
+        "Las variantes de personalización están incompletas o tienen etiquetas repetidas. "
+        "¿Me confirmas la audiencia y el tag de cada variante?"
+    )
+
+
+def _origin_tags(brief: StructuredBrief, provider: str) -> dict[str, str]:
+    """Per-field origin tags for the brief summary (anti-fabrication)."""
+    field_tag = "[LLM-GENERATED]" if provider == "gemini" else "[DETERMINISTIC]"
+    tags: dict[str, str] = {}
+    for key in ("goal", "audience", "cta", "tone", "urgency", "placement", "promo"):
+        value = getattr(brief, key, "") or ""
+        tags[key] = field_tag if str(value).strip() else "[MISSING]"
+    if brief.personalization_variants:
+        tags["personalization_variants"] = "[KG-RETRIEVED]"  # proposal — designer confirms
+    return tags
 
 
 def _render_prompt(messages: list[dict[str, Any]], brand_context: Any, current_brief: StructuredBrief | None) -> str:
@@ -175,16 +250,29 @@ async def run(
         return _fallback(messages, brief, reason="Gemini returned an unexpected output type")
 
     merged = _merge_output(brief, output)
+    # Deterministic safety net: if no variants were proposed but the latest turn
+    # carries an explicit split cue, propose them (Recommend-Nothing otherwise).
+    if not merged.personalization_variants:
+        from app.services.campaign_store import _propose_personalization
+
+        dimension, variants = _propose_personalization(_last_user_text(messages))
+        if variants:
+            merged = StructuredBrief(**{**merged.model_dump(), "personalization_dimension": dimension, "personalization_variants": variants})
+    ready = _brief_ready(merged)
     question = (output.question or "").strip() or None
-    if merged.is_complete():
+    if ready:
         question = None
     elif question is None:
-        from app.services.campaign_store import _agent_reply
-
-        question = _agent_reply(merged)
+        question = _gate_question(merged)
     return CampaignIntakeResult(
         structured_brief=merged,
         question=question,
-        complete=merged.is_complete(),
-        metadata={"provider": "gemini", "fallback": False},
+        complete=ready,
+        metadata={
+            "provider": "gemini",
+            "fallback": False,
+            "promo": merged.promo or None,
+            "proposed_variants": [v.key for v in merged.personalization_variants],
+            "origin_tags": _origin_tags(merged, "gemini"),
+        },
     )
