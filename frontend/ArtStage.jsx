@@ -86,9 +86,48 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
   const [aiBg, setAiBg] = useStateAR({ loading: false, options: [], source: "", selected: null, error: "" });
   const [artGen, setArtGen] = useStateAR({ loading: false, asset: null, source: "", prompt: "", error: "" });
   const [liveConcept, setLiveConcept] = useStateAR(null);
+  const [concepts, setConcepts] = useStateAR({ loading: false, source: "", dimension: "", items: [], error: "" });
+  const [iterInput, setIterInput] = useStateAR({});
+  const [iterBusy, setIterBusy] = useStateAR(null);
   const set = (patch) => { setSaveState("dirty"); setArt((a) => ({ ...a, ...patch })); };
   const canArtApi = typeof isApiCampaign === "function" && isApiCampaign(campaign) && typeof ArtApi !== "undefined";
   const brief = (campaign && campaign.structured_brief) || {};
+
+  async function proposeConcepts() {
+    if (concepts.loading) return;
+    if (!canArtApi) {
+      onNotice && onNotice({ tone: "amber", text: "Los conceptos por variante requieren una campaña backend (con brief listo)." });
+      return;
+    }
+    setConcepts((s) => ({ ...s, loading: true, error: "" }));
+    const res = await ArtApi.artConcepts(campaign, {});
+    const data = (res && res.data) || {};
+    if (res && res.ok && !res.fallback && (data.concepts || []).length) {
+      setConcepts({ loading: false, source: data.source || "deterministic", dimension: data.personalization_dimension || "", items: data.concepts, error: "" });
+      onNotice && onNotice({ tone: "green", text: `Conceptos propuestos por el agente (${data.source || "deterministic"})` });
+    } else {
+      setConcepts({ loading: false, source: "", dimension: "", items: [], error: (res && res.reason) || "Sin conceptos." });
+      onNotice && onNotice({ tone: "amber", text: (res && res.reason) || "No se pudieron proponer conceptos." });
+    }
+  }
+
+  async function iterateConcept(variantKey) {
+    const feedback = (iterInput[variantKey] || "").trim();
+    if (!feedback || iterBusy) return;
+    setIterBusy(variantKey);
+    const res = await ArtApi.artConcepts(campaign, { feedback, focus: "copy", focus_variant: variantKey });
+    const items = (res && res.data && res.data.concepts) || [];
+    if (res && res.ok && !res.fallback && items.length) {
+      // Replace only the iterated variant's concept; keep the others.
+      const next = items.find((c) => c.variant_key === variantKey);
+      setConcepts((s) => ({ ...s, items: s.items.map((c) => (c.variant_key === variantKey && next ? next : c)) }));
+      setIterInput((m) => ({ ...m, [variantKey]: "" }));
+      onNotice && onNotice({ tone: "green", text: `Concepto de «${variantKey}» iterado.` });
+    } else {
+      onNotice && onNotice({ tone: "amber", text: (res && res.reason) || "No se pudo iterar el concepto." });
+    }
+    setIterBusy(null);
+  }
 
   async function generateBackgrounds() {
     if (aiBg.loading) return;
@@ -374,6 +413,70 @@ function ArtStage({ campaign, placement, onNotice, onAssemble }) {
             </div>
           </div>
         ) : null}
+      </GlassCard>
+
+      {/* Art Direction — per-variant concept proposal (with evidence + iterate) */}
+      <GlassCard style={{ padding: 14, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontFamily: "Space Grotesk", fontSize: 13, fontWeight: 600, color: "#002B57" }}>
+            <Icon name="lightbulb" size={15} /> Conceptos de arte por variante
+          </div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            {concepts.dimension ? <Badge tone="slate">dimensión: {concepts.dimension}</Badge> : null}
+            {concepts.source ? <Badge tone={concepts.source === "gemini" ? "purple" : "slate"}>{concepts.source}</Badge> : null}
+            <Button variant="secondary" icon="sparkles" onClick={proposeConcepts} disabled={concepts.loading}>
+              {concepts.loading ? "Proponiendo…" : "Proponer conceptos (IA)"}
+            </Button>
+          </div>
+        </div>
+
+        {concepts.items.length ? (
+          <div style={{ display: "grid", gridTemplateColumns: concepts.items.length > 1 ? "repeat(auto-fit,minmax(300px,1fr))" : "1fr", gap: 10 }}>
+            {concepts.items.map((c, i) => {
+              const scoped = String((c.background || {}).css || "").split(".aijolot-banner").join(`.aijolot-cbg-${i}`);
+              const tags = c.origin_tags || {};
+              return (
+                <div key={c.variant_key} style={{ border: "1px solid #EEF2F6", borderRadius: 12, overflow: "hidden", background: "#fff" }}>
+                  {scoped ? <style dangerouslySetInnerHTML={{ __html: scoped }} /> : null}
+                  <div className={`aijolot-cbg-${i}`} style={{ height: 60, display: "flex", alignItems: "center", padding: "0 12px", color: "rgba(255,255,255,.92)" }}>
+                    <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 13, textShadow: "0 1px 6px rgba(0,0,0,.45)" }}>{(c.copy || {}).headline || c.label}</span>
+                  </div>
+                  <div style={{ padding: "10px 12px", display: "flex", flexDirection: "column", gap: 7 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                      <Badge tone="cyan">{c.label}</Badge>
+                      {c.customer_tag ? <Badge tone="slate">{c.customer_tag}</Badge> : null}
+                      <Badge tone={c.shot_type === "usage" ? "purple" : "amber"} icon={c.shot_type === "usage" ? "users-round" : "gem"}>{c.shot_type}</Badge>
+                    </div>
+                    <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#475569" }}>
+                      <b>CTA:</b> {(c.copy || {}).cta || "—"} · <b>Sub:</b> {(c.copy || {}).subheadline || "—"}
+                    </div>
+                    <div style={{ fontFamily: "Inter", fontSize: 11, color: "#64748B" }}>
+                      <Icon name="layout-template" size={11} /> {c.layout} <span style={{ color: "#94A3B8" }}>{tags.layout}</span>
+                    </div>
+                    <div style={{ fontFamily: "Inter", fontSize: 11, color: "#64748B" }}>
+                      <Icon name="package" size={11} /> {(c.product || {}).title || "(sin producto)"} <span style={{ color: "#94A3B8" }}>{tags.product}</span>
+                    </div>
+                    <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8", lineHeight: 1.4 }}>{c.product_rationale}</div>
+                    {c.model_treatment ? <div style={{ fontFamily: "Inter", fontSize: 11, color: "#475569" }}><Icon name="user-round" size={11} /> {c.model_treatment}</div> : null}
+                    <div style={{ display: "flex", gap: 6, marginTop: 3 }}>
+                      <input value={iterInput[c.variant_key] || ""} onChange={(e) => setIterInput((m) => ({ ...m, [c.variant_key]: e.target.value }))}
+                        onKeyDown={(e) => { if (e.key === "Enter") iterateConcept(c.variant_key); }}
+                        placeholder="Iterar este concepto (ej. más audaz, otro ángulo)…"
+                        style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "6px 9px", fontFamily: "Inter", fontSize: 11.5, color: "#002B57", outline: "none" }} />
+                      <Button variant="ghost" icon="refresh-cw" onClick={() => iterateConcept(c.variant_key)} disabled={iterBusy === c.variant_key || !(iterInput[c.variant_key] || "").trim()} style={{ padding: "6px 10px" }}>
+                        {iterBusy === c.variant_key ? "…" : "Iterar"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8" }}>
+            El agente propone un concepto por variante (layout del KG + copy + fondo + producto + tratamiento de modelo, con evidencia). Define las variantes en el Brief y pulsa «Proponer conceptos».
+          </div>
+        )}
       </GlassCard>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.5fr) minmax(320px,1fr)", gap: 16, alignItems: "start" }}>
