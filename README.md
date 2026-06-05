@@ -4,11 +4,15 @@ Hackathon MVP for an agentic banner creation, review, scheduling, and Shopify pu
 
 License: MIT.
 
-Goal: help marketing teams create, review, schedule, position, and publish store banners. MVP scope targets Shopify stores.
+Goal: help marketing teams create, review, edit, schedule, position, and publish store banners. MVP scope targets Shopify stores.
+
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full system design (diagrams, the 9-node ADK generation pipeline, provider boundaries, and skill contracts).
 
 ## Current status
 
-The backend MVP is implemented on the feature branch. The documented demo path is deterministic/offline by default and uses seeded fixtures; real Gemini, Supabase, Shopify, and Lighthouse checks are opt-in/manual. The frontend remains a static React UMD/Babel prototype, not a Next.js app.
+The backend MVP is implemented on the feature branch. The documented demo path is deterministic/offline by default and uses seeded fixtures; real Gemini (text + image), Supabase, Shopify, and Lighthouse are opt-in/manual via provider flags and credentials.
+
+The frontend is a static React 18 UMD/Babel prototype (not a Next.js app), but its API layer (`frontend/lib.jsx`) now sends demo auth headers on every `/api/v1` call and drives the real agentic backend: SSE-streamed brief intake, per-variant art concepts, AI backgrounds, art generation, generation runs, agentic refine, scoped banner-edit, approval, schedule, and publish/unpublish. Each AI node degrades to a deterministic fallback when provider env/credentials are absent. Backend tests: 325 passed, 3 skipped (clean env).
 
 Important constraints:
 
@@ -86,7 +90,7 @@ The static adapters use backend base:
 window.AIJOLOT_API_BASE || "http://localhost:8000"
 ```
 
-New API calls target `/api/v1`. Those routes require demo auth context; the current static browser prototype may show 401/fallback notices unless the served adapters include/send demo headers or an authenticated wrapper supplies them. The adapters use seeded demo placement/store conventions and visible fallback notices for local/prototype-only states. See `docs/architecture/frontend-backend-contract.md` for exact adapter behavior.
+New API calls target `/api/v1`. The `lib.jsx` adapters now bake in demo auth headers (`AIJOLOT_DEMO_AUTH_HEADERS`) and a demo identity/team/store, so canonical routes resolve without manual header wiring. The studio flows through six stages — placement → brief → art → generate → canvas → performance — each triggering its agentic backend action (intake is SSE-streamed; art/concepts/backgrounds/generate-art/refine/banner-edit hit the live LLM-backed endpoints when provider env is present, otherwise deterministic fallbacks). Adapters still show visible fallback notices for prototype-only states. See `docs/architecture/frontend-backend-contract.md` for exact adapter behavior.
 
 ## Deterministic demo smoke path
 
@@ -170,6 +174,9 @@ Implemented capability groups:
 
 - Brand context CRUD/import with Supabase-first storage and Markdown fallback.
 - Campaign create/list/intake/get/patch with Supabase-first persistence and team-isolated no-Supabase fallback.
+- SSE-streamed conversational brief intake producing the Campaign Brief (v0.3.0): goal/audience/CTA/tone/urgency plus personalization variants and promo, Gemini-backed with deterministic fallback.
+- Per-variant art direction: art concepts, art/model prompts, sanitized AI background options, and art generation.
+- Variant-aware generation: one `banner_variant` per personalization variant with variant-specific copy and shared palette.
 - Store/resource cache APIs using seeded/cached Shopify resources.
 - Placement validation and campaign placement persistence.
 - Catalog snapshot persistence from cached resources.
@@ -178,7 +185,7 @@ Implemented capability groups:
 - Deterministic/Gemini provider boundaries for text/image generation.
 - Asset optimization/upload plumbing with WebP/JPG and optional AVIF; AVIF skipped must be labeled.
 - Preview HTML, controlled Shopify Liquid payloads, and audit reports; Lighthouse is mock/manual unless run separately.
-- Approval threads, comments, all-reviewer approval, refinement requests, regeneration, and revision history.
+- Approval threads, comments, all-reviewer approval, refinement requests, agentic regeneration, scoped non-destructive banner-edit (copy/background/image/layout), and revision history.
 - Scheduling plus Shopify publish/unpublish through controlled theme assets/metafield config when real credentials are configured.
 - Performance/evolutionary memory APIs with explicit non-live provenance labels.
 
