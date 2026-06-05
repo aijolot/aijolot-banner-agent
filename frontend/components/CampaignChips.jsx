@@ -9,6 +9,19 @@ const { useState: useStateCC } = React;
 const REQUIRED = ["goal", "audience", "cta", "urgency", "placement"];
 const URGENCIES = [["low", "Baja"], ["medium", "Media"], ["high", "Alta"]];
 
+// Personalization dimensions (1 campaign, N variants served by customer tag).
+const DIMENSIONS = [["", "Ninguna"], ["gender", "Género"], ["value_tier", "Tier de valor"]];
+const VARIANT_PRESETS = {
+  gender: [
+    { key: "male", label: "Hombre", audience: "hombres", customer_tag: "gender:male" },
+    { key: "female", label: "Mujer", audience: "mujeres", customer_tag: "gender:female" },
+  ],
+  value_tier: [
+    { key: "vip", label: "Cliente VIP", audience: "clientes VIP", customer_tag: "vip:true" },
+    { key: "regular", label: "Cliente", audience: "clientes regulares", customer_tag: "vip:false" },
+  ],
+};
+
 function todayISO() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -61,17 +74,17 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
   const canAdvance = !prototypeOnly && missing.length === 0 && Object.keys(errors).length === 0;
 
   const setField = (k, v) => onChange && onChange({ ...campaign, structured_brief: { ...brief, [k]: v } });
+  const setFields = (patch) => onChange && onChange({ ...campaign, structured_brief: { ...brief, ...patch } });
 
-  async function persist(k, value) {
+  async function persistFields(fields) {
     if (!isBackendCampaign) {
       setSaveState("failed");
-      const text = "Modo prototipo: este brief local no tiene UUID backend y no puede persistirse ni avanzar.";
-      onNotice && onNotice({ tone: "amber", text });
+      onNotice && onNotice({ tone: "amber", text: "Modo prototipo: este brief local no tiene UUID backend y no puede persistirse ni avanzar." });
       return;
     }
     try {
       setSaveState("saving");
-      const updated = await CampaignApi.patch(campaign.id, { [k]: value });
+      const updated = await CampaignApi.patch(campaign.id, fields);
       setSaveState("saved");
       onChange && onChange({ ...updated, structured_brief: updated.structured_brief || {} });
       onNotice && onNotice({ tone: "green", text: "Brief guardado en backend." });
@@ -81,6 +94,21 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
       onNotice && onNotice({ tone: "amber", text: "No se pudo guardar brief en backend: " + msg });
     }
   }
+  const persist = (k, value) => persistFields({ [k]: value });
+
+  // --- personalization variants (1 campaign, N served by tag) ---
+  const pVariants = Array.isArray(brief.personalization_variants) ? brief.personalization_variants : [];
+  const pDimension = brief.personalization_dimension || "";
+  function chooseDimension(dim) {
+    const variants = dim ? (VARIANT_PRESETS[dim] || []).map((v) => ({ ...v })) : [];
+    setFields({ personalization_dimension: dim, personalization_variants: variants });
+    persistFields({ personalization_dimension: dim, personalization_variants: variants });
+  }
+  function setVariantAudience(i, value) {
+    const next = pVariants.map((v, idx) => (idx === i ? { ...v, audience: value } : v));
+    setField("personalization_variants", next);
+  }
+  function persistVariants() { persistFields({ personalization_variants: pVariants }); }
 
   return (
     <GlassCard style={{ padding: 20, display: "flex", flexDirection: "column", gap: 13, height: "100%" }}>
@@ -130,6 +158,33 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
         </Row>
         <Row icon="calendar" label="Fecha límite (opcional)" error={errors.deadline}>
           <input type="date" value={/^\d{4}-\d{2}-\d{2}$/.test(brief.deadline || "") ? brief.deadline : ""} onChange={(e) => { setField("deadline", e.target.value || null); persist("deadline", e.target.value || null); }} style={inputStyle} />
+        </Row>
+        <Row icon="users" label="Personalización (1 campaña · N variantes por tag)">
+          <div style={{ display: "flex", gap: 6, marginBottom: pVariants.length ? 9 : 0 }}>
+            {DIMENSIONS.map(([id, lbl]) => {
+              const on = pDimension === id || (id === "" && !pDimension);
+              return (
+                <button key={id || "none"} onClick={() => chooseDimension(id)} style={{
+                  flex: 1, fontFamily: "Inter", fontSize: 11.5, fontWeight: 600, padding: "7px 0", borderRadius: 8, cursor: "pointer",
+                  border: "1px solid " + (on ? "#22D3EE" : "#E2E8F0"), background: on ? "rgba(34,211,238,.12)" : "#fff", color: on ? "#0891B2" : "#64748B",
+                }}>{lbl}</button>
+              );
+            })}
+          </div>
+          {pVariants.length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+              {pVariants.map((v, i) => (
+                <div key={v.key || i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontFamily: "Inter", fontSize: 10.5, fontWeight: 700, color: "#0891B2", background: "rgba(34,211,238,.1)", border: "1px solid rgba(34,211,238,.3)", borderRadius: 9999, padding: "3px 9px", whiteSpace: "nowrap" }}>{v.label || v.key}</span>
+                  <input value={v.audience || ""} onChange={(e) => setVariantAudience(i, e.target.value)} onBlur={persistVariants} style={{ ...inputStyle, fontSize: 12 }} placeholder={`Audiencia para ${v.label || v.key}`} />
+                  <span style={{ fontFamily: "Space Grotesk", fontSize: 9.5, color: "#94A3B8", whiteSpace: "nowrap" }}>{v.customer_tag}</span>
+                </div>
+              ))}
+              <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>El agente genera un banner por variante y lo sirve según el tag del cliente.</div>
+            </div>
+          ) : (
+            <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>Sin personalización: una sola audiencia. Elige una dimensión para segmentar (ej. Género → Hombre / Mujer).</div>
+          )}
         </Row>
       </div>
 
