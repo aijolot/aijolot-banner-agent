@@ -311,36 +311,36 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     const t = text.toLowerCase();
     setRefining(true);
     setRefineInput("");
-    // Fire the backend regeneration in parallel with the local visual feedback,
-    // so the canvas stays responsive but the notice reflects backend truth.
-    const backend = GenerationApi.regenerate(campaign, { prompt: text, source_revision_id: revision && revision.id, requested_by: AIJOLOT_DEMO_IDS.user })
-      .catch((e) => ({ ok: true, fallback: true, reason: "Backend no aceptó el refinamiento (" + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) + ").", data: null }));
+    // Scoped, non-destructive edit: the backend classifies the target
+    // (text/background/image) and returns a NEW revision; the canvas Banner
+    // re-renders from revision.concept. A light local shim keeps it responsive.
+    const backend = GenerationApi.bannerEdit(campaign, text, null, revision && revision.id)
+      .catch((e) => ({ ok: true, fallback: true, reason: "Backend no aceptó la edición (" + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) + ").", data: null }));
     setTimeout(async () => {
       const next = { ...applied };
-      const acks = [];
-      if (/bril|luz|clar|ilumin/.test(t)) { next.brighter = true; acks.push("subí el brillo del fondo"); }
-      if (/bot|cta|contrast|resalt/.test(t)) { next.ctaContrast = true; acks.push("cambié el botón a color contraste"); }
-      if (/oscur|sobrio/.test(t)) { next.brighter = false; acks.push("oscurecí el fondo"); }
+      if (/bril|luz|clar|ilumin/.test(t)) next.brighter = true;
+      if (/bot|cta|contrast|resalt/.test(t)) next.ctaContrast = true;
+      if (/oscur|sobrio/.test(t)) next.brighter = false;
       setApplied(next);
-      // resolve any comment the instruction addresses
       setComments((arr) => arr.map((c) => {
         const ct = c.text.toLowerCase();
         if (!c.resolved && ((/bril|luz/.test(t) && /bril|luz/.test(ct)) || (/bot|cta|contrast|resalt/.test(t) && /bot|cta|contrast|resalt/.test(ct)))) return { ...c, resolved: true };
         return c;
       }));
-      const base = acks.length ? "Listo: " + acks.join(" y ") + "." : "Apliqué el ajuste y recompilé el banner.";
       const r = await backend;
-      if (r && !r.fallback) {
-        setRefineMsg(base);
-        onNotice && onNotice({ tone: "green", text: "Refinamiento enviado al backend" });
-        const rev = await GenerationApi.latestRevision(campaign);
-        if (rev && !rev.fallback && rev.data) setRevision(rev.data);
+      const editedRevision = r && r.data && r.data.revision;
+      const targets = (r && r.data && r.data.generation_run && r.data.generation_run.metadata && r.data.generation_run.metadata.edit_targets) || [];
+      if (r && !r.fallback && editedRevision) {
+        setRevision(editedRevision);  // Banner re-renders from the edited concept
+        const label = targets.length ? targets.join(", ") : "banner";
+        setRefineMsg(`Editado (${label}) · revisión #${editedRevision.revision_number}`);
+        onNotice && onNotice({ tone: "green", text: `Edición aplicada en backend (${label}); el resto se preservó.` });
       } else {
-        setRefineMsg(base + " (local, sin backend)");
-        onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "Refinamiento aplicado solo localmente." });
+        setRefineMsg("Ajuste local (sin backend).");
+        onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "Edición aplicada solo localmente." });
       }
       setRefining(false);
-    }, 1500);
+    }, 1200);
   }
 
   async function publish() {
