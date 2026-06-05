@@ -185,6 +185,9 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const realVariants = liveConcept && Array.isArray(revision.variants) ? revision.variants : [];
   const selectedVariant = realVariants.find((v) => v.segment_key === variantKey) || realVariants[0] || null;
   const variantCopy = selectedVariant || {};
+  // Per-variant featured product image (when the variant chose its own product),
+  // else the shared generated art. So switching Hombre/Mujer swaps the perfume photo.
+  const variantProduct = (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.featured_product) || {};
   const live = liveConcept ? {
     eyebrow: String((selectedVariant ? variantCopy.eyebrow : null) || liveCopy.eyebrow || liveCopy.audience || "").toUpperCase().slice(0, 40) || null,
     headline: (selectedVariant ? variantCopy.headline : null) || liveCopy.headline || null,
@@ -192,7 +195,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     cta: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
     promo: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
     brandName: "",
-    imageUrl: (liveLastArt && liveLastArt.public_url) || null,
+    imageUrl: variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
     bgCss: (liveBgObj && liveBgObj.css) || null,
   } : null;
   const approvedCount = approvers.filter((a) => a.status === "approved").length;
