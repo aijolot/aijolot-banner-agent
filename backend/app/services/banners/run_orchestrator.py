@@ -376,7 +376,7 @@ class RunOrchestrator:
             revision = self.revisions.update(revision_id=str(revision["id"]), data={"concept": _json_safe(cdict)}) or revision
             revision_id = str(revision["id"])
             self._create_layout_variants(revision_id, _dict_to_concept(cdict))
-            variant_rows = self._copy_or_regenerate_variants(revision_id, source_revision, cdict, campaign_state, brand, "copy" in target_set)
+            variant_rows = await self._copy_or_regenerate_variants(revision_id, source_revision, cdict, campaign_state, brand, "copy" in target_set)
 
             # image: regenerate only when targeted (or no source image to preserve)
             node = "generate_image"
@@ -420,21 +420,33 @@ class RunOrchestrator:
                 recorder.fail(node, {"error": type(exc).__name__, "detail": _short(str(exc), 280)})
             return OrchestratorOutcome(status="failed", frontend_step=recorder.last_frontend_step or "render_audit", events=recorder.events, error_message=f"{type(exc).__name__}: {exc}"[:500], metadata={"facade_version": "f-banner-edit", "failed_node": node})
 
-    def _copy_or_regenerate_variants(self, revision_id, source_revision, cdict, campaign_state, brand, regenerate_copy):
-        """Carry source variants verbatim (scoped) unless copy is the edit target."""
+    async def _copy_or_regenerate_variants(self, revision_id, source_revision, cdict, campaign_state, brand, regenerate_copy):
+        """Carry the source's N variants forward; regenerate per-variant copy only
+        when copy is the edit target (NEVER collapse N variants into one)."""
         source_variants = []
         try:
             source_variants = self.variants.list_by_revision_id(revision_id=str(source_revision["id"]))  # type: ignore[attr-defined]
         except Exception:  # noqa: BLE001
             source_variants = []
-        if not regenerate_copy and source_variants:
+        if source_variants:
+            concept_skill = _load_runtime_skill("banner-concept-draft") if regenerate_copy else None
             rows = []
             for v in source_variants:
                 row = {k: v.get(k) for k in ("segment_key", "segment_label", "customer_tag", "audience_rule", "eyebrow", "headline", "subheadline", "cta_text", "cta_url", "palette")}
                 row["revision_id"] = revision_id
+                if regenerate_copy and concept_skill is not None:
+                    audience = (v.get("audience_rule") or {}).get("audience") or v.get("segment_label") or campaign_state.audience
+                    copy = await concept_skill.copy_for_audience(
+                        campaign=campaign_state, brand_context=brand, catalog_context=None, best_practices=None,
+                        layout_hint=cdict.get("layout", ""), audience=audience, settings=self.settings, cost_guard=self.cost_guard,
+                    )
+                    row["eyebrow"] = copy.get("eyebrow") or row.get("eyebrow")
+                    row["headline"] = copy.get("headline") or row.get("headline")
+                    row["subheadline"] = copy.get("subheadline") or row.get("subheadline")
+                    row["cta_text"] = copy.get("cta") or row.get("cta_text")
                 rows.append(row)
             return self.variants.create_many(variants=_json_safe(rows))
-        # copy edit (or no source variants): regenerate from the edited concept
+        # No source variants → single default from the edited concept.
         copy = cdict.get("copy", {})
         rows = [{
             "revision_id": revision_id, "segment_key": "default", "segment_label": "Default audience",
