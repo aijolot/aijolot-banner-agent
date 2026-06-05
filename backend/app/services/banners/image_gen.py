@@ -25,6 +25,7 @@ async def generate_image(
     aspect_ratio: str = "16:9",
     concept: Any = None,
     est_usd: float = EST_IMAGE_USD,
+    reference_images: tuple[tuple[bytes, str], ...] = (),
 ) -> tuple[bytes, dict[str, Any], float]:
     from app.agents.tools import nano_banana_image
     from app.services.gemini.fake_image_provider import FakeImageProvider
@@ -45,7 +46,8 @@ async def generate_image(
 
     try:
         result = await image_skill.run(
-            refined_prompt, concept=concept, campaign_id=campaign_id, aspect_ratio=aspect_ratio, provider=provider
+            refined_prompt, concept=concept, campaign_id=campaign_id, aspect_ratio=aspect_ratio,
+            provider=provider, reference_images=reference_images,
         )
     except ImageProviderUnavailable:
         # Real provider not usable (e.g. no GOOGLE_API_KEY): degrade to the free
@@ -54,8 +56,10 @@ async def generate_image(
             raise
         cost = 0.0
         result = await image_skill.run(
-            refined_prompt, concept=concept, campaign_id=campaign_id, aspect_ratio=aspect_ratio, provider=FakeImageProvider()
+            refined_prompt, concept=concept, campaign_id=campaign_id, aspect_ratio=aspect_ratio,
+            provider=FakeImageProvider(), reference_images=reference_images,
         )
     meta = {k: v for k, v in result.items() if k != "image_bytes"}
     meta["size_bytes"] = result.get("metadata", {}).get("size_bytes")
+    meta["is_real_provider"] = is_real
     return result["image_bytes"], meta, cost

@@ -28,6 +28,10 @@ class ImageGenerationRequest:
     user_id: str | None = None
     campaign_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Optional reference images (bytes, mime_type) fed alongside the prompt for
+    # multimodal generation/editing — e.g. the real product photo so Nano Banana
+    # composes the actual bottle into the hero rather than inventing one.
+    reference_images: tuple[tuple[bytes, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +92,22 @@ class GeminiImageProvider:
                 config = types.GenerateContentConfig(response_modalities=["IMAGE"])
             except Exception:
                 config = None
-            response = client.models.generate_content(model=self.model, contents=request.prompt, config=config)
+            # Multimodal contents: the text prompt plus any reference images (e.g. the
+            # real product photo). Image parts come first so the model anchors on them.
+            contents: Any = request.prompt
+            if request.reference_images:
+                parts: list[Any] = []
+                for data, mime in request.reference_images:
+                    if not data:
+                        continue
+                    try:
+                        parts.append(types.Part.from_bytes(data=data, mime_type=mime or "image/jpeg"))
+                    except Exception:  # pragma: no cover - SDK shape variance
+                        continue
+                parts.append(request.prompt)
+                if len(parts) > 1:
+                    contents = parts
+            response = client.models.generate_content(model=self.model, contents=contents, config=config)
         except Exception as exc:  # pragma: no cover - external provider path
             raise ImageProviderUnavailable("Gemini image generation failed") from None
 

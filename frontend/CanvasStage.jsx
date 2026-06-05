@@ -195,7 +195,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     cta: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
     promo: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
     brandName: "",
-    imageUrl: variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
+    imageUrl: variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
     bgCss: (liveBgObj && liveBgObj.css) || null,
   } : null;
   const approvedCount = approvers.filter((a) => a.status === "approved").length;

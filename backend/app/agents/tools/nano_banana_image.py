@@ -55,6 +55,7 @@ async def generate(
     provider: ImageProvider | None = None,
     provider_name: str | None = None,
     settings: Settings | None = None,
+    reference_images: tuple[tuple[bytes, str], ...] = (),
 ) -> ImageGenerationResponse:
     """Generate one image and return bytes plus provider metadata."""
 
@@ -71,5 +72,6 @@ async def generate(
         user_id=user_id,
         campaign_id=campaign_id,
         metadata=metadata or {},
+        reference_images=tuple(reference_images or ()),
     )
     return await selected_provider.generate(request)

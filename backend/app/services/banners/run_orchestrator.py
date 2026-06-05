@@ -583,6 +583,100 @@ class RunOrchestrator:
             concept=concept,
         )
 
+    async def _compose_variant_hero(
+        self,
+        *,
+        spec: dict[str, Any],
+        concept: Any,
+        campaign_id: str,
+        revision_id: str,
+    ) -> str | None:
+        """Generate a campaign-styled, background-removed product hero for a variant.
+
+        Feeds the variant's REAL product photo to Nano Banana Pro as a reference and
+        asks for a composition (bottle + campaign props) on a flat chroma-green field,
+        then keys the green out to a transparent PNG so the creative background shows
+        through. Returns the hero's public URL, or None (caller falls back to the raw
+        product photo) when there is no product image, no storage, or generation fails.
+        """
+        product_url = str(spec.get("product_image_url") or "").strip()
+        if not product_url or self.asset_service is None:
+            return None
+
+        import httpx
+
+        from app.services.gemini.image_compose import chroma_key_to_png, transparent_fraction
+
+        try:
+            with httpx.Client(timeout=20.0) as http:
+                resp = http.get(product_url)
+            if resp.status_code >= 400 or not resp.content:
+                return None
+            ref_bytes = resp.content
+            ref_mime = resp.headers.get("content-type", "image/jpeg").split(";")[0] or "image/jpeg"
+        except Exception:  # noqa: BLE001
+            return None
+
+        prompt = self._hero_compose_prompt(spec=spec, concept=concept)
+        from app.services.banners.image_gen import generate_image as _gen
+
+        try:
+            raw_bytes, meta, _cost = await _gen(
+                prompt,
+                settings=self.settings,
+                cost_guard=self.cost_guard,
+                campaign_id=campaign_id,
+                aspect_ratio="3:4",
+                concept=concept,
+                reference_images=((ref_bytes, ref_mime),),
+            )
+        except Exception:  # noqa: BLE001 — generation failed; fall back to product photo
+            return None
+        if not meta.get("is_real_provider"):
+            # Fake provider has no chroma field to key — not a usable transparent hero.
+            return None
+        try:
+            png = chroma_key_to_png(raw_bytes)
+        except ValueError:
+            return None
+        # Sanity: a real cutout removes a meaningful chunk of background; if almost
+        # nothing was keyed, the model likely ignored the green field — skip it.
+        if transparent_fraction(png) < 0.08:
+            return None
+        try:
+            row = self.asset_service.upload_png(
+                png_bytes=png,
+                campaign_id=campaign_id,
+                revision_id=revision_id,
+                asset_group_key=f"hero-{spec.get('key') or 'v'}",
+                asset_kind="generated_hero",
+                alt_text=str(spec.get("product_title") or "Producto"),
+                image_prompt=_short(prompt, 300),
+            )
+            return row.get("public_url")
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def _hero_compose_prompt(*, spec: dict[str, Any], concept: Any) -> str:
+        product = str(spec.get("product_title") or "the featured product")
+        copy = getattr(concept, "copy", None) or {}
+        headline = copy.get("headline") if isinstance(copy, dict) else ""
+        mood = getattr(concept, "image_prompt", "") or ""
+        layout = getattr(concept, "layout", "") or ""
+        return (
+            f"E-commerce banner HERO image of THIS exact product: {product}. "
+            "Use the provided product photo as the visual reference — keep the bottle/package real shape, "
+            "colors and label EXACTLY; do not invent a different product. "
+            f"Campaign mood: {_short(headline, 80)}. {_short(mood, 180)}. "
+            "Compose tasteful campaign props around the product that fit the theme (e.g. for a summer citrus "
+            "promo: floating mandarin/orange slices, juicy splashes, warm sun bokeh) — elegant, premium, not cluttered. "
+            "CRITICAL OUTPUT RULE: render the product and props on a PERFECTLY UNIFORM, FLAT, SOLID PURE GREEN "
+            "background (hex #00FF00 chroma green) that fills the entire frame. No checkerboard, no gradient, no "
+            "scenery, no floor, no shadows on a surface — just the cutout subject on flat #00FF00 green so the "
+            "green can be keyed out to transparency. Portrait 3:4 framing, product centered with breathing room."
+        )
+
     async def _optimize_assets(
         self,
         *,
@@ -755,6 +849,14 @@ class RunOrchestrator:
             # catalog context filtered to that product, so men→Mandarin Sky, women→My Way.
             variant_catalog = _variant_catalog_context(catalog_context, spec)
             has_own_product = bool(spec.get("product_gid") or spec.get("product_title"))
+            # Compose a campaign-styled, background-removed hero from the variant's
+            # real product photo (transparent PNG). None → Canvas uses the raw photo.
+            if has_own_product and spec.get("product_image_url"):
+                hero_url = await self._compose_variant_hero(
+                    spec=spec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id
+                )
+                if hero_url:
+                    spec = {**spec, "product_hero_url": hero_url}
             if index == 0 and spec["audience"] == campaign_state.audience and not has_own_product:
                 # Reuse the already-generated primary concept copy for the base variant.
                 copy = {k: base_copy.get(k) for k in ("eyebrow", "headline", "subheadline", "cta")}
@@ -1028,7 +1130,7 @@ def _first_asset_public_url(assets: Any) -> str | None:
 def _variant_product_ref(spec: dict[str, Any]) -> dict[str, Any]:
     """The featured-product reference recorded on a variant (for the assembly/publish)."""
     ref: dict[str, Any] = {}
-    for key in ("product_gid", "product_title", "product_image_url"):
+    for key in ("product_gid", "product_title", "product_image_url", "product_hero_url"):
         value = spec.get(key)
         if value:
             ref[key] = value
