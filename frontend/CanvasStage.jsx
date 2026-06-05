@@ -195,6 +195,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const live = liveConcept ? {
     eyebrow: String((selectedVariant ? variantCopy.eyebrow : null) || liveCopy.eyebrow || liveCopy.audience || "").toUpperCase().slice(0, 40) || null,
     headline: (selectedVariant ? variantCopy.headline : null) || liveCopy.headline || null,
+    headlineRuns: (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.headline_runs) || null,
     sub: (selectedVariant ? variantCopy.subheadline : null) || liveCopy.subheadline || null,
     cta: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
     promo: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
@@ -206,10 +207,14 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     // The background CSS was authored with a legible copy color (its first `color:`),
     // but that color lands on the empty .hb-bg layer. Lift it onto the actual copy so
     // the headline keeps the contrast the agent designed for this background.
-    textColor: (() => {
+    textColor: (liveConcept.art_direction && liveConcept.art_direction.ink) || (() => {
+      // Fallback: contrast ink derived from the bg's base color luminance.
       const css = (liveBgObj && liveBgObj.css) || "";
-      const m = css.match(/[^-]color\s*:\s*(#[0-9a-fA-F]{3,6}|rgba?\([^)]+\))/);
-      return m ? m[1] : null;
+      const m = css.match(/background(?:-color)?\s*:\s*[^;]*?#([0-9a-fA-F]{3,6})/);
+      if (!m) return "#111111";
+      let h = m[1]; if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+      const r = parseInt(h.slice(0,2),16)/255, g = parseInt(h.slice(2,4),16)/255, b = parseInt(h.slice(4,6),16)/255;
+      return (0.2126*r + 0.7152*g + 0.0722*b) >= 0.5 ? "#111111" : "#FFFFFF";
     })(),
   } : null;
   // Load the agent-chosen Google Fonts once per pairing (idempotent <link> inject).

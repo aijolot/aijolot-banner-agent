@@ -87,6 +87,21 @@ async def _critique(png: bytes, breakpoint: str, model: str) -> BannerCritique |
     return await asyncio.to_thread(_critique_sync, png, breakpoint, model)
 
 
+def _safe_desktop_layout(layout: dict[str, Any]) -> dict[str, Any]:
+    """A known-good, legible wide composition: copy vertically centered on one side,
+    hero centered on the OTHER side (keeps the agent's chosen side + hero size)."""
+    text_left = float(layout.get("textX", 6) or 6) < 50
+    return {
+        "textX": 6 if text_left else 52,
+        "textY": 50,
+        "textW": min(44, float(layout.get("textW", 44) or 44)),
+        "heroX": 76 if text_left else 26,
+        "heroY": 50,
+        "heroW": min(46, float(layout.get("heroW", 46) or 46)),
+        "heroBehind": False,
+    }
+
+
 def _apply_suggestions(layout: dict[str, Any], crit: BannerCritique) -> dict[str, Any]:
     from app.schemas.typography import ArtDirection, clamp_layout
 
@@ -120,10 +135,11 @@ async def review_and_correct(
 
     review_model = model or gemini_text.FLASH_MODEL
     layout = dict(spec.get("layout") or {})
+    runs = list(spec.get("headlineRuns") or [])
     report: list[dict[str, Any]] = []
 
     for iteration in range(max(1, max_iters)):
-        trial = {**spec, "layout": layout}
+        trial = {**spec, "layout": layout, "headlineRuns": runs or None}
         try:
             shots = await screenshot_breakpoints(trial)
         except Exception as exc:  # noqa: BLE001 — no Chromium / render error
@@ -141,11 +157,25 @@ async def review_and_correct(
         if all(c.ok for c in verdicts.values()):
             break
         changed = False
-        # Desktop (wide, absolute %): apply the suggested composition.
-        desktop = verdicts.get("desktop")
-        if desktop and not desktop.ok and any(v is not None for v in (desktop.text_x, desktop.hero_x, desktop.text_w)):
-            layout = _apply_suggestions(layout, desktop)
+        # Contrast/legibility flagged anywhere + the headline has tinted runs → drop the
+        # run colors (fall back to the base ink) so emphasis stays but contrast is safe.
+        contrast_flag = any(
+            (not c.legible) or any("contrast" in i.lower() or "legib" in i.lower() or "readab" in i.lower() for i in c.issues)
+            for c in verdicts.values()
+        )
+        if contrast_flag and any(r.get("color") for r in runs):
+            runs = [{**r, "color": None} for r in runs]
             changed = True
+        # Desktop (wide, absolute %): the vision's raw suggested coordinates are
+        # unreliable (they sometimes worsen it), so on a clip/overflow/collision we
+        # snap to a SAFE canonical composition — vertically centered, copy and hero on
+        # opposite halves — rather than trusting the model's numbers.
+        desktop = verdicts.get("desktop")
+        if desktop and not desktop.ok:
+            safe = _safe_desktop_layout(layout)
+            if safe != {k: layout.get(k) for k in safe}:
+                layout = {**layout, **safe}
+                changed = True
         # Stacked (tablet/mobile): when content overflows/clips, give a TALLER fold
         # (lower the aspect ratio) so the vertical stack fits.
         for bp, key, floor in (("tablet", "aspectRatioTablet", 0.7), ("mobile", "aspectRatioMobile", 0.6)):
@@ -160,7 +190,11 @@ async def review_and_correct(
         if not changed:
             break  # nothing actionable → stop
 
-    return {"layout": layout or (spec.get("layout") or {}), "report": report}
+    return {
+        "layout": layout or (spec.get("layout") or {}),
+        "headline_runs": runs,
+        "report": report,
+    }
 
 
 __all__ = ["review_and_correct", "BannerCritique"]

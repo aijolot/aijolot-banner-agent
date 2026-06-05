@@ -16,6 +16,6 @@ def test_clamp_layout_ranges_and_align():
     L = clamp_layout(ad)
     assert 2 <= L["textX"] <= 60
     assert 24 <= L["textW"] <= 66
-    assert 30 <= L["heroX"] <= 98
+    assert 20 <= L["heroX"] <= 98
     assert L["textAlign"] == "left"  # invalid → default
     assert L["aspectRatio"] == 2.4

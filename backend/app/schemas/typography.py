@@ -42,6 +42,23 @@ class ArtDirection(BaseModel):
     hero_x: float = Field(default=76, description="Hero center X %")
     hero_y: float = Field(default=50, description="Hero center Y %")
     hero_w: float = Field(default=46, description="Hero width %")
+    hero_h: float = Field(default=92, description="Hero height % (may exceed 100 to crop-grow)")
+    hero_behind: bool = Field(default=False, description="Place the hero BEHIND the copy so text can sit over it")
+
+
+class HeadlineRun(BaseModel):
+    """One styled segment of the headline (per-word emphasis)."""
+
+    text: str = Field(description="Segment text")
+    b: bool = Field(default=False, description="Bold/heavy")
+    i: bool = Field(default=False, description="Italic")
+    u: bool = Field(default=False, description="Underline")
+    color: str | None = Field(default=None, description="Hex/rgb color for this word, or null")
+    scale: float = Field(default=1.0, description="Relative size 0.6-2.0 to enlarge a key word")
+
+
+class HeadlineStyle(BaseModel):
+    runs: list[HeadlineRun] = Field(default_factory=list, description="Headline split into styled runs")
 
 
 def clamp_layout(ad: "ArtDirection") -> dict:
@@ -59,14 +76,81 @@ def clamp_layout(ad: "ArtDirection") -> dict:
     return {
         "textX": c(ad.text_x, 2, 60, 6),
         "textY": c(ad.text_y, 10, 90, 50),
-        "textW": c(ad.text_w, 24, 66, 48),
+        "textW": c(ad.text_w, 24, 70, 48),
         "textAlign": align,
-        "heroX": c(ad.hero_x, 30, 98, 76),
+        "heroX": c(ad.hero_x, 20, 98, 76),
         "heroY": c(ad.hero_y, 10, 90, 50),
-        "heroW": c(ad.hero_w, 24, 66, 46),
-        "heroH": 92,
+        # Hero may grow large (up to 85% wide / 130% tall to crop-grow).
+        "heroW": c(ad.hero_w, 24, 85, 46),
+        "heroH": c(ad.hero_h, 60, 130, 92),
+        "heroBehind": bool(ad.hero_behind),
         "aspectRatio": 2.4,
     }
+
+
+def _luminance(hex_color: str) -> float | None:
+    """Perceived luminance 0-1 of a #rgb/#rrggbb color, or None if unparsable."""
+    c = (hex_color or "").strip().lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    if len(c) < 6:
+        return None
+    try:
+        r, g, b = (int(c[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return None
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def coerce_runs(runs: list, full_headline: str, *, ink: str | None = None) -> list[dict]:
+    """Sanitize proposed headline runs; fall back to a single plain run when the
+    concatenated text drifts too far from the real headline (anti-fabrication).
+
+    Emphasis colors are gated by luminance against the copy `ink` (which the
+    background was designed for): on a light/bright background (dark ink) only dark
+    emphasis colors pass; on a dark background only light ones. This keeps the agent
+    free to 'play' with color while preventing low-contrast (e.g. orange-on-orange).
+    """
+
+    ink_lum = _luminance(ink or "#111111")
+    light_bg = (ink_lum if ink_lum is not None else 0.1) < 0.5  # dark ink ⇒ light bg
+
+    def _color(c: str | None) -> str | None:
+        c = (c or "").strip()
+        import re
+
+        if not (re.fullmatch(r"#[0-9a-fA-F]{3,8}", c) or re.fullmatch(r"rgba?\([\d.,\s]+\)", c)):
+            return None
+        lum = _luminance(c) if c.startswith("#") else None
+        if lum is not None:
+            # Drop low-contrast emphasis. On a bright/light background only genuinely
+            # DARK emphasis colors reliably contrast (a mid/bright tint risks hue-clash
+            # like orange-on-orange); the vision review strips any that still slip through.
+            if light_bg and lum > 0.5:
+                return None
+            if not light_bg and lum < 0.5:
+                return None
+        return c
+
+    out: list[dict] = []
+    for r in runs or []:
+        get = (lambda k, d=None: r.get(k, d)) if isinstance(r, dict) else (lambda k, d=None: getattr(r, k, d))
+        text = str(get("text", "") or "")
+        if not text:
+            continue
+        try:
+            scale = max(0.6, min(2.0, float(get("scale", 1.0) or 1.0)))
+        except (TypeError, ValueError):
+            scale = 1.0
+        out.append({
+            "text": text, "b": bool(get("b")), "i": bool(get("i")), "u": bool(get("u")),
+            "color": _color(get("color")), "scale": scale,
+        })
+    joined = " ".join(p["text"] for p in out).split()
+    if not out or " ".join(joined).lower().replace(" ", "") != (full_headline or "").lower().replace(" ", ""):
+        # Runs don't reconstruct the headline → don't risk altered copy.
+        return []
+    return out
 
 
 def coerce_pairing(display: str, body: str) -> tuple[str, str]:

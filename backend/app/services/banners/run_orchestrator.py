@@ -21,6 +21,7 @@ Design constraints (see plan F5):
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -220,6 +221,7 @@ class RunOrchestrator:
             variant_rows = await self._create_variant_banners(
                 revision_id=revision_id, concept=concept, campaign_state=campaign_state,
                 campaign_row=campaign_row, brand=brand, catalog_context=catalog_context, best_practices=best_practices,
+                text_ink=_bg_text_ink(background),
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
@@ -286,11 +288,18 @@ class RunOrchestrator:
                         reviewed = await review_and_correct(review_spec, max_iters=2)
                         layout = reviewed.get("layout") or layout
                         review_report = reviewed.get("report")
+                        # If the review stripped low-contrast headline colors, mirror that
+                        # onto every variant's stored runs (shared background → shared fix).
+                        orig_runs = review_spec.get("headlineRuns") or []
+                        fixed_runs = reviewed.get("headline_runs") or []
+                        if orig_runs and fixed_runs and any(o.get("color") and not f.get("color") for o, f in zip(orig_runs, fixed_runs)):
+                            self._strip_variant_run_colors(variant_rows)
                     except Exception:  # noqa: BLE001 — never fail assembly over review
                         review_report = None
                 concept_dict["art_direction"] = {
                     "fonts": art_direction.get("fonts") or fonts,
                     "layout": layout,
+                    "ink": _bg_text_ink(background),
                     **({"review": review_report} if review_report else {}),
                 }
             self.revisions.update(
@@ -800,6 +809,21 @@ class RunOrchestrator:
             }
         )
 
+    def _strip_variant_run_colors(self, variant_rows: list[dict[str, Any]]) -> None:
+        """Drop low-contrast headline run colors on every variant (review verdict)."""
+        for row in variant_rows or []:
+            rule = row.get("audience_rule") or {}
+            runs = rule.get("headline_runs")
+            if not runs:
+                continue
+            new_runs = [{**r, "color": None} for r in runs]
+            new_rule = {**rule, "headline_runs": new_runs}
+            row["audience_rule"] = new_rule
+            try:
+                self.variants.update(variant_id=str(row["id"]), data=_json_safe({"audience_rule": new_rule}))
+            except Exception:  # noqa: BLE001 — best-effort
+                pass
+
     @staticmethod
     def _banner_review_spec(
         concept: Any,
@@ -813,13 +837,11 @@ class RunOrchestrator:
         fp = (row.get("audience_rule") or {}).get("featured_product") or {}
         copy = getattr(concept, "copy", None) or {}
         bg_css = (background or {}).get("css") or ""
-        import re as _re
-
-        m = _re.search(r"[^-]color\s*:\s*(#[0-9a-fA-F]{3,6}|rgba?\([^)]+\))", bg_css)
         fonts = art_direction.get("fonts") or {}
         return {
             "eyebrow": row.get("eyebrow") or copy.get("eyebrow") or "",
             "headline": row.get("headline") or copy.get("headline") or "",
+            "headlineRuns": (row.get("audience_rule") or {}).get("headline_runs") or None,
             "sub": row.get("subheadline") or copy.get("subheadline") or "",
             "cta": row.get("cta_text") or copy.get("cta") or "",
             "promo": row.get("cta_text") or copy.get("cta") or "",
@@ -827,9 +849,40 @@ class RunOrchestrator:
             "bgCss": bg_css,
             "displayFont": fonts.get("display") or "Space Grotesk",
             "bodyFont": fonts.get("body") or "Inter",
-            "textColor": m.group(1) if m else None,
+            "textColor": art_direction.get("ink") or _bg_text_ink(background),
             "layout": art_direction.get("layout") or {},
         }
+
+    async def _style_headline(self, headline: str, brand: Any, *, ink: str | None = None) -> list[dict[str, Any]]:
+        """Optionally split a headline into styled runs (emphasize 1-2 key words with
+        weight/italic/underline/color/size) to communicate more. Returns [] (plain)
+        when Gemini is unavailable or the runs don't faithfully reconstruct the text."""
+        text = str(headline or "").strip()
+        if not text or not self.settings.has_google_api_key():
+            return []
+        from app.schemas.typography import HeadlineStyle, coerce_runs
+
+        contrast = (
+            "The banner background is BRIGHT, so any color you use MUST be DARK/high-contrast (deep, saturated, "
+            "not pastel or bright)."
+            if not _is_dark(ink)
+            else "The banner background is DARK, so any color you use MUST be LIGHT/high-contrast."
+        )
+        prompt = (
+            "You are a type-savvy art director. Split this banner HEADLINE into runs and emphasize the 1-2 most "
+            "important words to communicate more — primarily via bold (b), italic (i), underline (u) and a larger "
+            "size (scale up to ~1.6); you MAY also tint a key word with a color, but " + contrast + " "
+            "Keep it tasteful (most words plain). "
+            "CRITICAL: the run texts concatenated MUST equal the headline EXACTLY — do not add, drop or change words.\n"
+            f"HEADLINE: {text}\nReturn JSON {{runs:[{{text,b,i,u,color,scale}}]}}."
+        )
+        try:
+            from app.agents.tools import gemini_text
+
+            result = await gemini_text.generate(prompt, model=gemini_text.FLASH_MODEL, structured=HeadlineStyle)
+        except Exception:  # noqa: BLE001 — styling is best-effort
+            return []
+        return coerce_runs(getattr(result, "runs", []) or [], text, ink=ink)
 
     async def _propose_art_direction(self, concept: Any, brand: Any) -> dict[str, Any]:
         """Propose typography + banner composition (positions in %, never px).
@@ -867,9 +920,12 @@ class RunOrchestrator:
             f"Pick ONE body font from: {', '.join(BODY_FONTS)}.\n"
             "Then place the composition with PERCENT values (0-100, never pixels): text_x (copy left edge), "
             "text_y (copy vertical center), text_w (copy width), text_align (left/center/right), and hero_x/hero_y "
-            "(hero center) + hero_w (hero width). Typical: copy on the left (text_x~6, text_w~46, left) with the "
-            "hero on the right (hero_x~76), OR mirror it — choose what best fits the mood and keep copy and hero "
-            "from colliding badly. Return JSON for all fields with a one-line rationale."
+            "(hero center) + hero_w (hero width) + hero_h (hero height, may exceed 100 to crop-grow). "
+            "Typical: copy on the left (text_x~6, text_w~46) with the hero on the right (hero_x~76). "
+            "You MAY be bolder: grow the hero (hero_w up to ~80) and set hero_behind=true so the product sits "
+            "BEHIND the copy as a large backdrop element (then keep the copy legible over it) — do this only when it "
+            "strengthens the concept, otherwise keep them side by side without bad collision. "
+            "Return JSON for all fields with a one-line rationale."
         )
         try:
             from app.agents.tools import gemini_text
@@ -950,6 +1006,7 @@ class RunOrchestrator:
         brand: Any,
         catalog_context: dict[str, Any] | None,
         best_practices: list[dict[str, Any]],
+        text_ink: str | None = None,
     ) -> list[dict[str, Any]]:
         """One banner_variant per personalization variant, each with its own copy."""
         specs = self._variant_specs(campaign_row, campaign_state)
@@ -983,6 +1040,8 @@ class RunOrchestrator:
                     settings=self.settings,
                     cost_guard=self.cost_guard,
                 )
+            final_headline = copy.get("headline") or campaign_state.goal
+            headline_runs = await self._style_headline(final_headline, brand, ink=text_ink)
             rows.append(
                 {
                     "revision_id": revision_id,
@@ -993,9 +1052,10 @@ class RunOrchestrator:
                         "audience": spec["audience"],
                         "tag": spec.get("customer_tag"),
                         **({"featured_product": _variant_product_ref(spec)} if has_own_product else {}),
+                        **({"headline_runs": headline_runs} if headline_runs else {}),
                     },
                     "eyebrow": copy.get("eyebrow") or spec["label"],
-                    "headline": copy.get("headline") or campaign_state.goal,
+                    "headline": final_headline,
                     "subheadline": copy.get("subheadline"),
                     "cta_text": copy.get("cta") or campaign_state.cta,
                     "cta_url": "/collections/all",
@@ -1278,6 +1338,49 @@ def _variant_catalog_context(catalog_context: dict[str, Any] | None, spec: dict[
         }
     discount_rule = (catalog_context or {}).get("discount_rule") or {}
     return {"items": [matched], "discount_rule": discount_rule}
+
+
+def _hex_luminance(hexstr: str) -> float | None:
+    c = (hexstr or "").strip().lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    if len(c) < 6:
+        return None
+    try:
+        r, g, b = (int(c[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return None
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _bg_text_ink(background: dict[str, Any] | None) -> str | None:
+    """Pick a copy color that CONTRASTS with the background, derived from the bg's
+    base color luminance (not a nested `color:` which may be a white panel/CTA). Dark
+    ink on a light/bright background, light ink on a dark one — so the headline is
+    always legible regardless of what color the LLM put first in the CSS."""
+    css = (background or {}).get("css") or ""
+    # Prefer an explicit background-color; else the first hex in a background declaration.
+    m = re.search(r"background(?:-color)?\s*:\s*[^;]*?(#[0-9a-fA-F]{3,8})", css)
+    base = m.group(1) if m else None
+    lum = _hex_luminance(base) if base else None
+    if lum is None:
+        # No parseable base color → assume a bright/summer surface, use dark ink.
+        return "#111111"
+    return "#111111" if lum >= 0.5 else "#FFFFFF"
+
+
+def _is_dark(color: str | None) -> bool:
+    """True if a hex color is dark (low luminance). Defaults to True (assume dark ink)."""
+    c = (color or "#111111").strip().lstrip("#")
+    if len(c) == 3:
+        c = "".join(ch * 2 for ch in c)
+    if len(c) < 6:
+        return True
+    try:
+        r, g, b = (int(c[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return True
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) < 0.5
 
 
 def _short(value: Any, limit: int = 120) -> str:
