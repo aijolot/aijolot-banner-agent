@@ -623,6 +623,8 @@ class RunOrchestrator:
         concept: Any,
         campaign_id: str,
         revision_id: str,
+        campaign_state: StateCampaign | None = None,
+        brand: Any = None,
     ) -> str | None:
         """Generate a campaign-styled, background-removed product hero for a variant.
 
@@ -650,7 +652,11 @@ class RunOrchestrator:
         except Exception:  # noqa: BLE001
             return None
 
-        prompt = self._hero_compose_prompt(spec=spec, concept=concept)
+        scene = await self._propose_art_scene(
+            concept=concept, brand=brand, product_title=str(spec.get("product_title") or "the featured product"),
+            campaign_state=campaign_state,
+        )
+        prompt = self._hero_compose_prompt(spec=spec, concept=concept, scene=scene)
         from app.services.banners.image_gen import generate_image as _gen
 
         try:
@@ -690,20 +696,56 @@ class RunOrchestrator:
         except Exception:  # noqa: BLE001
             return None
 
+    async def _propose_art_scene(self, *, concept: Any, brand: Any, product_title: str, campaign_state: StateCampaign) -> str:
+        """Creative-concept step for the IMAGE: an agent reads the brief and proposes a
+        SHORT, campaign-specific scene (props + lighting/mood) for the hero — instead of
+        a hardcoded theme. Returns '' (caller uses a neutral studio fallback) when Gemini
+        is unavailable. Deliberately NO default props (no citrus/fruit unless the brief
+        is about that), so each campaign gets its own concept."""
+        if not self.settings.has_google_api_key():
+            return ""
+        copy = getattr(concept, "copy", None) or {}
+        headline = copy.get("headline") if isinstance(copy, dict) else ""
+        goal = getattr(campaign_state, "goal", "") or ""
+        tone = _brand_tone(brand) or ""
+        prompt = (
+            "You are an art director defining the VISUAL CONCEPT for an ecommerce hero image of this product: "
+            f"{product_title}. Read the campaign and propose 2-4 tasteful props/elements plus lighting and mood "
+            "that genuinely fit THIS campaign — derive them from the brief, do NOT default to fruit/citrus or any "
+            "preset theme unless the campaign is explicitly about that.\n"
+            f"Campaign goal: {_short(goal, 120)}\nHeadline: {_short(headline, 90)}\nBrand tone: {_short(tone, 80)}\n"
+            "Constraints: product stays the hero; elegant and premium, not cluttered; NO text, NO logos, NO people. "
+            "Return JSON {scene} — one concise sentence describing the props + lighting/mood (no product description, "
+            "no background color instructions)."
+        )
+        try:
+            from app.agents.tools import gemini_text
+            from app.schemas.typography import ArtScene
+
+            result = await gemini_text.generate(prompt, model=gemini_text.FLASH_MODEL, structured=ArtScene)
+            return _short(getattr(result, "scene", "") or "", 240)
+        except Exception:  # noqa: BLE001 — scene proposal is best-effort
+            return ""
+
     @staticmethod
-    def _hero_compose_prompt(*, spec: dict[str, Any], concept: Any) -> str:
+    def _hero_compose_prompt(*, spec: dict[str, Any], concept: Any, scene: str = "") -> str:
         product = str(spec.get("product_title") or "the featured product")
         copy = getattr(concept, "copy", None) or {}
         headline = copy.get("headline") if isinstance(copy, dict) else ""
-        mood = getattr(concept, "image_prompt", "") or ""
-        layout = getattr(concept, "layout", "") or ""
+        # The scene comes from the per-campaign visual-concept agent. When absent, use a
+        # NEUTRAL studio direction (no preset theme) and let the model infer from the mood.
+        scene_line = (
+            f"Visual concept: {scene}"
+            if scene
+            else "Compose a few tasteful props and lighting that fit the campaign mood (infer from the headline); "
+            "keep it elegant and minimal — do not invent a specific unrelated theme."
+        )
         return (
             f"E-commerce banner HERO image of THIS exact product: {product}. "
             "Use the provided product photo as the visual reference — keep the bottle/package real shape, "
             "colors and label EXACTLY; do not invent a different product. "
-            f"Campaign mood: {_short(headline, 80)}. {_short(mood, 180)}. "
-            "Compose tasteful campaign props around the product that fit the theme (e.g. for a summer citrus "
-            "promo: floating mandarin/orange slices, juicy splashes, warm sun bokeh) — elegant, premium, not cluttered. "
+            f"Campaign mood: {_short(headline, 80)}. {scene_line} "
+            "Premium, not cluttered; the product stays the hero. "
             "CRITICAL OUTPUT RULE: render the product and props on a PERFECTLY UNIFORM, FLAT, SOLID PURE GREEN "
             "background (hex #00FF00 chroma green) that fills the entire frame. No checkerboard, no gradient, no "
             "scenery, no floor, no shadows on a surface — just the cutout subject on flat #00FF00 green so the "
@@ -1022,7 +1064,8 @@ class RunOrchestrator:
             # real product photo (transparent PNG). None → Canvas uses the raw photo.
             if has_own_product and spec.get("product_image_url"):
                 hero_url = await self._compose_variant_hero(
-                    spec=spec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id
+                    spec=spec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id,
+                    campaign_state=campaign_state, brand=brand,
                 )
                 if hero_url:
                     spec = {**spec, "product_hero_url": hero_url}

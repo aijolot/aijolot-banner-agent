@@ -61,6 +61,12 @@ class HeadlineStyle(BaseModel):
     runs: list[HeadlineRun] = Field(default_factory=list, description="Headline split into styled runs")
 
 
+class ArtScene(BaseModel):
+    """Per-campaign visual concept for the hero image (props + lighting/mood)."""
+
+    scene: str = Field(default="", description="One concise sentence: props + lighting/mood that fit the campaign")
+
+
 def clamp_layout(ad: "ArtDirection") -> dict:
     """Project an ArtDirection onto a safe layout dict the banner consumes."""
 
