@@ -202,6 +202,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     imageUrl: variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
     bgCss: (liveBgObj && liveBgObj.css) || null,
     displayFont, bodyFont,
+    layout: (liveConcept.art_direction && liveConcept.art_direction.layout) || null,
     // The background CSS was authored with a legible copy color (its first `color:`),
     // but that color lands on the empty .hb-bg layer. Lift it onto the actual copy so
     // the headline keeps the contrast the agent designed for this background.
