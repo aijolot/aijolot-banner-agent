@@ -71,6 +71,7 @@ function revisionMappings(rev) {
 function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) {
   const [variant, setVariant] = useStateCV("A");
   const [segId, setSegId] = useStateCV("masculino");
+  const [variantKey, setVariantKey] = useStateCV(null);  // selected real banner_variant tag
   const [device, setDevice] = useStateCV("desktop");
   const [comments, setComments] = useStateCV(() => COMMENTS_SEED.map((c) => ({ ...c })));
   const [approvers, setApprovers] = useStateCV(() => APPROVERS_SEED.map((a) => ({ ...a })));
@@ -179,12 +180,17 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const liveGenArt = (liveConcept && liveConcept.generated_art) || [];
   const liveLastArt = liveGenArt.length ? liveGenArt[liveGenArt.length - 1] : null;
   const liveBgObj = liveConcept && liveConcept.background;
+  // Real personalization variants (one banner_variant per tag). Each has its own
+  // copy; the shared layers (background + image) come from the concept.
+  const realVariants = liveConcept && Array.isArray(revision.variants) ? revision.variants : [];
+  const selectedVariant = realVariants.find((v) => v.segment_key === variantKey) || realVariants[0] || null;
+  const variantCopy = selectedVariant || {};
   const live = liveConcept ? {
-    eyebrow: String(liveCopy.eyebrow || liveCopy.audience || "").toUpperCase().slice(0, 40) || null,
-    headline: liveCopy.headline || null,
-    sub: liveCopy.subheadline || null,
-    cta: liveCopy.cta || null,
-    promo: liveCopy.cta || null,
+    eyebrow: String((selectedVariant ? variantCopy.eyebrow : null) || liveCopy.eyebrow || liveCopy.audience || "").toUpperCase().slice(0, 40) || null,
+    headline: (selectedVariant ? variantCopy.headline : null) || liveCopy.headline || null,
+    sub: (selectedVariant ? variantCopy.subheadline : null) || liveCopy.subheadline || null,
+    cta: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
+    promo: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
     brandName: "",
     imageUrl: (liveLastArt && liveLastArt.public_url) || null,
     bgCss: (liveBgObj && liveBgObj.css) || null,
@@ -492,27 +498,48 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Icon name="users-round" size={15} color="#0891B2" />
               <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 14, color: "#002B57" }}>Hiper-personalización · Customer Tags</span>
-              <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8", marginLeft: "auto" }}>{seg.audience}</span>
+              <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8", marginLeft: "auto" }}>{selectedVariant ? (selectedVariant.audience_rule && selectedVariant.audience_rule.audience) || selectedVariant.segment_label : seg.audience}</span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-              {SEGMENT_ORDER.map((id) => {
-                const s = SEGMENTS[id]; const on = segId === id;
-                return (
-                  <button key={id} onClick={() => selectSegment(id)} style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, cursor: "pointer", textAlign: "left",
-                    border: `1.5px solid ${on ? "#22D3EE" : "#EEF2F6"}`, background: on ? "rgba(34,211,238,.08)" : "rgba(248,250,252,0.7)", transition: "all .15s",
-                  }}>
-                    <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: `linear-gradient(150deg,${s.palette.bgB},${s.palette.bgA})`, display: "flex", alignItems: "center", justifyContent: "center", color: s.palette.cap }}>
-                      <Icon name={s.icon} size={15} />
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>{s.label.split(": ")[1] || s.label}</div>
-                      <div style={{ fontFamily: "Space Grotesk", fontSize: 10, color: "#94A3B8" }}>{s.tag}</div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            {realVariants.length ? (
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(realVariants.length, 3)},1fr)`, gap: 10 }}>
+                {realVariants.map((v) => {
+                  const on = (variantKey || (realVariants[0] && realVariants[0].segment_key)) === v.segment_key;
+                  return (
+                    <button key={v.id || v.segment_key} onClick={() => setVariantKey(v.segment_key)} style={{
+                      display: "flex", flexDirection: "column", gap: 3, padding: "11px 13px", borderRadius: 12, cursor: "pointer", textAlign: "left",
+                      border: `1.5px solid ${on ? "#22D3EE" : "#EEF2F6"}`, background: on ? "rgba(34,211,238,.08)" : "rgba(248,250,252,0.7)", transition: "all .15s",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <Icon name="user-round" size={14} color={on ? "#0891B2" : "#94A3B8"} />
+                        <span style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>{v.segment_label || v.segment_key}</span>
+                      </div>
+                      <span style={{ fontFamily: "Space Grotesk", fontSize: 9.5, color: "#94A3B8" }}>{v.customer_tag || v.segment_key}</span>
+                      <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#64748B", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{v.headline || "—"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+                {SEGMENT_ORDER.map((id) => {
+                  const s = SEGMENTS[id]; const on = segId === id;
+                  return (
+                    <button key={id} onClick={() => selectSegment(id)} style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, cursor: "pointer", textAlign: "left",
+                      border: `1.5px solid ${on ? "#22D3EE" : "#EEF2F6"}`, background: on ? "rgba(34,211,238,.08)" : "rgba(248,250,252,0.7)", transition: "all .15s",
+                    }}>
+                      <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: `linear-gradient(150deg,${s.palette.bgB},${s.palette.bgA})`, display: "flex", alignItems: "center", justifyContent: "center", color: s.palette.cap }}>
+                        <Icon name={s.icon} size={15} />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>{s.label.split(": ")[1] || s.label}</div>
+                        <div style={{ fontFamily: "Space Grotesk", fontSize: 10, color: "#94A3B8" }}>{s.tag}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#68737D", display: "flex", alignItems: "center", gap: 6 }}>
               <Icon name={revisionMode === "backend" ? "database" : "info"} size={12} color="#94A3B8" /> {backendNotice}
             </div>
