@@ -18,12 +18,8 @@ function Sidebar({ active, onNav }) {
       backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)",
       borderRight: "1px solid rgba(226,232,240,0.8)", zIndex: 20,
     }}>
-      <div title="Aijolot" style={{
-        width: 40, height: 40, borderRadius: 14, background: "linear-gradient(135deg,#22D3EE,#0891B2)",
-        color: "#fff", display: "flex", alignItems: "center", justifyContent: "center",
-        fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 18, marginBottom: 14,
-        boxShadow: "0 8px 20px rgba(34,211,238,.35)",
-      }}>A</div>
+      <img src="logo.png" alt="Aijolot" title="Aijolot" width={40} height={40}
+        style={{ display: "block", marginBottom: 14, objectFit: "contain" }} />
       {NAV.map((item) => {
         const on = active === item.id;
         return (
