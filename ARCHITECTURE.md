@@ -325,7 +325,65 @@ obsidian/     Git-synced project notes and DB design
 
 ---
 
-## 12. Key design decisions
+## 12. Deployment (Google Cloud Run)
+
+The app ships as a **single container** (FastAPI backend + static React frontend +
+Playwright/Chromium) deployed to **Cloud Run**, with keyless CI via **Workload
+Identity Federation** and runtime config in **Secret Manager**.
+
+```mermaid
+graph LR
+    GH["GitHub push to main"] -->|"OIDC (WIF, keyless)"| GHA["GitHub Actions (deploy.yml)"]
+    GHA -->|"docker build + push"| AR["Artifact Registry"]
+    GHA -->|"gcloud run deploy"| CR["Cloud Run service (banner-agent)"]
+    AR --> CR
+    SM["Secret Manager (runtime .env)"] -->|"mounted /secrets/app.env"| CR
+    CR -->|"runtime SA (least-privilege)"| EXT["Gemini API · Supabase · Shopify"]
+    User([Browser]) -->|"HTTPS (same-origin UI + /api/v1)"| CR
+```
+
+**Container** (`Dockerfile`): `python:3.11-slim`, installs the backend package
+(deps from `backend/pyproject.toml`, incl. `playwright`), runs
+`playwright install --with-deps chromium` for the screenshot self-review, copies
+the static `frontend/`, and starts via `backend/docker-entrypoint.sh`. The
+entrypoint sources a dotenv file mounted from Secret Manager
+(`/secrets/app.env`), then runs `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+(Cloud Run injects `$PORT=8080`). The frontend is served **same-origin** through
+`StaticFiles`, and `window.AIJOLOT_API_BASE` defaults to `window.location.origin`
+— so no separate frontend host or CORS wiring is needed in prod.
+
+**Cloud Run config** (`.github/workflows/deploy.yml`): `--cpu=2 --memory=2Gi
+--timeout=600 --concurrency=20 --min-instances=0 --max-instances=4
+--allow-unauthenticated`, deployed under a least-privilege runtime SA with the
+runtime secret mounted at `/secrets/app.env`. (Auth is open because demo identity
+is header-based; tighten with IAM/IAP for non-demo use.)
+
+**One-time setup** (`scripts/gcp-bootstrap.sh`, idempotent): creates the project,
+enables APIs (`run`, `artifactregistry`, `secretmanager`, `iamcredentials`, `sts`,
+`cloudbuild`), an Artifact Registry repo, a `github-deployer` SA + a
+`banner-agent-runtime` SA, the WIF pool/provider scoped to the repo, and the
+runtime secret — then prints the GitHub repo variables to set.
+
+**Runtime env (Secret Manager `app.env`).** Live providers are opt-in; absence
+keeps each node deterministic. Key vars: `GOOGLE_API_KEY` (+ `GOOGLE_CLOUD_PROJECT`
+/ `GOOGLE_CLOUD_LOCATION`), `AIJOLOT_*_PROVIDER=gemini`, `IMAGE_GENERATION_PROVIDER`,
+`DAILY_COST_CAP_USD`; `SUPABASE_URL` / `SUPABASE_ANON_KEY` /
+`SUPABASE_SERVICE_ROLE_KEY` / `SUPABASE_STORAGE_BUCKET`; `SHOPIFY_SHOP_DOMAIN` /
+`SHOPIFY_ADMIN_ACCESS_TOKEN` / `SHOPIFY_API_VERSION` / `SHOPIFY_THEME_ID` /
+`SHOPIFY_PUBLISH_DRY_RUN`; optional `CORS_ALLOW_ORIGINS`.
+
+**Deploy flow:** run `gcp-bootstrap.sh` once → set the printed repo variables →
+push to `main` (or run the workflow manually). The job builds, pushes, deploys,
+and prints the service URL.
+
+**Tuning notes.** The image bundles Chromium, so cold starts are heavier — consider
+`--min-instances=1` for demos. Each screenshot review spawns a headless browser;
+at `--concurrency=20` on `2Gi`, concurrent reviews can pressure memory — raise
+memory or lower concurrency if OOMs appear.
+
+---
+
+## 13. Key design decisions
 
 1. **Async by default** — generation/edit run as background jobs the UI polls, so
    real (slow) image gen + screenshot review never block the request.
@@ -345,7 +403,7 @@ obsidian/     Git-synced project notes and DB design
 
 ---
 
-## 13. Tech stack summary
+## 14. Tech stack summary
 
 | Layer | Primary tech | Secondary |
 |-------|--------------|-----------|
@@ -358,6 +416,7 @@ obsidian/     Git-synced project notes and DB design
 | **Data / Auth / Storage** | Supabase (Postgres) | Markdown/YAML brand fallback |
 | **Commerce** | Shopify Admin API — live products, Files rehost, multivariant `themeFilesUpsert` + metafield | Dry-run gated publish/unpublish |
 | **Frontend** | React 18 studio + shared `banner_template.js` | SSE intake, async polling, live banner render |
+| **Deploy** | Google Cloud Run (single container) | GitHub Actions + WIF (keyless), Artifact Registry, Secret Manager |
 
 ---
 
