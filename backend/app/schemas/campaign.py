@@ -25,6 +25,13 @@ class PersonalizationVariant(BaseModel):
     label: str = ""
     audience: str = ""
     customer_tag: str | None = None
+    # Optional featured product for THIS variant (resolved from the Shopify catalog,
+    # e.g. via /stores/{id}/shopify/products/search). When set, the variant's copy is
+    # grounded on this product instead of the shared catalog snapshot — so e.g. the men
+    # variant features "Mandarin Sky" and the women variant "My Way Intense".
+    product_gid: str | None = None
+    product_title: str | None = None
+    product_image_url: str | None = None
 
 
 class StructuredBrief(BaseModel):

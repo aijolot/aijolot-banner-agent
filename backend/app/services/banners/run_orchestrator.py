@@ -447,9 +447,20 @@ class RunOrchestrator:
                 row = {k: v.get(k) for k in ("segment_key", "segment_label", "customer_tag", "audience_rule", "eyebrow", "headline", "subheadline", "cta_text", "cta_url", "palette")}
                 row["revision_id"] = revision_id
                 if regenerate_copy and concept_skill is not None:
-                    audience = (v.get("audience_rule") or {}).get("audience") or v.get("segment_label") or campaign_state.audience
+                    rule = v.get("audience_rule") or {}
+                    audience = rule.get("audience") or v.get("segment_label") or campaign_state.audience
+                    # Keep this variant's featured product grounded when regenerating copy.
+                    fp = rule.get("featured_product") or {}
+                    variant_catalog = _variant_catalog_context(
+                        None,
+                        {
+                            "product_gid": fp.get("product_gid"),
+                            "product_title": fp.get("product_title"),
+                            "product_image_url": fp.get("product_image_url"),
+                        },
+                    ) if fp else None
                     copy = await concept_skill.copy_for_audience(
-                        campaign=campaign_state, brand_context=brand, catalog_context=None, best_practices=None,
+                        campaign=campaign_state, brand_context=brand, catalog_context=variant_catalog, best_practices=None,
                         layout_hint=cdict.get("layout", ""), audience=audience, settings=self.settings, cost_guard=self.cost_guard,
                     )
                     row["eyebrow"] = copy.get("eyebrow") or row.get("eyebrow")
@@ -714,6 +725,9 @@ class RunOrchestrator:
                     "label": str(entry.get("label") or key.title()),
                     "audience": str(entry.get("audience") or campaign.audience),
                     "customer_tag": entry.get("customer_tag"),
+                    "product_gid": entry.get("product_gid"),
+                    "product_title": entry.get("product_title"),
+                    "product_image_url": entry.get("product_image_url"),
                 }
             )
         if not specs:
@@ -737,14 +751,18 @@ class RunOrchestrator:
         base_copy = concept.copy or {}
         rows: list[dict[str, Any]] = []
         for index, spec in enumerate(specs):
-            if index == 0 and spec["audience"] == campaign_state.audience:
+            # Each variant features its own product (when chosen): ground the copy on a
+            # catalog context filtered to that product, so men→Mandarin Sky, women→My Way.
+            variant_catalog = _variant_catalog_context(catalog_context, spec)
+            has_own_product = bool(spec.get("product_gid") or spec.get("product_title"))
+            if index == 0 and spec["audience"] == campaign_state.audience and not has_own_product:
                 # Reuse the already-generated primary concept copy for the base variant.
                 copy = {k: base_copy.get(k) for k in ("eyebrow", "headline", "subheadline", "cta")}
             else:
                 copy = await concept_skill.copy_for_audience(
                     campaign=campaign_state,
                     brand_context=brand,
-                    catalog_context=catalog_context,
+                    catalog_context=variant_catalog,
                     best_practices=best_practices,
                     layout_hint=concept.layout,
                     audience=spec["audience"],
@@ -757,7 +775,11 @@ class RunOrchestrator:
                     "segment_key": spec["key"],
                     "segment_label": spec["label"],
                     "customer_tag": spec.get("customer_tag"),
-                    "audience_rule": {"audience": spec["audience"], "tag": spec.get("customer_tag")},
+                    "audience_rule": {
+                        "audience": spec["audience"],
+                        "tag": spec.get("customer_tag"),
+                        **({"featured_product": _variant_product_ref(spec)} if has_own_product else {}),
+                    },
                     "eyebrow": copy.get("eyebrow") or spec["label"],
                     "headline": copy.get("headline") or campaign_state.goal,
                     "subheadline": copy.get("subheadline"),
@@ -1001,6 +1023,47 @@ def _first_asset_public_url(assets: Any) -> str | None:
         return None
     best = max(pool, key=lambda r: int(r.get("size_key") or r.get("width") or 0))
     return str(best.get("public_url"))
+
+
+def _variant_product_ref(spec: dict[str, Any]) -> dict[str, Any]:
+    """The featured-product reference recorded on a variant (for the assembly/publish)."""
+    ref: dict[str, Any] = {}
+    for key in ("product_gid", "product_title", "product_image_url"):
+        value = spec.get(key)
+        if value:
+            ref[key] = value
+    return ref
+
+
+def _variant_catalog_context(catalog_context: dict[str, Any] | None, spec: dict[str, Any]) -> dict[str, Any] | None:
+    """Catalog context scoped to a variant's featured product.
+
+    If the variant names a product, surface that product first (matched from the
+    snapshot by GID/title, or synthesized from the variant's own fields when it is
+    not in the snapshot) so the per-variant copy is grounded on the right product.
+    Falls back to the shared catalog context when the variant has no product.
+    """
+    gid = str(spec.get("product_gid") or "").strip()
+    title = str(spec.get("product_title") or "").strip()
+    if not gid and not title:
+        return catalog_context
+
+    items = list((catalog_context or {}).get("items") or [])
+    matched: dict[str, Any] | None = None
+    for item in items:
+        item_gid = str(item.get("shopify_product_gid") or item.get("shopify_gid") or "")
+        item_title = str(item.get("title") or "")
+        if (gid and item_gid == gid) or (title and item_title.lower() == title.lower()):
+            matched = item
+            break
+    if matched is None:
+        matched = {
+            "title": title or "Featured product",
+            "shopify_product_gid": gid or None,
+            "image_url": spec.get("product_image_url"),
+        }
+    discount_rule = (catalog_context or {}).get("discount_rule") or {}
+    return {"items": [matched], "discount_rule": discount_rule}
 
 
 def _short(value: Any, limit: int = 120) -> str:
