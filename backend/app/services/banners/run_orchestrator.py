@@ -256,7 +256,10 @@ class RunOrchestrator:
             node = "render_html"
             recorder.start(node)
             html_standalone = await self._render_html(concept, assets, brand)
-            liquid_section = await self._render_liquid(concept, state_variants, brand, assets, campaign_state.placement)
+            # Render the Liquid with one variant per personalization tag so the
+            # storefront section switches copy by customer tag (served-by-tag).
+            liquid_variants = _liquid_variants_from_rows(variant_rows)
+            liquid_section = await self._render_liquid(concept, liquid_variants, brand, assets, campaign_state.placement)
             preview_path = _first_asset_path(assets)
             self.revisions.update(
                 revision_id=revision_id,
@@ -399,7 +402,7 @@ class RunOrchestrator:
             recorder.start(node)
             concept_model = _dict_to_concept(cdict)
             html_standalone = await self._render_html(concept_model, assets, brand)
-            liquid_section = await self._render_liquid(concept_model, [StateVariant(customer_tag="all", intent_delta="default")], brand, assets, campaign_state.placement)
+            liquid_section = await self._render_liquid(concept_model, _liquid_variants_from_rows(variant_rows), brand, assets, campaign_state.placement)
             self.revisions.update(revision_id=revision_id, data=_json_safe({"html_preview": html_standalone, "preview_storage_path": preview_path, "liquid_config": self._liquid_config(concept_model, liquid_section, campaign_state.placement), "concept": cdict}))
             recorder.succeed(node, {"html_bytes": len(html_standalone)})
 
@@ -888,6 +891,26 @@ def _concept_dict(concept: Any) -> dict[str, Any]:
     if hasattr(concept, "model_dump"):
         return concept.model_dump()
     return dict(concept or {})
+
+
+def _liquid_variants_from_rows(variant_rows: list[dict[str, Any]]) -> list[StateVariant]:
+    """Map persisted banner_variants → state Variants with per-tag copy_override
+    so the Liquid section renders served-by-customer-tag personalization."""
+    out: list[StateVariant] = []
+    for row in variant_rows or []:
+        override = {
+            k: str(row.get(src))
+            for k, src in (("headline", "headline"), ("subheadline", "subheadline"), ("eyebrow", "eyebrow"), ("cta", "cta_text"))
+            if row.get(src)
+        }
+        out.append(
+            StateVariant(
+                customer_tag=str(row.get("customer_tag") or row.get("segment_key") or "default"),
+                intent_delta=str(row.get("segment_label") or ""),
+                copy_override=override or None,
+            )
+        )
+    return out or [StateVariant(customer_tag="default", intent_delta="default")]
 
 
 def _dict_to_concept(cdict: dict[str, Any]) -> StateConcept:
