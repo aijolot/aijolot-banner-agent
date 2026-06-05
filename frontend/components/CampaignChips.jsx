@@ -117,7 +117,7 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
       <GlassCard style={{ padding: 24, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, height: "100%", color: "#94A3B8", textAlign: "center" }}>
         <Icon name="clipboard-list" size={30} color="#CBD5E1" />
         <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 14, color: "#475569" }}>Brief estructurado</div>
-        <div style={{ fontFamily: "Inter", fontSize: 12.5, maxWidth: 280 }}>Conversa con el agente para generar el brief. Aparecerá aquí, editable, antes de avanzar a Arte.</div>
+        <div style={{ fontFamily: "Inter", fontSize: 12.5, maxWidth: 280 }}>Conversa con el agente para generar el brief. Aparecerá aquí, editable, antes de avanzar a Generación.</div>
       </GlassCard>
     );
   }
@@ -253,7 +253,7 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
       </div>
 
       <Button variant={canAdvance ? "shine" : "secondary"} icon="arrow-right" disabled={!canAdvance} onClick={() => canAdvance && onAdvance && onAdvance(campaign)} style={{ justifyContent: "center", marginTop: 2 }}>
-        {prototypeOnly ? "Requiere campaña backend" : canAdvance ? "Avanzar a Arte" : `Completa ${missing.length} campo${missing.length === 1 ? "" : "s"}`}
+        {prototypeOnly ? "Requiere campaña backend" : canAdvance ? "Avanzar a Generación" : `Completa ${missing.length} campo${missing.length === 1 ? "" : "s"}`}
       </Button>
     </GlassCard>
   );

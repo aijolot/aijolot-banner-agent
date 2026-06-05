@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi, errorText, isApiCampaign */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign */
 // Aijolot Banner Agent — Stage 2: backend event-driven generation pipeline.
 const { useState: useStateG, useEffect: useEffectG, useRef: useRefG } = React;
 
@@ -277,6 +277,15 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
       setArtifactStatus(null);
       setArtifactNotice(null);
       try {
+        // Ensure a catalog snapshot exists so the concept stays grounded in the store
+        // catalog + the products picked per variant in Brief. (Previously created in the
+        // removed "Arte" step; best-effort — never blocks generation.)
+        if (isApiCampaign(campaign)) {
+          try {
+            const storeId = (placement && placement.backend && placement.backend.store_id) || (AIJOLOT_DEMO_IDS && AIJOLOT_DEMO_IDS.store);
+            await CatalogApi.createSnapshot(campaign, { store_id: storeId, resource_types: ["product", "collection"], limit: 24 });
+          } catch (snapErr) { /* grounding is best-effort */ }
+        }
         const r = await GenerationApi.start(campaign, { placement, art, source: "frontend-generate-stage" });
         if (!alive) return;
         if (r.fallback) {

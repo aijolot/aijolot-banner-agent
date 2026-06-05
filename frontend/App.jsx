@@ -1,5 +1,5 @@
 /* global React, useTweaks, TweaksPanel, TweakSection, TweakSelect, TweakRadio,
-   Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, ArtStage, GenerateStage,
+   Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, GenerateStage,
    CanvasStage, PerformanceStage, Icon, Badge, PlacementApi, CampaignApi, isApiCampaign */
 // Aijolot Banner Agent — app orchestrator.
 const { useState: useStateA } = React;
@@ -13,12 +13,11 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 const STEPS = [
   { id: "placement", label: "Ubicación", icon: "store" },
   { id: "brief", label: "Brief", icon: "message-square" },
-  { id: "art", label: "Arte", icon: "palette" },
   { id: "generate", label: "Generación", icon: "wand-sparkles" },
   { id: "canvas", label: "Lienzo", icon: "layout-template" },
   { id: "performance", label: "Performance", icon: "bar-chart-3" },
 ];
-const STAGE_CRUMB = { campaigns: "", placement: "Ubicación", brief: "Brief comercial", art: "Dirección de arte", generate: "Generación", canvas: "Lienzo colaborativo", performance: "Performance" };
+const STAGE_CRUMB = { campaigns: "", placement: "Ubicación", brief: "Brief comercial", generate: "Generación", canvas: "Lienzo colaborativo", performance: "Performance" };
 
 function Stepper({ stage, goTo }) {
   const cur = STEPS.findIndex((s) => s.id === stage);
@@ -53,7 +52,10 @@ function App() {
   const [nav, setNav] = useStateA("studio");
   const [stage, setStage] = useStateA("campaigns");
   const [placement, setPlacement] = useStateA(() => ({ id: "hero", name: "Hero principal", size: "1440 × 420", page: "Inicio", layout: { cols: [{ rows: 1, w: 1 }] } }));
-  const [art, setArt] = useStateA(() => ({ bg: "usage", heroStyle: "rocks", model: "m2", fold: 55 }));
+  // Art direction is computed by the generation agent (concept → background → hero →
+  // typography → self-review); the designer iterates in the Canvas. This is just the
+  // canvas fold/preview default (no standalone "Arte" step).
+  const [art] = useStateA(() => ({ bg: "usage", fold: 60 }));
   const [campaign, setCampaign] = useStateA(null);
   const [apiNotice, setApiNotice] = useStateA(null);
 
@@ -116,8 +118,7 @@ function App() {
   } else {
     let view;
     if (stage === "placement") view = <PlacementStage onNotice={setApiNotice} onNext={handlePlacementNext} />;
-    else if (stage === "brief") view = <BriefStage campaign={campaign} onGenerate={(c) => { setCampaign(c); setStage("art"); }} onCampaignReady={onCampaignReady} onNotice={setApiNotice} placement={placement} />;
-    else if (stage === "art") view = <ArtStage campaign={campaign} placement={placement} onNotice={setApiNotice} onAssemble={(a) => { setArt(a); setStage("generate"); }} />;
+    else if (stage === "brief") view = <BriefStage campaign={campaign} onGenerate={(c) => { setCampaign(c); setStage("generate"); }} onCampaignReady={onCampaignReady} onNotice={setApiNotice} placement={placement} />;
     else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} onNotice={setApiNotice} onDone={() => setStage("canvas")} />;
     else if (stage === "canvas") view = <CanvasStage campaign={campaign} tweaks={t} placement={placement} art={art} onNotice={setApiNotice} onPublish={() => setStage("performance")} />;
     else view = <PerformanceStage campaign={campaign} tweaks={t} onNotice={setApiNotice} onBack={() => setStage("canvas")} />;
