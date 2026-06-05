@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Protocol, cast
 from uuid import uuid4
 
 from app.core.settings import MissingSettingsError, Settings
@@ -136,13 +137,56 @@ class GenerationRunService:
         campaign_repository: CampaignRepositoryProtocol | None = None,
         orchestrator: "RunOrchestrator | None" = None,
         team_id: str | None = None,
+        background: bool = False,
     ) -> None:
         self.run_repository = run_repository or _LOCAL_RUN_REPOSITORY
         self.event_repository = event_repository or _LOCAL_EVENT_REPOSITORY
         self.campaign_repository = campaign_repository
         self.orchestrator = orchestrator
         self.team_id = team_id
+        # When True (live HTTP), orchestrated runs execute in a daemon thread and
+        # the call returns a "running" run immediately (frontend polls events).
+        # False (tests/in-memory) runs inline for deterministic assertions.
+        self.background = background
         self._last_revision_id: str | None = None
+
+    def _finalize_run(
+        self,
+        *,
+        run_id: str,
+        run_row: dict[str, Any],
+        base_metadata: dict[str, Any],
+        coro_factory: "Callable[[], Coroutine[Any, Any, Any]]",
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """Execute the orchestrator job (inline or in a background thread), write
+        events, and finalize the run row. In background mode returns the running
+        run immediately (revision id resolved later via polling)."""
+
+        def job() -> None:
+            try:
+                outcome = _run_coro(coro_factory())
+            except BaseException as exc:  # noqa: BLE001
+                outcome = _failed_outcome(f"{type(exc).__name__}: {exc}")
+            self._last_revision_id = outcome.revision_id
+            if outcome.events:
+                self.event_repository.create_many(events=outcome.events)
+            self.run_repository.update(
+                run_id=run_id,
+                data={
+                    "status": outcome.status,
+                    "frontend_step": outcome.frontend_step,
+                    "finished_at": _utc_now_iso(),
+                    "error_message": outcome.error_message,
+                    "metadata": {**base_metadata, **outcome.metadata},
+                },
+            )
+
+        if self.background:
+            threading.Thread(target=job, daemon=True).start()
+            return self._run_response_from_record(run_row), None
+        job()
+        updated = self.run_repository.get(run_id=run_id) or run_row
+        return self._run_response_from_record(updated), self._last_revision_id
 
     @classmethod
     def from_supabase_client(cls, client: Any, *, team_id: str | None = None) -> "GenerationRunService":
@@ -175,6 +219,7 @@ class GenerationRunService:
             campaign_repository=campaign_repository,
             orchestrator=orchestrator,
             team_id=team_id,
+            background=True,
         )
 
     def start_generation_run(self, campaign_id: str, request: GenerationRunCreate | None = None) -> GenerationRunResponse:
@@ -233,7 +278,7 @@ class GenerationRunService:
             metadata={**(metadata or {}), "prompt": prompt or "", "refine_targets": list(targets or [])},
         )
         run = self._start_orchestrated_run(campaign_id, request, campaign, prompt=prompt, targets=targets)
-        return run, self._last_revision_id
+        return run, (None if self.background else self._last_revision_id)
 
     def start_banner_edit_run(
         self,
@@ -265,26 +310,11 @@ class GenerationRunService:
             }
         )
         run_id = str(run_row["id"])
-        try:
-            outcome = _run_coro(
-                self.orchestrator.edit_revision(run_id=run_id, campaign_row=campaign, source_revision=source_revision, prompt=prompt, targets=targets)
-            )
-        except BaseException as exc:  # noqa: BLE001
-            outcome = _failed_outcome(f"{type(exc).__name__}: {exc}")
-        self._last_revision_id = outcome.revision_id
-        if outcome.events:
-            self.event_repository.create_many(events=outcome.events)
-        updated = self.run_repository.update(
-            run_id=run_id,
-            data={
-                "status": outcome.status,
-                "frontend_step": outcome.frontend_step,
-                "finished_at": _utc_now_iso(),
-                "error_message": outcome.error_message,
-                "metadata": {**base_metadata, **outcome.metadata},
-            },
-        ) or {**run_row, "status": outcome.status, "frontend_step": outcome.frontend_step}
-        return self._run_response_from_record(updated), outcome.revision_id
+        orchestrator = self.orchestrator
+        return self._finalize_run(
+            run_id=run_id, run_row=run_row, base_metadata=base_metadata,
+            coro_factory=lambda: orchestrator.edit_revision(run_id=run_id, campaign_row=campaign, source_revision=source_revision, prompt=prompt, targets=targets),
+        )
 
     def _start_orchestrated_run(
         self,
@@ -314,26 +344,12 @@ class GenerationRunService:
             }
         )
         run_id = str(run_row["id"])
-        try:
-            outcome = _run_coro(
-                self.orchestrator.execute(run_id=run_id, campaign_row=campaign_row, prompt=prompt, targets=targets)
-            )
-        except BaseException as exc:  # noqa: BLE001 — record honest failure on the run row
-            outcome = _failed_outcome(f"{type(exc).__name__}: {exc}")
-        self._last_revision_id = outcome.revision_id
-        if outcome.events:
-            self.event_repository.create_many(events=outcome.events)
-        updated = self.run_repository.update(
-            run_id=run_id,
-            data={
-                "status": outcome.status,
-                "frontend_step": outcome.frontend_step,
-                "finished_at": _utc_now_iso(),
-                "error_message": outcome.error_message,
-                "metadata": {**base_metadata, **outcome.metadata},
-            },
-        ) or {**run_row, "status": outcome.status, "frontend_step": outcome.frontend_step}
-        return self._run_response_from_record(updated)
+        orchestrator = self.orchestrator
+        run, _revision_id = self._finalize_run(
+            run_id=run_id, run_row=run_row, base_metadata=base_metadata,
+            coro_factory=lambda: orchestrator.execute(run_id=run_id, campaign_row=campaign_row, prompt=prompt, targets=targets),
+        )
+        return run
 
     def get_latest_for_campaign(self, campaign_id: str) -> GenerationRunResponse:
         self._get_campaign(campaign_id)

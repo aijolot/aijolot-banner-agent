@@ -334,13 +334,28 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
         return c;
       }));
       const r = await backend;
-      const editedRevision = r && r.data && r.data.revision;
-      const targets = (r && r.data && r.data.generation_run && r.data.generation_run.metadata && r.data.generation_run.metadata.edit_targets) || [];
-      if (r && !r.fallback && editedRevision) {
-        setRevision(editedRevision);  // Banner re-renders from the edited concept
-        const label = targets.length ? targets.join(", ") : "banner";
-        setRefineMsg(`Editado (${label}) · revisión #${editedRevision.revision_number}`);
-        onNotice && onNotice({ tone: "green", text: `Edición aplicada en backend (${label}); el resto se preservó.` });
+      let run = r && r.data && r.data.generation_run;
+      let editedRevision = r && r.data && r.data.revision;
+      const targets = (run && run.metadata && run.metadata.edit_targets) || [];
+      if (r && !r.fallback && run) {
+        const TERMINAL = ["succeeded", "failed", "escalated"];
+        // Async job: poll the run until it finishes (the edit runs in the
+        // background; image edits can take ~10-20s), then load the new revision.
+        for (let attempt = 0; attempt < 30 && !TERMINAL.includes(run.status); attempt += 1) {
+          await new Promise((res) => setTimeout(res, 1500));
+          try { run = (await GenerationApi.get(run.id)) || run; } catch (_e) { break; }
+        }
+        if (run.status === "succeeded") {
+          const rev = await GenerationApi.latestRevision(campaign);
+          if (rev && !rev.fallback && rev.data) editedRevision = rev.data;
+          if (editedRevision) setRevision(editedRevision);
+          const label = targets.length ? targets.join(", ") : "banner";
+          setRefineMsg(`Editado (${label}) · revisión #${editedRevision ? editedRevision.revision_number : "?"}`);
+          onNotice && onNotice({ tone: "green", text: `Edición aplicada en backend (${label}); el resto se preservó.` });
+        } else {
+          setRefineMsg("La edición no terminó.");
+          onNotice && onNotice({ tone: "amber", text: (run && run.error_message) || "El backend no confirmó la edición." });
+        }
       } else {
         setRefineMsg("Ajuste local (sin backend).");
         onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "Edición aplicada solo localmente." });
