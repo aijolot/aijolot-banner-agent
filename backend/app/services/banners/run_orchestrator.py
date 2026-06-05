@@ -196,7 +196,8 @@ class RunOrchestrator:
             # Always generate + attach an AI background so the assembled banner
             # (and the canvas) shows a real themed background, not a flat default.
             background = await self._refine_background(concept, brand)
-            fonts = await self._propose_fonts(concept, brand)
+            art_direction = await self._propose_art_direction(concept, brand)
+            fonts = art_direction.get("fonts") or {}
             recorder.succeed(
                 node,
                 {
@@ -271,8 +272,11 @@ class RunOrchestrator:
                 concept_dict["background"] = background
             if image_url:
                 concept_dict["generated_art"] = [{"public_url": image_url, "storage_path": preview_path, "shot_type": "hero"}]
-            if fonts:
-                concept_dict["art_direction"] = {"fonts": fonts}
+            if art_direction:
+                concept_dict["art_direction"] = {
+                    "fonts": art_direction.get("fonts") or fonts,
+                    "layout": art_direction.get("layout") or {},
+                }
             self.revisions.update(
                 revision_id=revision_id,
                 data=_json_safe(
@@ -780,38 +784,62 @@ class RunOrchestrator:
             }
         )
 
-    async def _propose_fonts(self, concept: Any, brand: Any) -> dict[str, Any]:
-        """Propose a display+body font pairing that fits the campaign concept.
+    async def _propose_art_direction(self, concept: Any, brand: Any) -> dict[str, Any]:
+        """Propose typography + banner composition (positions in %, never px).
 
-        Not locked to the brand fonts — the agent may pick a Google Font from a
-        curated allow-list when it better serves the concept. Deterministic default
-        (Space Grotesk / Inter) when Gemini is unavailable or off-list.
+        The agent picks a display/body font pairing (NOT locked to brand fonts) and
+        places the copy block and hero over a fixed-aspect 1440 banner using percent
+        coordinates, so the composition scales across breakpoints. Deterministic
+        defaults when Gemini is unavailable.
         """
-        from app.schemas.typography import BODY_FONTS, DISPLAY_FONTS, FontPairing, coerce_pairing
+        from app.schemas.typography import (
+            BODY_FONTS,
+            DISPLAY_FONTS,
+            ArtDirection,
+            clamp_layout,
+            coerce_pairing,
+        )
 
-        default = {"display": "Space Grotesk", "body": "Inter", "rationale": "", "source": "deterministic"}
+        default_layout = clamp_layout(ArtDirection(display="Space Grotesk", body="Inter"))
+        default = {
+            "fonts": {"display": "Space Grotesk", "body": "Inter", "rationale": "", "source": "deterministic"},
+            "layout": default_layout,
+        }
         if not self.settings.has_google_api_key():
             return default
         copy = getattr(concept, "copy", None) or {}
         headline = copy.get("headline") if isinstance(copy, dict) else ""
         tone = _brand_tone(brand) or ""
         prompt = (
-            "You are an art director choosing type for an ecommerce promo banner. "
+            "You are an art director composing a WIDE ecommerce hero banner (1440px, ~2.4:1). "
+            "The background fills the whole banner; a product HERO image (cut-out, transparent) sits on one side "
+            "and the COPY block (headline+subhead+CTA) on the other. They may slightly overlap.\n"
             f"Campaign headline: {_short(headline, 90)}. Mood/tone: {_short(tone, 80)}. "
-            f"Layout: {_short(getattr(concept, 'layout', ''), 90)}.\n"
+            f"Layout note: {_short(getattr(concept, 'layout', ''), 90)}.\n"
             f"Pick ONE display font (headline) from: {', '.join(DISPLAY_FONTS)}.\n"
-            f"Pick ONE body font (subhead) from: {', '.join(BODY_FONTS)}.\n"
-            "Choose the pairing that best fits the campaign mood (you are NOT limited to the brand's fonts). "
-            "Return JSON with display, body, and a one-line rationale."
+            f"Pick ONE body font from: {', '.join(BODY_FONTS)}.\n"
+            "Then place the composition with PERCENT values (0-100, never pixels): text_x (copy left edge), "
+            "text_y (copy vertical center), text_w (copy width), text_align (left/center/right), and hero_x/hero_y "
+            "(hero center) + hero_w (hero width). Typical: copy on the left (text_x~6, text_w~46, left) with the "
+            "hero on the right (hero_x~76), OR mirror it — choose what best fits the mood and keep copy and hero "
+            "from colliding badly. Return JSON for all fields with a one-line rationale."
         )
         try:
             from app.agents.tools import gemini_text
 
-            result = await gemini_text.generate(prompt, model=gemini_text.FLASH_MODEL, structured=FontPairing)
-        except Exception:  # noqa: BLE001 — typography is best-effort
+            result = await gemini_text.generate(prompt, model=gemini_text.FLASH_MODEL, structured=ArtDirection)
+        except Exception:  # noqa: BLE001 — art direction is best-effort
             return default
         display, body = coerce_pairing(getattr(result, "display", ""), getattr(result, "body", ""))
-        return {"display": display, "body": body, "rationale": _short(getattr(result, "rationale", ""), 120), "source": "gemini"}
+        try:
+            result.display, result.body = display, body
+            layout = clamp_layout(result)
+        except Exception:  # noqa: BLE001
+            layout = default_layout
+        return {
+            "fonts": {"display": display, "body": body, "rationale": _short(getattr(result, "rationale", ""), 120), "source": "gemini"},
+            "layout": layout,
+        }
 
     async def _refine_background(self, concept: Any, brand: Any) -> dict[str, Any] | None:
         skill = _load_runtime_skill("background-options-generate")

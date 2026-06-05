@@ -503,11 +503,11 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                 {cellCount > 1 ? (
                   <BannerLayout layout={gridLayout} gap={12} cell={(i) => (
                     <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
-                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} live={live} />
+                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} live={live} breakpoint={device} />
                   )} />
                 ) : (
                   <Banner seg={seg} variant={layoutVariant} slot font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
-                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} live={live} />
+                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} live={live} breakpoint={device} />
                 )}
 
                 {/* refine shimmer overlay */}

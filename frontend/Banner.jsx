@@ -27,7 +27,7 @@ function discountParts(promo) {
   return { big: s.slice(0, 10) || "—", small: "" };
 }
 
-function Banner({ seg, variant = "A", slot = false, font, bodyFont, accent, idSuffix = "", brighter = false, ctaContrast = false, live = null }) {
+function Banner({ seg, variant = "A", slot = false, font, bodyFont, accent, idSuffix = "", brighter = false, ctaContrast = false, live = null, breakpoint = "desktop" }) {
   const p = seg.palette;
   // When the backend background defines a legible copy color, use it for the live
   // banner so the headline keeps the designed contrast over the creative background.
@@ -58,6 +58,35 @@ function Banner({ seg, variant = "A", slot = false, font, bodyFont, accent, idSu
   // (live.layout, %), with sensible defaults.
   if (live) {
     const L = live.layout || {};
+    const ctaArrow = (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
+    );
+    // Tablet/mobile have a TALLER (elongated) fold → vertical-flow layout (hero on
+    // top, copy below). Desktop is a wide banner with absolute %-composed copy/hero.
+    const stacked = breakpoint === "tablet" || breakpoint === "mobile";
+    if (stacked) {
+      const ar = breakpoint === "mobile" ? (L.aspectRatioMobile || 0.82) : (L.aspectRatioTablet || 1.15);
+      const liveVars = { ...vars, "--banner-ar": String(ar) };
+      return (
+        <div className={`hb-banner hb-live hb-live-stack${scope ? " " + scope : ""}`} style={liveVars} role="img"
+          aria-label={`Banner ${brandName || "promocional"} ${eyebrow} — ${String(headline).replace("\n", " ")}`}>
+          {scopedBgCss ? <style dangerouslySetInnerHTML={{ __html: scopedBgCss }} /> : null}
+          <div className="hb-bg" />
+          <div className="hb-grain" />
+          {discount.big !== "—" ? <span className="hb-discount"><b>{discount.big}</b>{discount.small ? <span>{discount.small}</span> : null}</span> : null}
+          <div className="hb-stack-inner">
+            {imageUrl ? <img src={imageUrl} alt="" className="hb-genimg hb-stack-hero" /> : null}
+            <div className="hb-live-copy hb-stack-copy">
+              {eyebrow ? <span className="hb-eyebrow" style={{ fontFamily: "var(--body)" }}>{eyebrow}</span> : null}
+              <h2 className="hb-headline">{headline}</h2>
+              {sub ? <p className="hb-sub" style={{ fontFamily: "var(--body)" }}>{sub}</p> : null}
+              {cta ? <a className="hb-cta" style={{ fontFamily: "var(--body)" }} onClick={(e) => e.preventDefault()} href="#">{cta}{ctaArrow}</a> : null}
+            </div>
+          </div>
+          {brandName ? <div className="hb-logo">{brandName}</div> : null}
+        </div>
+      );
+    }
     const ar = L.aspectRatio || live.aspectRatio || 2.4; // 1440 : 600
     const tX = num(L.textX, 6), tY = num(L.textY, 50), tW = num(L.textW, 48);
     const tAlign = L.textAlign === "center" ? "center" : L.textAlign === "right" ? "right" : "left";
@@ -79,10 +108,7 @@ function Banner({ seg, variant = "A", slot = false, font, bodyFont, accent, idSu
           <h2 className="hb-headline">{headline}</h2>
           {sub ? <p className="hb-sub" style={{ fontFamily: "var(--body)" }}>{sub}</p> : null}
           {cta ? (
-            <a className="hb-cta" style={{ fontFamily: "var(--body)" }} onClick={(e) => e.preventDefault()} href="#">
-              {cta}
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14M13 6l6 6-6 6" /></svg>
-            </a>
+            <a className="hb-cta" style={{ fontFamily: "var(--body)" }} onClick={(e) => e.preventDefault()} href="#">{cta}{ctaArrow}</a>
           ) : null}
         </div>
         {discount.big !== "—" ? <span className="hb-discount" style={{ left: `${dX}%`, top: `${dY}%`, right: "auto", transform: "translate(-50%,-50%) rotate(8deg)" }}><b>{discount.big}</b>{discount.small ? <span>{discount.small}</span> : null}</span> : null}

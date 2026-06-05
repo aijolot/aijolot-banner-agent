@@ -8,3 +8,14 @@ def test_coerce_falls_back_offlist():
 
 def test_allowlists_nonempty():
     assert "Inter" in BODY_FONTS and "Space Grotesk" in DISPLAY_FONTS
+
+
+def test_clamp_layout_ranges_and_align():
+    from app.schemas.typography import ArtDirection, clamp_layout
+    ad = ArtDirection(display="Anton", body="Karla", text_x=999, text_w=5, hero_x=-10, text_align="weird")
+    L = clamp_layout(ad)
+    assert 2 <= L["textX"] <= 60
+    assert 24 <= L["textW"] <= 66
+    assert 30 <= L["heroX"] <= 98
+    assert L["textAlign"] == "left"  # invalid → default
+    assert L["aspectRatio"] == 2.4
