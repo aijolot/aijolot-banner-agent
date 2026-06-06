@@ -367,17 +367,22 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
           revisions: normalized.revisions.ok ? normalized.revisions.data.length : null,
           revisionsReason: normalized.revisions.reason,
         });
-        const failures = [
-          normalized.preview.ok ? null : `Preview: ${normalized.preview.reason}`,
-          normalized.audit.ok ? null : `Audit: ${normalized.audit.reason}`,
-          normalized.revisions.ok ? null : `Revisiones: ${normalized.revisions.reason}`,
+        // Only the revisions artifact is load-bearing — the live Canvas renders from
+        // revision.concept. The standalone /preview + /audit-report endpoints are
+        // RLS-scoped (require a Supabase Bearer JWT), so in header-auth/demo mode they
+        // 401; that's expected and non-blocking, not a generation failure.
+        const optionalDown = [
+          normalized.preview.ok ? null : "preview",
+          normalized.audit.ok ? null : "audit",
         ].filter(Boolean);
-        if (failures.length) {
-          const notice = "Artefactos fail-closed/no disponibles · " + failures.join(" · ");
+        if (!normalized.revisions.ok) {
+          const notice = "Revisiones backend no disponibles: " + normalized.revisions.reason;
           setArtifactNotice(notice);
           onNotice && onNotice({ tone: "amber", text: notice });
         } else {
-          onNotice && onNotice({ tone: "green", text: "Generación backend completada con preview, audit y revisiones disponibles" });
+          const extra = optionalDown.length ? ` · ${optionalDown.join("/")} requieren sesión backend (opcional)` : "";
+          if (optionalDown.length) setArtifactNotice(`Revisiones OK · ${optionalDown.join("/")} requieren sesión backend (opcional, no usado por el lienzo)`);
+          onNotice && onNotice({ tone: "green", text: `Generación completada · ${normalized.revisions.data.length} revisión(es)${extra}` });
         }
       } catch (e) {
         if (!alive) return;
