@@ -37,3 +37,6 @@ demo/.runtime/
 
 # Python packaging
 *.egg-info/
+
+# Supabase self-host secrets (VM)
+.supabase-selfhost.env

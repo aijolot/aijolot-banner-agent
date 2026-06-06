@@ -26,6 +26,7 @@ class ShopifyAdminClient:
         self.access_token = access_token
         self.api_version = api_version
         self.timeout = timeout
+        self.last_throttle_status: dict[str, Any] | None = None
 
     @staticmethod
     def _normalize_shop_domain(shop_domain: str) -> str:
@@ -59,6 +60,34 @@ class ShopifyAdminClient:
         # REST delete requires a metafield id. For demo safety, publish an empty JSON array instead.
         self.put_shop_metafield(namespace=namespace, key=key, value=json.dumps([]), type="json")
         return {"deleted": False, "cleared": True}
+
+    def graphql(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Run an Admin GraphQL query. Returns the ``data`` object.
+
+        Raises :class:`ShopifyApiError` on transport errors or a non-empty
+        ``errors`` array. Error messages never include the token or raw body.
+        """
+
+        headers = {"X-Shopify-Access-Token": self.access_token, "Content-Type": "application/json"}
+        body: dict[str, Any] = {"query": query}
+        if variables is not None:
+            body["variables"] = variables
+        url = f"https://{self.shop_domain}/admin/api/{self.api_version}/graphql.json"
+        with httpx.Client(timeout=self.timeout) as client:
+            response = client.request("POST", url, headers=headers, json=body)
+        if response.status_code >= 400:
+            raise ShopifyApiError(f"Shopify GraphQL request failed with status {response.status_code}")
+        payload = response.json() if response.content else {}
+        extensions = payload.get("extensions") or {}
+        cost = extensions.get("cost") or {}
+        throttle = cost.get("throttleStatus")
+        if isinstance(throttle, dict):
+            self.last_throttle_status = throttle
+        errors = payload.get("errors")
+        if errors:
+            count = len(errors) if isinstance(errors, list) else 1
+            raise ShopifyApiError(f"Shopify GraphQL error: {count} error(s)")
+        return payload.get("data") or {}
 
     def _request(self, method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = {"X-Shopify-Access-Token": self.access_token, "Content-Type": "application/json"}

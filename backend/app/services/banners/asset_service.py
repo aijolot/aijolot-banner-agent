@@ -120,6 +120,49 @@ class BannerAssetService:
             upload_report={"bucket": self.bucket, "uploaded": uploaded, "uploaded_count": len(uploaded)},
         )
 
+    def upload_png(
+        self,
+        *,
+        png_bytes: bytes,
+        campaign_id: str,
+        revision_id: str,
+        asset_group_key: str,
+        asset_kind: str = "generated_hero",
+        size_key: int = 1280,
+        alt_text: str | None = None,
+        image_prompt: str | None = None,
+        source_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Upload a single transparent PNG verbatim (alpha preserved — no webp
+        re-encode) and record an asset row. Returns the created/echoed row."""
+        if not campaign_id or not revision_id:
+            raise ValueError("campaign_id and revision_id are required")
+        safe_group = _safe_path_part(asset_group_key)
+        safe_kind = _safe_path_part(asset_kind)
+        path = (
+            f"campaigns/{_safe_path_part(campaign_id)}/revisions/{_safe_path_part(revision_id)}/"
+            f"{safe_kind}/{safe_group}/{int(size_key)}w.png"
+        )
+        self.storage_client.upload(bucket=self.bucket, path=path, data=png_bytes, content_type="image/png", upsert=True)
+        public_url = self.storage_client.public_url(bucket=self.bucket, path=path)
+        row = {
+            "revision_id": revision_id,
+            "asset_kind": asset_kind,
+            "size_key": int(size_key),
+            "format": "png",
+            "storage_path": path,
+            "public_url": public_url,
+            "alt_text": alt_text,
+            "bytes": len(png_bytes),
+            "image_prompt": image_prompt,
+            "metadata": {"bucket": self.bucket, "asset_group_key": safe_group, "mime_type": "image/png", "transparent": True, "source": source_metadata or {}},
+        }
+        try:
+            records = self.asset_repository.create_many(assets=[row])
+            return records[0] if records else row
+        except Exception:  # noqa: BLE001 — recording is best-effort; the URL is what matters
+            return row
+
     @staticmethod
     def object_path(
         *,

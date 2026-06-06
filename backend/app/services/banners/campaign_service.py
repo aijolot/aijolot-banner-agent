@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 from collections.abc import Sequence
 from typing import Any, Protocol
 from uuid import uuid4
@@ -129,12 +130,16 @@ class CampaignService:
         if not can_patch_brief(campaign.status):
             raise CampaignNotEditable(campaign_id)
         brief_data = campaign.structured_brief.model_dump()
-        for key in ("goal", "audience", "cta", "tone", "urgency", "placement", "deadline"):
+        for key in ("goal", "audience", "cta", "tone", "urgency", "placement", "deadline",
+                    "promo", "personalization_dimension", "personalization_variants"):
             if key in fields and fields[key] is not None:
                 brief_data[key] = fields[key]
         campaign.structured_brief = StructuredBrief(**brief_data)
         if fields.get("title"):
             campaign.title = fields["title"]
+        elif _is_default_title(campaign.title) and campaign.structured_brief.goal:
+            # No explicit title yet → derive a descriptive, unique name from the brief.
+            campaign.title = derive_campaign_title(campaign.structured_brief, campaign_id)
         campaign.status = status_for_brief(campaign.structured_brief, campaign.status)
         if self.supabase_enabled:
             assert self.campaign_repository is not None and self.team_id is not None
@@ -208,3 +213,40 @@ class CampaignService:
         if isinstance(row, CampaignMessage):
             return row
         return CampaignMessage(author_type=row.get("author_type", "system"), body=row.get("body", ""), metadata=row.get("metadata") or {})
+
+
+_DEFAULT_TITLES = {"", "nueva campaña", "untitled", "sin título"}
+
+
+def _is_default_title(title: str | None) -> bool:
+    return (title or "").strip().lower() in _DEFAULT_TITLES
+
+
+def derive_campaign_title(brief: StructuredBrief, campaign_id: str | None = None) -> str:
+    """Build a descriptive, unique campaign name from the brief.
+
+    Concise theme from goal/promo (+ audience), plus a short token from the campaign id
+    so two similar briefs never collide. Deterministic — no fabricated content.
+    """
+    goal = (getattr(brief, "goal", "") or "").strip()
+    promo = (getattr(brief, "promo", "") or "").strip()
+    audience = (getattr(brief, "audience", "") or "").strip()
+
+    if re.search(r"black\s*friday", f"{goal} {promo}", re.I):
+        theme = "Black Friday"
+    else:
+        # First ~7 words of the goal as the theme, trimmed at a word boundary.
+        words = re.sub(r"\s+", " ", goal).split(" ")
+        theme = " ".join(words[:7]).strip(" .,;:") or promo or "Campaña"
+        if len(theme) > 52:
+            theme = theme[:52].rstrip(" .,;:") + "…"
+
+    parts = [theme]
+    if promo and promo.lower() not in theme.lower():
+        parts.append(promo)
+    if audience and audience.lower() not in " ".join(parts).lower():
+        parts.append(audience)
+    label = " · ".join(parts)
+
+    token = re.sub(r"[^a-z0-9]", "", (campaign_id or "").lower())[:4]
+    return f"{label} ({token})" if token else label

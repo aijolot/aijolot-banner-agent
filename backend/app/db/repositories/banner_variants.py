@@ -48,6 +48,15 @@ class BannerVariantRepository:
         out = execute_data(self.client.table(self.table_name).insert(payload).select(self.columns))
         return [dict(row) for row in (out or [])] if isinstance(out, list) else ([dict(out)] if out else [])
 
+    def update(self, *, variant_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        payload = {key: value for key, value in data.items() if key in self.writable_columns}
+        if not payload:
+            return None
+        out = execute_data(self.client.table(self.table_name).update(payload).eq("id", variant_id).select(self.columns))
+        if isinstance(out, list):
+            return dict(out[0]) if out else None
+        return dict(out) if out else None
+
     def get(self, *, variant_id: str) -> dict[str, Any] | None:
         out = execute_data(self.client.table(self.table_name).select(self.columns).eq("id", variant_id).limit(1))
         if isinstance(out, list):

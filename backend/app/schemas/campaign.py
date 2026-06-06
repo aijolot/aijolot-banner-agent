@@ -7,12 +7,31 @@ a ``campaign_messages`` conversation log.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 # Required fields for a "complete" brief (deadline is optional).
 REQUIRED_BRIEF_FIELDS = ("goal", "audience", "cta", "urgency", "placement")
+
+
+class PersonalizationVariant(BaseModel):
+    """One customer variant the campaign personalizes for (served by tag).
+
+    e.g. {key:"male", label:"Hombre", audience:"hombres 18-30", customer_tag:"gender:male"}.
+    """
+
+    key: str
+    label: str = ""
+    audience: str = ""
+    customer_tag: str | None = None
+    # Optional featured product for THIS variant (resolved from the Shopify catalog,
+    # e.g. via /stores/{id}/shopify/products/search). When set, the variant's copy is
+    # grounded on this product instead of the shared catalog snapshot — so e.g. the men
+    # variant features "Mandarin Sky" and the women variant "My Way Intense".
+    product_gid: str | None = None
+    product_title: str | None = None
+    product_image_url: str | None = None
 
 
 class StructuredBrief(BaseModel):
@@ -23,6 +42,11 @@ class StructuredBrief(BaseModel):
     urgency: str = ""  # low | medium | high
     placement: str = ""
     deadline: str | None = None  # ISO date (YYYY-MM-DD) or None
+    promo: str = ""  # parsed offer/discount label, e.g. "15% OFF" (→ campaign.promo_label)
+    # Optional personalization dimension: one banner_variant is generated per
+    # entry (1 campaign, N variants served by customer tag). Empty → single default.
+    personalization_dimension: str = ""  # e.g. "gender"
+    personalization_variants: list[PersonalizationVariant] = Field(default_factory=list)
 
     def missing(self) -> list[str]:
         return [f for f in REQUIRED_BRIEF_FIELDS if not getattr(self, f).strip()]
@@ -62,3 +86,6 @@ class BriefPatch(BaseModel):
     placement: str | None = None
     deadline: str | None = None
     title: str | None = None
+    promo: str | None = None
+    personalization_dimension: str | None = None
+    personalization_variants: list[dict[str, Any]] | None = None

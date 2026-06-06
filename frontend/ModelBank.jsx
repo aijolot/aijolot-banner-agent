@@ -1,4 +1,4 @@
-/* global React, Icon, Button, Spinner */
+/* global React, Icon, Button, Spinner, ArtApi, isApiCampaign, errorText */
 // Aijolot Banner Agent — Usage-shot model bank + brand model creator.
 const { useState: useStateMB } = React;
 
@@ -21,19 +21,38 @@ function ModelCard({ m, on, onClick }) {
   );
 }
 
-function ModelBank({ models, selected, onSelect, onCreate, localPresetNotice }) {
+function ModelBank({ models, selected, onSelect, onCreate, localPresetNotice, campaign, onNotice }) {
   const [open, setOpen] = useStateMB(false);
   const [prompt, setPrompt] = useStateMB("");
   const [gen, setGen] = useStateMB("");
   const [gender, setGender] = useStateMB("Mujer");
+  const [proposals, setProposals] = useStateMB([]);
 
-  function generate() {
+  // F8 — propose model descriptions from the backend (Gemini), reusing the
+  // product description. Falls back to a local stub when no API campaign.
+  async function generate() {
     if (!prompt.trim() || gen) return;
     setGen("working");
-    setTimeout(() => {
-      onCreate({ name: "Modelo IA", tag: gender + " · de marca", grad: "linear-gradient(150deg,#0891B2,#8B5CF6)", ai: true, desc: prompt.trim() });
-      setGen(""); setPrompt(""); setOpen(false);
-    }, 1600);
+    const canApi = typeof isApiCampaign === "function" && isApiCampaign(campaign) && typeof ArtApi !== "undefined";
+    if (canApi) {
+      try {
+        const res = await ArtApi.modelPrompts(campaign, { gender, prompt: prompt.trim(), count: 3 });
+        const opts = (res && res.data && res.data.options) || [];
+        if (res && res.ok && !res.fallback && opts.length) {
+          setProposals(opts);
+          const top = opts[0];
+          onCreate({ name: top.description || "Modelo IA", tag: gender + " · " + (res.data.source === "gemini" ? "Gemini" : "de marca"), grad: "linear-gradient(150deg,#0891B2,#8B5CF6)", ai: true, desc: top.prompt });
+          onNotice && onNotice({ tone: "green", text: "Modelo propuesto por el backend (" + (res.data.source || "deterministic") + ")" });
+          setGen(""); setPrompt("");
+          return;
+        }
+        onNotice && onNotice({ tone: "amber", text: (res && res.reason) || "Propuestas de modelo no disponibles; modelo local." });
+      } catch (e) {
+        onNotice && onNotice({ tone: "amber", text: "Backend no propuso modelo (" + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) + "); modelo local." });
+      }
+    }
+    onCreate({ name: "Modelo IA", tag: gender + " · de marca", grad: "linear-gradient(150deg,#0891B2,#8B5CF6)", ai: true, desc: prompt.trim() });
+    setGen(""); setPrompt(""); setOpen(false);
   }
 
   return (
@@ -71,8 +90,20 @@ function ModelBank({ models, selected, onSelect, onCreate, localPresetNotice }) 
             <input value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="ej. modelo elegante, luz cálida, 30s" style={{ flex: 1, border: "none", outline: "none", background: "transparent", fontFamily: "Inter", fontSize: 12, color: "#002B57" }} />
           </div>
           <Button variant={gen ? "secondary" : "default"} icon={gen ? null : "wand-sparkles"} disabled={!prompt.trim() || !!gen} onClick={generate} style={{ justifyContent: "center" }}>
-            {gen ? <><span style={{ display: "inline-flex", marginRight: 6 }}><Spinner size={13} /></span>Generando modelo…</> : "Generar modelo"}
+            {gen ? <><span style={{ display: "inline-flex", marginRight: 6 }}><Spinner size={13} /></span>Proponiendo modelos…</> : "Proponer modelos (IA)"}
           </Button>
+          {proposals.length ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ fontFamily: "Inter", fontSize: 10.5, fontWeight: 600, color: "#0891B2", letterSpacing: ".04em" }}>PROPUESTAS DEL BACKEND</div>
+              {proposals.map((o, i) => (
+                <button key={i} onClick={() => onCreate({ name: o.description || ("Modelo " + (o.label || i + 1)), tag: gender + " · IA", grad: "linear-gradient(150deg,#0891B2,#8B5CF6)", ai: true, desc: o.prompt })}
+                  style={{ textAlign: "left", padding: "7px 9px", borderRadius: 9, border: "1px solid #E2E8F0", background: "#fff", cursor: "pointer" }}>
+                  <span style={{ display: "block", fontFamily: "Inter", fontSize: 11.5, fontWeight: 700, color: "#002B57" }}>{o.label || i + 1}. {o.description || "Variante"}</span>
+                  <span style={{ display: "block", fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{o.prompt}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

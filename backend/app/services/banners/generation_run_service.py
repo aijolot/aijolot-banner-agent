@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Callable, Coroutine, Protocol, cast
 from uuid import uuid4
 
 from app.core.settings import MissingSettingsError, Settings
@@ -16,8 +17,12 @@ from app.schemas.generation import (
     GenerationRunResponse,
     GenerationRunStatus,
 )
+from app.services.banners.async_run import run_coro as _run_coro
 from app.services.supabase.client import SupabaseClientFactory
 from app.workflows.banner_creation import FRONTEND_PROGRESS_STEPS, frontend_step_for_node, ordered_node_keys
+
+if TYPE_CHECKING:
+    from app.services.banners.run_orchestrator import RunOrchestrator
 
 
 class CampaignNotFound(Exception):
@@ -46,6 +51,7 @@ class GenerationRunRepositoryProtocol(Protocol):
     def create(self, *, data: dict[str, Any]) -> dict[str, Any]: ...
     def get(self, *, run_id: str) -> dict[str, Any] | None: ...
     def get_latest_by_campaign_id(self, *, campaign_id: str) -> dict[str, Any] | None: ...
+    def update(self, *, run_id: str, data: dict[str, Any]) -> dict[str, Any] | None: ...
 
 
 class GenerationEventRepositoryProtocol(Protocol):
@@ -80,6 +86,13 @@ class InMemoryGenerationRunRepository:
         if not rows:
             return None
         return dict(max(rows, key=lambda row: int(row.get("_sequence") or 0)))
+
+    def update(self, *, run_id: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        row = self.rows.get(run_id)
+        if row is None:
+            return None
+        row.update(data)
+        return dict(row)
 
 
 class InMemoryGenerationEventRepository:
@@ -122,27 +135,103 @@ class GenerationRunService:
         run_repository: GenerationRunRepositoryProtocol | None = None,
         event_repository: GenerationEventRepositoryProtocol | None = None,
         campaign_repository: CampaignRepositoryProtocol | None = None,
+        orchestrator: "RunOrchestrator | None" = None,
         team_id: str | None = None,
+        background: bool = False,
     ) -> None:
         self.run_repository = run_repository or _LOCAL_RUN_REPOSITORY
         self.event_repository = event_repository or _LOCAL_EVENT_REPOSITORY
         self.campaign_repository = campaign_repository
+        self.orchestrator = orchestrator
         self.team_id = team_id
+        # When True (live HTTP), orchestrated runs execute in a daemon thread and
+        # the call returns a "running" run immediately (frontend polls events).
+        # False (tests/in-memory) runs inline for deterministic assertions.
+        self.background = background
+        self._last_revision_id: str | None = None
+
+    def _finalize_run(
+        self,
+        *,
+        run_id: str,
+        run_row: dict[str, Any],
+        base_metadata: dict[str, Any],
+        coro_factory: "Callable[[], Coroutine[Any, Any, Any]]",
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """Execute the orchestrator job (inline or in a background thread), write
+        events, and finalize the run row. In background mode returns the running
+        run immediately (revision id resolved later via polling)."""
+
+        def job() -> None:
+            try:
+                outcome = _run_coro(coro_factory())
+            except BaseException as exc:  # noqa: BLE001
+                outcome = _failed_outcome(f"{type(exc).__name__}: {exc}")
+            self._last_revision_id = outcome.revision_id
+            if outcome.events:
+                self.event_repository.create_many(events=outcome.events)
+            self.run_repository.update(
+                run_id=run_id,
+                data={
+                    "status": outcome.status,
+                    "frontend_step": outcome.frontend_step,
+                    "finished_at": _utc_now_iso(),
+                    "error_message": outcome.error_message,
+                    "metadata": {**base_metadata, **outcome.metadata},
+                },
+            )
+
+        if self.background:
+            threading.Thread(target=job, daemon=True).start()
+            return self._run_response_from_record(run_row), None
+        job()
+        updated = self.run_repository.get(run_id=run_id) or run_row
+        return self._run_response_from_record(updated), self._last_revision_id
 
     @classmethod
     def from_supabase_client(cls, client: Any, *, team_id: str | None = None) -> "GenerationRunService":
+        from app.db.repositories.audit_reports import AuditReportRepository
+        from app.db.repositories.banner_layout_variants import BannerLayoutVariantRepository
+        from app.db.repositories.banner_variants import BannerVariantRepository
+        from app.db.repositories.campaign_catalog import CampaignCatalogRepository
+        from app.db.repositories.campaign_revisions import CampaignRevisionRepository
+        from app.services.banners.asset_service import BannerAssetService
+        from app.services.banners.run_orchestrator import RunOrchestrator
+
+        campaign_repository = CampaignRepository(client)
+        try:
+            asset_service: Any = BannerAssetService.from_supabase_client(client)
+        except Exception:  # noqa: BLE001 — assets stay in-memory if storage unconfigured
+            asset_service = None
+        orchestrator = RunOrchestrator(
+            revisions=CampaignRevisionRepository(client),
+            variants=BannerVariantRepository(client),
+            layout_variants=BannerLayoutVariantRepository(client),
+            audit_reports=AuditReportRepository(client),
+            campaigns=campaign_repository,
+            catalog=CampaignCatalogRepository(client),
+            asset_service=asset_service,
+            team_id=team_id,
+        )
         return cls(
             run_repository=GenerationRunRepository(client),
             event_repository=GenerationEventRepository(client),
-            campaign_repository=CampaignRepository(client),
+            campaign_repository=campaign_repository,
+            orchestrator=orchestrator,
             team_id=team_id,
+            background=True,
         )
 
     def start_generation_run(self, campaign_id: str, request: GenerationRunCreate | None = None) -> GenerationRunResponse:
         request = request or GenerationRunCreate()
-        self._get_campaign(campaign_id)
+        campaign = self._get_campaign(campaign_id)
         if request.parent_run_id:
             self._verify_parent_run(campaign_id=campaign_id, parent_run_id=request.parent_run_id)
+        # Real pipeline for initial runs when an orchestrator is wired (Supabase).
+        # Refinement runs keep the deterministic shell here; RevisionService owns
+        # their revision bookkeeping (rewired agentically in F9).
+        if self.orchestrator is not None and campaign is not None and request.run_type != "refinement":
+            return self._start_orchestrated_run(campaign_id, request, campaign)
         now = _utc_now_iso()
         trace_id = str(uuid4())
         metadata = {**request.metadata, "facade_version": "task-10-deterministic"}
@@ -163,6 +252,104 @@ class GenerationRunService:
         run_id = str(row["id"])
         self.event_repository.create_many(events=self._deterministic_events(run_id=run_id))
         return self._run_response_from_record(row)
+
+    def start_refinement_run(
+        self,
+        campaign_id: str,
+        *,
+        prompt: str | None,
+        targets: list[str] | None,
+        started_by: str | None = None,
+        parent_run_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """F9 — run an agentic refinement through the orchestrator.
+
+        Returns the run response and the new revision id (None on failure).
+        Caller (RevisionService) handles refinement-request bookkeeping.
+        """
+        campaign = self._get_campaign(campaign_id)
+        if self.orchestrator is None or campaign is None:
+            raise MissingSettingsError(("orchestrator",))
+        request = GenerationRunCreate(
+            run_type="refinement",
+            parent_run_id=parent_run_id,
+            started_by=started_by,
+            metadata={**(metadata or {}), "prompt": prompt or "", "refine_targets": list(targets or [])},
+        )
+        run = self._start_orchestrated_run(campaign_id, request, campaign, prompt=prompt, targets=targets)
+        return run, (None if self.background else self._last_revision_id)
+
+    def start_banner_edit_run(
+        self,
+        campaign_id: str,
+        *,
+        source_revision: dict[str, Any],
+        prompt: str,
+        targets: list[str],
+        started_by: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """Banner-edit: scoped, non-destructive edit of an assembled revision."""
+        campaign = self._get_campaign(campaign_id)
+        if self.orchestrator is None or campaign is None:
+            raise MissingSettingsError(("orchestrator",))
+        now = _utc_now_iso()
+        base_metadata = {"prompt": prompt or "", "edit_targets": list(targets or [])}
+        run_row = self.run_repository.create(
+            data={
+                "campaign_id": campaign_id,
+                "parent_run_id": parent_run_id,
+                "run_type": "refinement",
+                "status": "running",
+                "frontend_step": "render_audit",
+                "adk_trace_id": str(uuid4()),
+                "started_by": started_by,
+                "started_at": now,
+                "metadata": {**base_metadata, "facade_version": "f-banner-edit"},
+            }
+        )
+        run_id = str(run_row["id"])
+        orchestrator = self.orchestrator
+        return self._finalize_run(
+            run_id=run_id, run_row=run_row, base_metadata=base_metadata,
+            coro_factory=lambda: orchestrator.edit_revision(run_id=run_id, campaign_row=campaign, source_revision=source_revision, prompt=prompt, targets=targets),
+        )
+
+    def _start_orchestrated_run(
+        self,
+        campaign_id: str,
+        request: GenerationRunCreate,
+        campaign_row: dict[str, Any],
+        *,
+        prompt: str | None = None,
+        targets: list[str] | None = None,
+    ) -> GenerationRunResponse:
+        assert self.orchestrator is not None
+        now = _utc_now_iso()
+        base_metadata = dict(request.metadata)
+        is_refine = bool(prompt) or bool(targets)
+        facade = "f9-refine-orchestrator" if is_refine else "f5-run-orchestrator"
+        run_row = self.run_repository.create(
+            data={
+                "campaign_id": campaign_id,
+                "parent_run_id": request.parent_run_id,
+                "run_type": request.run_type,
+                "status": "running",
+                "frontend_step": "intake_context",
+                "adk_trace_id": str(uuid4()),
+                "started_by": request.started_by,
+                "started_at": now,
+                "metadata": {**base_metadata, "facade_version": facade},
+            }
+        )
+        run_id = str(run_row["id"])
+        orchestrator = self.orchestrator
+        run, _revision_id = self._finalize_run(
+            run_id=run_id, run_row=run_row, base_metadata=base_metadata,
+            coro_factory=lambda: orchestrator.execute(run_id=run_id, campaign_row=campaign_row, prompt=prompt, targets=targets),
+        )
+        return run
 
     def get_latest_for_campaign(self, campaign_id: str) -> GenerationRunResponse:
         self._get_campaign(campaign_id)
@@ -214,6 +401,7 @@ class GenerationRunService:
                     "frontend_step": step,
                     "status": "started",
                     "input_summary": {"summary": f"Deterministic Task 10 input for {node_key}"},
+                    "output_summary": {},
                     "duration_ms": 0,
                     "cost_usd": 0.0,
                     "created_at": started_created_at,
@@ -225,6 +413,7 @@ class GenerationRunService:
                     "node_key": node_key,
                     "frontend_step": step,
                     "status": "succeeded",
+                    "input_summary": {},
                     "output_summary": {"summary": f"Deterministic Task 10 output for {node_key}"},
                     "duration_ms": 1 + index,
                     "cost_usd": 0.0,
@@ -266,6 +455,18 @@ class GenerationRunService:
             cost_usd=float(row["cost_usd"]) if row.get("cost_usd") is not None else None,
             created_at=_string_or_none(row.get("created_at")),
         )
+
+
+def _failed_outcome(message: str) -> "Any":
+    from app.services.banners.run_orchestrator import OrchestratorOutcome
+
+    return OrchestratorOutcome(
+        status="failed",
+        frontend_step="intake_context",
+        events=[],
+        error_message=message[:500],
+        metadata={"facade_version": "f5-run-orchestrator", "failed_node": "orchestrator"},
+    )
 
 
 def _configured_service_for_team(team_id_override: str | None = None) -> GenerationRunService:

@@ -24,6 +24,7 @@ async def run(
     aspect_ratio: str = "16:9",
     provider: ImageProvider | None = None,
     usage_guard: UsageGuardService | None = None,
+    reference_images: tuple[tuple[bytes, str], ...] = (),
 ) -> dict[str, Any]:
     image_prompt = _resolve_prompt(prompt=prompt, concept=concept, context=context)
     response = await nano_banana_image.generate(
@@ -33,6 +34,7 @@ async def run(
         campaign_id=campaign_id,
         provider=provider,
         metadata={"context_keys": sorted((context or {}).keys())},
+        reference_images=reference_images,
     )
     guard = usage_guard or get_default_usage_guard_service()
     usage_result = guard.record_image_generation(

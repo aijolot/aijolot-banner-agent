@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi, errorText, isApiCampaign */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign */
 // Aijolot Banner Agent — Stage 2: backend event-driven generation pipeline.
 const { useState: useStateG, useEffect: useEffectG, useRef: useRefG } = React;
 
@@ -277,6 +277,15 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
       setArtifactStatus(null);
       setArtifactNotice(null);
       try {
+        // Ensure a catalog snapshot exists so the concept stays grounded in the store
+        // catalog + the products picked per variant in Brief. (Previously created in the
+        // removed "Arte" step; best-effort — never blocks generation.)
+        if (isApiCampaign(campaign)) {
+          try {
+            const storeId = (placement && placement.backend && placement.backend.store_id) || (AIJOLOT_DEMO_IDS && AIJOLOT_DEMO_IDS.store);
+            await CatalogApi.createSnapshot(campaign, { store_id: storeId, resource_types: ["product", "collection"], limit: 24 });
+          } catch (snapErr) { /* grounding is best-effort */ }
+        }
         const r = await GenerationApi.start(campaign, { placement, art, source: "frontend-generate-stage" });
         if (!alive) return;
         if (r.fallback) {
@@ -287,9 +296,13 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
         let run = r.data;
         setBackendRun(run);
         setGenerationStatus(run && run.status === "succeeded" ? "succeeded" : run && FAILED_STATUSES.includes(run.status) ? "failed" : "running");
-        onNotice && onNotice({ tone: "green", text: "Generación iniciada en backend" });
+        onNotice && onNotice({ tone: "green", text: "Generación iniciada en backend · suele tardar 2-3 min (compone el hero, art-direction y auto-revisa en 3 breakpoints)" });
 
-        for (let attempt = 0; alive && attempt < 20; attempt += 1) {
+        // Generation does heavy real work (per-variant Nano Banana hero composition,
+        // art-direction, headline styling, and the screenshot self-review loop) — it
+        // routinely takes 2-3 min. Poll generously (~6 min) so we wait for the real
+        // terminal status instead of giving up while the run is still "running".
+        for (let attempt = 0; alive && attempt < 150; attempt += 1) {
           try {
             const events = await GenerationApi.events(run.id);
             if (!alive) return;
@@ -321,7 +334,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
           }
 
           if (run && TERMINAL_RUN_STATUSES.includes(run.status)) break;
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+          await new Promise((resolve) => setTimeout(resolve, 2500));
         }
 
         if (!alive) return;
@@ -354,17 +367,22 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
           revisions: normalized.revisions.ok ? normalized.revisions.data.length : null,
           revisionsReason: normalized.revisions.reason,
         });
-        const failures = [
-          normalized.preview.ok ? null : `Preview: ${normalized.preview.reason}`,
-          normalized.audit.ok ? null : `Audit: ${normalized.audit.reason}`,
-          normalized.revisions.ok ? null : `Revisiones: ${normalized.revisions.reason}`,
+        // Only the revisions artifact is load-bearing — the live Canvas renders from
+        // revision.concept. The standalone /preview + /audit-report endpoints are
+        // RLS-scoped (require a Supabase Bearer JWT), so in header-auth/demo mode they
+        // 401; that's expected and non-blocking, not a generation failure.
+        const optionalDown = [
+          normalized.preview.ok ? null : "preview",
+          normalized.audit.ok ? null : "audit",
         ].filter(Boolean);
-        if (failures.length) {
-          const notice = "Artefactos fail-closed/no disponibles · " + failures.join(" · ");
+        if (!normalized.revisions.ok) {
+          const notice = "Revisiones backend no disponibles: " + normalized.revisions.reason;
           setArtifactNotice(notice);
           onNotice && onNotice({ tone: "amber", text: notice });
         } else {
-          onNotice && onNotice({ tone: "green", text: "Generación backend completada con preview, audit y revisiones disponibles" });
+          const extra = optionalDown.length ? ` · ${optionalDown.join("/")} requieren sesión backend (opcional)` : "";
+          if (optionalDown.length) setArtifactNotice(`Revisiones OK · ${optionalDown.join("/")} requieren sesión backend (opcional, no usado por el lienzo)`);
+          onNotice && onNotice({ tone: "green", text: `Generación completada · ${normalized.revisions.data.length} revisión(es)${extra}` });
         }
       } catch (e) {
         if (!alive) return;

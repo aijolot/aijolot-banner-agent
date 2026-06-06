@@ -4,9 +4,32 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ShopifyResourceType = Literal["collection", "product", "page", "search"]
-CachedShopifyResourceType = Literal["collection", "product", "page"]
+ShopifyResourceType = Literal["collection", "product", "page", "search", "vendor", "customer_segment"]
+CachedShopifyResourceType = Literal["collection", "product", "page", "vendor", "customer_segment"]
 StoreStatus = Literal["connected", "disconnected", "needs_attention"]
+
+
+class SyncResult(BaseModel):
+    """Per-resource-type outcome of a live Shopify catalog sync."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    resource_type: CachedShopifyResourceType
+    fetched: int = 0
+    written: int = 0
+    skipped: int = 0
+
+
+class SyncReport(BaseModel):
+    """Summary of a live Shopify catalog sync (or dry-run preview)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    store_id: str
+    source: str = "shopify_admin_graphql"
+    dry_run: bool = False
+    results: list[SyncResult] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 class StoreSummary(BaseModel):

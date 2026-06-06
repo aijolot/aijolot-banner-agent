@@ -61,6 +61,7 @@ class ShopifyPublisher:
         placements: Any,
         publish_jobs: Any,
         team_id: str | None = None,
+        dry_run: bool = False,
     ) -> None:
         self.client = client
         self.campaigns = campaigns
@@ -70,6 +71,7 @@ class ShopifyPublisher:
         self.placements = placements
         self.publish_jobs = publish_jobs
         self.team_id = team_id
+        self.dry_run = dry_run
 
     def install_theme_files(self, store_id: str) -> PublishJobResponse:
         """Install controlled theme files without creating invalid FK publish_jobs rows."""
@@ -77,7 +79,12 @@ class ShopifyPublisher:
         theme_id = str(store.get("theme_id") or "")
         if not theme_id:
             raise PublishUnsupported("store has no theme_id configured")
-        idempotency_key = f"install-theme-files:{store_id}:{theme_id}:v1"
+        suffix = ":dry" if self.dry_run else ":v1"
+        idempotency_key = f"install-theme-files:{store_id}:{theme_id}{suffix}"
+        if self.dry_run:
+            response = {"dry_run": True, "would_install": theme_files.installed_asset_keys()}
+            row = self._standalone_theme_job(store_id=store_id, theme_id=theme_id, status="succeeded", response_payload=response, idempotency_key=idempotency_key)
+            return PublishJobResponse.model_validate(row)
         try:
             response = {"assets": theme_files.install_theme_files(self.client, theme_id=theme_id)}
             row = self._standalone_theme_job(store_id=store_id, theme_id=theme_id, status="succeeded", response_payload=response, idempotency_key=idempotency_key)
@@ -97,7 +104,7 @@ class ShopifyPublisher:
         if placement and placement.get("target_type") == "search":
             raise PublishUnsupported("search result placement publishing is not supported in the Shopify Liquid MVP")
         config = self._campaign_config(campaign=campaign, revision=revision, placement=placement, schedule=schedule)
-        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"], "config": config}
+        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"], "config": config, "dry_run": self.dry_run}
         job = self._create_job(
             campaign_id=campaign_id,
             revision_id=str(revision["id"]),
@@ -108,9 +115,26 @@ class ShopifyPublisher:
         )
         if job.get("status") == "succeeded":
             return PublishJobResponse.model_validate(job)
+        if self.dry_run:
+            response = {
+                "dry_run": True,
+                "would_install": theme_files.installed_asset_keys() if store.get("theme_id") else [],
+                "would_write_metafield": {
+                    "namespace": str(store.get("banner_metafield_namespace") or "aijolot"),
+                    "key": str(store.get("banner_metafield_key") or "banner_campaigns"),
+                    "campaign_id": config["campaign_id"],
+                    "anchor": (config.get("placement") or {}).get("anchor"),
+                },
+            }
+            row = self.publish_jobs.update(job_id=job["id"], data={"status": "succeeded", "response_payload": response, "finished_at": _now()}) or {**job, "status": "succeeded", "response_payload": response}
+            return PublishJobResponse.model_validate(row)
         try:
             if store.get("theme_id"):
                 theme_files.install_theme_files(self.client, theme_id=str(store["theme_id"]))
+            # Re-host any locally-served banner image on Shopify Files so a live
+            # storefront can actually load it (a localhost/private Supabase URL would
+            # 404 for visitors). Best-effort: keeps the original URL on failure.
+            config = self._rehost_assets(config)
             response = metafields.publish_campaign_config(
                 self.client,
                 namespace=str(store.get("banner_metafield_namespace") or "aijolot"),
@@ -130,7 +154,7 @@ class ShopifyPublisher:
         schedule = self.schedules.get_active_by_campaign_id(campaign_id=campaign_id) if self.schedules else None
         revision = self._revision_for_schedule(campaign, schedule) if schedule and schedule.get("status") in {"pending", "active"} else None
         store = self._store(str(campaign["store_id"])) if revision else None
-        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"]} if revision and store else None
+        request_payload = {"campaign_id": campaign_id, "revision_id": revision["id"], "store_id": store["id"], "dry_run": self.dry_run} if revision and store else None
         existing_job = self._existing_job("unpublish:" + _hash(request_payload)) if request_payload else None
         if existing_job and existing_job.get("status") == "succeeded":
             return PublishJobResponse.model_validate(existing_job)
@@ -148,6 +172,17 @@ class ShopifyPublisher:
         )
         if job.get("status") == "succeeded":
             return PublishJobResponse.model_validate(job)
+        if self.dry_run:
+            response = {
+                "dry_run": True,
+                "would_clear_metafield": {
+                    "namespace": str(store.get("banner_metafield_namespace") or "aijolot"),
+                    "key": str(store.get("banner_metafield_key") or "banner_campaigns"),
+                    "campaign_id": campaign_id,
+                },
+            }
+            row = self.publish_jobs.update(job_id=job["id"], data={"status": "succeeded", "response_payload": response, "finished_at": _now()}) or {**job, "status": "succeeded", "response_payload": response}
+            return PublishJobResponse.model_validate(row)
         try:
             response = metafields.clear_campaign_config(
                 self.client,
@@ -163,18 +198,57 @@ class ShopifyPublisher:
             raise
 
     def _campaign_config(self, *, campaign: dict[str, Any], revision: dict[str, Any], placement: dict[str, Any] | None, schedule: dict[str, Any]) -> dict[str, Any]:
+        from app.services.shopify.theme_files import ANCHOR_BY_PLACEMENT_KEY
+
         base = dict(revision.get("liquid_config") or {})
+        placement_config = dict(placement or {})
+        # Resolve the theme anchor key so the placement-aware snippets filter this
+        # campaign to the right spot. Controlled enum string (safe in Liquid).
+        if placement_config and not placement_config.get("anchor"):
+            key = placement_config.get("placement_type_key")
+            anchor = ANCHOR_BY_PLACEMENT_KEY.get(str(key)) if key else None
+            if anchor:
+                placement_config["anchor"] = anchor
         base.update(
             {
                 "campaign_id": str(campaign["id"]),
                 "revision_id": str(revision["id"]),
                 "title": campaign.get("title"),
-                "placement": dict(placement or {}),
+                "placement": placement_config,
                 "active_from": schedule.get("starts_at"),
                 "active_until": schedule.get("ends_at"),
             }
         )
         return base
+
+    def _rehost_assets(self, config: dict[str, Any]) -> dict[str, Any]:
+        """Swap locally-hosted banner image URLs for Shopify Files CDN URLs.
+
+        Best-effort and isolated: any error returns the config unchanged so the
+        publish still proceeds. Only touches truly-local URLs — a hosted Supabase
+        URL is already storefront-reachable and is left as-is.
+        """
+        try:
+            from app.services.shopify import shopify_files
+
+            return shopify_files.rehost_config_assets(
+                self.client, config, fetch_bytes=self._fetch_asset_bytes
+            )
+        except Exception:  # noqa: BLE001 — never fail a publish over asset hosting
+            return config
+
+    @staticmethod
+    def _fetch_asset_bytes(url: str) -> bytes | None:
+        import httpx
+
+        try:
+            with httpx.Client(timeout=20.0) as http:
+                response = http.get(url)
+            if response.status_code >= 400:
+                return None
+            return response.content or None
+        except Exception:  # noqa: BLE001 — best-effort fetch
+            return None
 
     def _campaign(self, campaign_id: str) -> dict[str, Any]:
         campaign = self.campaigns.get(campaign_id=campaign_id, team_id=self.team_id)
@@ -236,13 +310,39 @@ def _hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:24]
 
 
-def configured_publisher() -> ShopifyPublisher:
-    # Intentionally fail closed: Shopify publishing needs a request-scoped/decrypted token adapter.
+def configured_publisher(*, team_id: str | None = None) -> ShopifyPublisher:
+    """Build a request-scoped publisher. Fails closed (503-style) without creds.
+
+    The Shopify client is constructed only via admin_factory; the token is never
+    logged or placed into any job payload/response. ``SHOPIFY_PUBLISH_DRY_RUN``
+    (default true) makes publish/unpublish record the job without mutating the
+    store.
+    """
+
+    from app.core.settings import MissingSettingsError
+    from app.services.shopify.admin_factory import configured_admin_client
+
     settings = Settings.from_env()
     if not (settings.supabase_url and settings.supabase_service_role_key):
-        raise PublisherUnavailable("publishing endpoints require Supabase and an injected Shopify client adapter")
-    _ = SupabaseClientFactory(settings).service_role_client()
-    raise PublisherUnavailable("publishing endpoints require an injected Shopify client adapter; refusing to read or print Shopify secrets")
+        raise PublisherUnavailable("publishing endpoints require Supabase configuration")
+    try:
+        client = configured_admin_client(settings)
+    except (MissingSettingsError, ValueError) as exc:
+        raise PublisherUnavailable(
+            "publishing requires Shopify Admin credentials (SHOPIFY_SHOP_DOMAIN, SHOPIFY_ADMIN_ACCESS_TOKEN)"
+        ) from exc
+    supabase = SupabaseClientFactory(settings).service_role_client()
+    return ShopifyPublisher(
+        client=client,
+        campaigns=CampaignRepository(supabase),
+        revisions=CampaignRevisionRepository(supabase),
+        stores=StoreRepository(supabase),
+        schedules=ScheduleRepository(supabase),
+        placements=CampaignPlacementRepository(supabase),
+        publish_jobs=PublishJobRepository(supabase),
+        team_id=team_id or settings.supabase_team_id,
+        dry_run=settings.shopify_publish_dry_run,
+    )
 
 
 __all__ = [

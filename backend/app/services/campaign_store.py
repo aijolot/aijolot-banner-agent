@@ -103,6 +103,34 @@ def _tone(text: str) -> str:
     return ""
 
 
+def _propose_personalization(text: str) -> tuple[str, list[dict[str, str]]]:
+    """Propose a personalization dimension + variants from explicit split cues.
+
+    Recommend-Nothing: only proposes a split when the input asks for one (e.g.
+    "por género", "hombre y mujer"). A single-audience mention ("mujeres jóvenes")
+    is NOT a split. The designer confirms the proposal downstream.
+    """
+    t = text.lower()
+    age = ""
+    m = re.search(r"(\d{2})\s*[-aà]\s*(\d{2})", t)
+    if m:
+        age = f" {m.group(1)}-{m.group(2)}"
+    elif re.search(r"j[oó]venes", t):
+        age = " jóvenes"
+    gender_split = re.search(r"por\s+g[eé]nero|ambos\s+g[eé]neros|hombres?\s+y\s+mujeres|mujeres?\s+y\s+hombres|segmento\s+de\s+g[eé]nero|por\s+sexo", t)
+    if gender_split:
+        return "gender", [
+            {"key": "male", "label": "Hombre", "audience": f"hombres{age}".strip(), "customer_tag": "gender:male"},
+            {"key": "female", "label": "Mujer", "audience": f"mujeres{age}".strip(), "customer_tag": "gender:female"},
+        ]
+    if re.search(r"\bvip\b.*\b(regular|normal|no\s*vip)\b|por\s+(tier|nivel|valor)\s+de\s+cliente", t):
+        return "value_tier", [
+            {"key": "vip", "label": "Cliente VIP", "audience": "clientes VIP", "customer_tag": "vip:true"},
+            {"key": "regular", "label": "Cliente", "audience": "clientes regulares", "customer_tag": "vip:false"},
+        ]
+    return "", []
+
+
 def extract_into(brief: StructuredBrief, text: str) -> StructuredBrief:
     """Merge fields extracted from ``text`` into ``brief`` (new values win)."""
     data = brief.model_dump()
@@ -118,6 +146,15 @@ def extract_into(brief: StructuredBrief, text: str) -> StructuredBrief:
     for k, v in found.items():
         if v:
             data[k] = v
+    if promo:
+        data["promo"] = promo
+    # Propose personalization variants only on an explicit split cue, and only
+    # when not already set (preserve a designer's confirmed variants).
+    if not data.get("personalization_variants"):
+        dimension, variants = _propose_personalization(text)
+        if variants:
+            data["personalization_dimension"] = dimension
+            data["personalization_variants"] = variants
     # goal: keep the first solid statement; seed from the message + promo.
     if not data["goal"].strip():
         goal = text.strip()

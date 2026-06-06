@@ -285,15 +285,20 @@ class PlacementService:
 
     @staticmethod
     def _placement_type_from_record(row: dict[str, Any]) -> PlacementTypeSummary:
+        from app.services.shopify.theme_files import ANCHOR_BY_PLACEMENT_KEY
+
+        key = str(row["key"])
+        anchor_key = row.get("anchor_key") or ANCHOR_BY_PLACEMENT_KEY.get(key)
         return PlacementTypeSummary(
             id=str(row["id"]),
-            key=str(row["key"]),
+            key=key,
             label=str(row["label"]),
             description=cast(str | None, row.get("description")),
             supported_targets=cast(list[PlacementTargetType], list(row.get("supported_targets") or [])),
             supported_slots=list(row.get("supported_slots") or []),
             default_dimensions=dict(row.get("default_dimensions") or {}),
             config_schema=dict(row.get("config_schema") or {}),
+            anchor_key=cast(str | None, anchor_key),
             is_active=bool(row.get("is_active", True)),
         )
 

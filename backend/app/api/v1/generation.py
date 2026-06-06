@@ -154,6 +154,23 @@ def regenerate_campaign(
         raise HTTPException(status_code=404, detail=str(exc))
 
 
+@router.post("/campaigns/{campaign_id}/banner-edit", response_model=RegenerateResponse)
+def banner_edit_campaign(
+    campaign_id: CampaignIdPath,
+    request_scope: Request,
+    request: RegenerateRequest | None = None,
+) -> RegenerateResponse:
+    try:
+        context = _context_for_default_factory(request_scope, _revision_service)
+        return _revision_service_for_context(context).edit(str(campaign_id), request or RegenerateRequest())
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RevisionCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (RevisionNotFound, RefinementRequestNotFound) as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
 @router.get("/campaigns/{campaign_id}/revisions", response_model=list[CampaignRevisionResponse])
 def list_campaign_revisions(campaign_id: CampaignIdPath, request: Request) -> list[CampaignRevisionResponse]:
     try:

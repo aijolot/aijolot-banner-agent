@@ -92,6 +92,8 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   const [backendPerf, setBackendPerf] = useStateP(null);
   const [perfNotice, setPerfNotice] = useStateP("Datos demo etiquetados como manual/mock/seed/agent; no son analítica live de Shopify.");
   const [revisionId, setRevisionId] = useStateP(null);
+  const [revision, setRevision] = useStateP(null);  // full latest revision (concept + variants) for the final-banner preview
+  const [perfDevice, setPerfDevice] = useStateP("desktop");
   const [snapBusy, setSnapBusy] = useStateP(false);
   const [snapState, setSnapState] = useStateP("idle"); // idle | success | error
   const [proposalState, setProposalState] = useStateP("idle"); // idle | sending | sent | error
@@ -114,11 +116,46 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
       }
       if (typeof GenerationApi !== "undefined") {
         const rev = await GenerationApi.latestRevision(campaign);
-        if (alive && rev && !rev.fallback && rev.data) setRevisionId(rev.data.id);
+        if (alive && rev && !rev.fallback && rev.data) { setRevisionId(rev.data.id); setRevision(rev.data); }
       }
     })();
     return () => { alive = false; };
   }, [campaign && campaign.id]);
+
+  // Build the live banner spec (concept copy + agent art-direction + per-variant hero)
+  // for the final-banner preview, mirroring the Canvas derivation.
+  const finalVariants = (revision && Array.isArray(revision.variants) && revision.variants.length)
+    ? revision.variants : [];
+  function buildLive(v) {
+    const c = (revision && revision.concept) || {};
+    const ad = c.art_direction || {}; const fonts = ad.fonts || {};
+    const fp = (v && v.audience_rule && v.audience_rule.featured_product) || {};
+    const lastArt = (c.generated_art && c.generated_art.length) ? c.generated_art[c.generated_art.length - 1] : null;
+    return {
+      eyebrow: String((v && v.eyebrow) || (c.copy && c.copy.eyebrow) || "").toUpperCase().slice(0, 40),
+      headline: (v && v.headline) || (c.copy && c.copy.headline) || null,
+      headlineRuns: (v && v.audience_rule && v.audience_rule.headline_runs) || null,
+      sub: (v && v.subheadline) || (c.copy && c.copy.subheadline) || null,
+      cta: (v && v.cta_text) || (c.copy && c.copy.cta) || null,
+      promo: [(v && v.cta_text), (v && v.subheadline), (v && v.headline), c.copy && c.copy.cta, c.copy && c.copy.subheadline, c.copy && c.copy.headline].find((s) => s && /\d{1,3}\s*%/.test(s)) || null,
+      brandName: "",
+      imageUrl: fp.product_hero_url || fp.product_image_url || (lastArt && lastArt.public_url) || null,
+      bgCss: (c.background && c.background.css) || null,
+      displayFont: fonts.display || "Space Grotesk", bodyFont: fonts.body || "Inter",
+      layout: ad.layout || null, textColor: ad.ink || "#111111",
+    };
+  }
+  // Load the agent-chosen Google Fonts for the previews.
+  useEffectP(() => {
+    const c = (revision && revision.concept) || {}; const fonts = (c.art_direction && c.art_direction.fonts) || {};
+    [fonts.display, fonts.body].filter(Boolean).forEach((fam) => {
+      const id = "gf-" + fam.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+      if (document.getElementById(id)) return;
+      const l = document.createElement("link"); l.id = id; l.rel = "stylesheet";
+      l.href = "https://fonts.googleapis.com/css2?family=" + encodeURIComponent(fam).replace(/%20/g, "+") + ":wght@400;600;700;800;900&display=swap";
+      document.head.appendChild(l);
+    });
+  }, [revision && revision.id]);
 
   // Record a manual (non-live) performance snapshot against the backend.
   async function registerSnapshot() {
@@ -156,12 +193,23 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
       onNotice && onNotice({ tone: "amber", text: msg });
       return;
     }
+    // Ground the proposal in REAL segment data: target the lowest-CTR segment from the
+    // latest snapshot. No fabricated lift % — the projection is qualitative.
+    const segs = normalizeSegmentBreakdown(backendPerf && backendPerf.latest_snapshot && backendPerf.latest_snapshot.segment_breakdown);
+    if (!segs.length) {
+      const msg = "Sin datos de segmento reales en el snapshot; no fundamento una propuesta V2 (no invento métricas).";
+      setProposalState("error"); setProposalNotice(msg);
+      onNotice && onNotice({ tone: "amber", text: msg });
+      return;
+    }
+    const worst = segs.slice().sort((a, b) => (Number(a.ctr) || 0) - (Number(b.ctr) || 0))[0];
+    const segName = worst.seg;
     try {
       const r = await PerformanceApi.proposal(campaign, {
         source_revision_id: revisionId,
-        segment_key: "femenino",
-        rationale: "Femenino tiene alto volumen pero CTR bajo; botón flotante contraste + layout minimal.",
-        projected_lift: { ctr: "+18%", segment: "femenino" },
+        segment_key: segName,
+        rationale: `${segName} tiene el CTR más bajo (${Number(worst.ctr || 0).toFixed(1)}%) en el snapshot actual; propongo una V2 con CTA en color de mayor contraste y layout más directo.`,
+        projected_lift: { segment: segName },
         status: "sent_to_approval",
       });
       if (r.fallback) {
@@ -199,6 +247,8 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   ] : METRICS.map((m) => ({ ...m, label: `${m.label} (demo)`, delta: `Fallback demo · ${m.delta}`, backend: false }));
   const segmentRows = normalizeSegmentBreakdown(latestSnapshot && latestSnapshot.segment_breakdown);
   const chartSegments = segmentRows.length ? segmentRows : SEG_PERF;
+  // Lowest-CTR real segment (drives the V2 proposal copy); null when no real data.
+  const lowCtrSeg = segmentRows.length ? segmentRows.slice().sort((a, b) => (Number(a.ctr) || 0) - (Number(b.ctr) || 0))[0].seg : null;
   const maxConv = Math.max(1, ...chartSegments.map((s) => Number(s.conv) || 0));
   const trendValues = extractTrendValues(latestSnapshot && latestSnapshot.trend);
   const chartTrend = trendValues.length > 1 ? trendValues : CTR_TREND;
@@ -206,6 +256,7 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   const insights = backendPerf && Array.isArray(backendPerf.insights) ? backendPerf.insights : [];
   const proposals = backendPerf && Array.isArray(backendPerf.proposals) ? backendPerf.proposals : [];
   const activeProposal = proposals[0];
+  const v2Seg = (activeProposal && activeProposal.segment_key) || lowCtrSeg;
   const memoryCards = insights.length || proposals.length ? insights.map((m) => ({ tag: m.tag || m.segment_key || "Insight backend", text: m.insight || "Insight backend", lift: m.lift_label || "backend", source: compactSourceLabel(m) })).concat(proposals.map((p) => ({ tag: `Propuesta · ${p.status || "draft"}`, text: p.rationale, lift: proposalLiftLabel(p.projected_lift) || p.segment_key || "backend", source: compactSourceLabel(p) }))) : MEMORY.map((m) => ({ ...m, tag: `${m.tag} · demo`, source: "Fallback demo no-live" }));
 
   return (
@@ -243,6 +294,36 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
           </GlassCard>
         ))}
       </div>
+
+      {/* Final banners — the published creative, for visual context vs the metrics */}
+      {revision && (revision.concept) ? (
+        <GlassCard style={{ padding: 22, display: "flex", flexDirection: "column", gap: 14 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <Icon name="image" size={16} color="#0891B2" />
+            <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 16, color: "#002B57" }}>Banners finales</span>
+            <Badge tone="cyan" icon="layout-template">{`Revisión #${revision.revision_number || "?"}`}</Badge>
+            <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8" }}>El creativo publicado, junto a sus resultados.</span>
+            <div style={{ marginLeft: "auto", display: "flex", gap: 2, background: "rgba(248,250,252,0.8)", borderRadius: 11, padding: 3 }}>
+              {[["desktop", "monitor"], ["tablet", "tablet"], ["mobile", "smartphone"]].map(([id, ic]) => (
+                <button key={id} onClick={() => setPerfDevice(id)} title={id} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34, height: 28, borderRadius: 8, border: "none", cursor: "pointer", background: perfDevice === id ? "rgba(34,211,238,.14)" : "transparent", color: perfDevice === id ? "#0891B2" : "#94A3B8" }}>
+                  <Icon name={ic} size={15} />
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            {(finalVariants.length ? finalVariants : [null]).map((v, i) => {
+              const live = buildLive(v);
+              return (
+                <div key={(v && v.id) || i} style={{ flex: perfDevice === "desktop" ? "1 1 100%" : "0 1 320px", minWidth: 0 }}>
+                  {v ? <div style={{ fontFamily: "Inter", fontSize: 11, fontWeight: 600, color: "#0891B2", marginBottom: 6 }}>{v.segment_label || v.segment_key}{v.customer_tag ? ` · ${v.customer_tag}` : ""}</div> : null}
+                  <Banner seg={SEGMENTS.masculino} variant="A" font={live.displayFont} bodyFont={live.bodyFont} live={live} breakpoint={perfDevice} idSuffix={"-perf" + i} />
+                </div>
+              );
+            })}
+          </div>
+        </GlassCard>
+      ) : null}
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.3fr) minmax(0,1fr)", gap: 16 }}>
         {/* CTR trend */}
@@ -289,13 +370,13 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
               <Badge tone={activeProposal ? "cyan" : "purple"} icon="sparkles">{activeProposal ? `Backend · ${compactSourceLabel(activeProposal)}` : "Propuesta del agente demo no-live"}</Badge>
             </div>
             <p style={{ fontFamily: "Inter", fontSize: 13.5, color: "#475569", margin: "8px 0 0", lineHeight: 1.55, maxWidth: 620 }}>
-              {activeProposal ? activeProposal.rationale : <>El segmento <b>Femenino</b> tiene muchas impresiones pero CTR por debajo del promedio. Propongo una Versión 2: <b>botón flotante en color contraste</b> y layout <b>minimal</b>, según lo que convirtió mejor en campañas pasadas.</>}
+              {activeProposal ? activeProposal.rationale : (v2Seg ? <>El segmento <b>{v2Seg}</b> tiene el CTR más bajo del snapshot actual. Propongo una Versión 2 con <b>CTA en color de mayor contraste</b> y layout más directo.</> : <>Registra un snapshot con desglose por segmento y el agente propondrá una Versión 2 fundamentada en datos reales (no inventa métricas).</>)}
             </p>
             {v2 === "ready" && (
               <div className="fade-up" style={{ marginTop: 16, maxWidth: 560 }}>
                 <Banner seg={SEGMENTS.femenino} variant="C" ctaContrast font={tweaks.bannerFont} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, fontFamily: "Inter", fontSize: 12, color: "#7C3AED", fontWeight: 600 }}>
-                  <Icon name="trending-up" size={14} /> Proyección: +18% CTR en segmento Femenino
+                  <Icon name="trending-up" size={14} /> Objetivo: subir el CTR del segmento {v2Seg || "con menor desempeño"} (preview ilustrativa)
                 </div>
               </div>
             )}

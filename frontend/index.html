@@ -4,6 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Aijolot · Agente de Banners (CEOD)</title>
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png" />
+<link rel="icon" type="image/png" sizes="512x512" href="logo.png" />
+<link rel="apple-touch-icon" href="logo.png" />
 <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
 <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
@@ -14,28 +17,40 @@
 <body>
 <div id="root"></div>
 
-<script src="image-slot.js"></script>
-<script type="text/babel" src="tweaks-panel.jsx"></script>
-<script type="text/babel" src="browser-window.jsx"></script>
-<script type="text/babel" src="lib.jsx"></script>
-<script type="text/babel" src="data.jsx"></script>
-<script type="text/babel" src="Banner.jsx"></script>
-<script type="text/babel" src="Shell.jsx"></script>
-<script type="text/babel" src="ConfirmDialog.jsx"></script>
-<script type="text/babel" src="BrandContextView.jsx"></script>
-<script type="text/babel" src="StoreMocks.jsx"></script>
-<script type="text/babel" src="layout.jsx"></script>
-<script type="text/babel" src="PlacementStage.jsx"></script>
-<script type="text/babel" src="components/Chatbox.jsx"></script>
-<script type="text/babel" src="components/CampaignChips.jsx"></script>
-<script type="text/babel" src="BriefStage.jsx"></script>
-<script type="text/babel" src="ModelBank.jsx"></script>
-<script type="text/babel" src="ArtPreview.jsx"></script>
-<script type="text/babel" src="ArtStage.jsx"></script>
-<script type="text/babel" src="GenerateStage.jsx"></script>
-<script type="text/babel" src="CanvasPanels.jsx"></script>
-<script type="text/babel" src="CanvasStage.jsx"></script>
-<script type="text/babel" src="PerformanceStage.jsx"></script>
-<script type="text/babel" src="App.jsx"></script>
+<script>
+  // API base resolution:
+  //  - explicit window.AIJOLOT_API_BASE wins (set before this script);
+  //  - local dev serves the static frontend on :5500 (scripts/dev-frontend.py) while
+  //    the FastAPI backend runs on :8000 → target :8000 on the same host;
+  //  - production serves the frontend from the FastAPI container → same origin.
+  window.AIJOLOT_API_BASE = window.AIJOLOT_API_BASE || (function () {
+    var loc = window.location;
+    var devPorts = { "5500": 1, "5173": 1, "8080": 1, "3000": 1 };
+    if (devPorts[loc.port]) return loc.protocol + "//" + loc.hostname + ":8000";
+    return loc.origin;
+  })();
+</script>
+
+<script src="image-slot.js?v=3"></script>
+<script type="text/babel" src="tweaks-panel.jsx?v=3"></script>
+<script type="text/babel" src="browser-window.jsx?v=3"></script>
+<script type="text/babel" src="lib.jsx?v=3"></script>
+<script type="text/babel" src="data.jsx?v=3"></script>
+<script src="banner_template.js?v=5"></script>
+<script type="text/babel" src="Banner.jsx?v=3"></script>
+<script type="text/babel" src="Shell.jsx?v=3"></script>
+<script type="text/babel" src="ConfirmDialog.jsx?v=3"></script>
+<script type="text/babel" src="BrandContextView.jsx?v=3"></script>
+<script type="text/babel" src="StoreMocks.jsx?v=3"></script>
+<script type="text/babel" src="layout.jsx?v=3"></script>
+<script type="text/babel" src="PlacementStage.jsx?v=3"></script>
+<script type="text/babel" src="components/Chatbox.jsx?v=3"></script>
+<script type="text/babel" src="components/CampaignChips.jsx?v=4"></script>
+<script type="text/babel" src="BriefStage.jsx?v=3"></script>
+<script type="text/babel" src="GenerateStage.jsx?v=6"></script>
+<script type="text/babel" src="CanvasPanels.jsx?v=3"></script>
+<script type="text/babel" src="CanvasStage.jsx?v=5"></script>
+<script type="text/babel" src="PerformanceStage.jsx?v=6"></script>
+<script type="text/babel" src="App.jsx?v=4"></script>
 </body>
 </html>

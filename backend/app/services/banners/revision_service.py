@@ -158,6 +158,14 @@ class RevisionService:
         source_revision_id = request.source_revision_id or (refinement or {}).get("source_revision_id") or campaign.get("selected_revision_id")
         source_revision = self._source_revision(campaign_id=campaign_id, source_revision_id=source_revision_id)
 
+        # F9 — agentic refine: when an orchestrator is wired, re-run the relevant
+        # pipeline nodes to produce a genuinely new revision with real artifacts.
+        # Otherwise (tests / in-memory) keep the deterministic copy bookkeeping.
+        if getattr(self.generation_runs, "orchestrator", None) is not None:
+            return self._agentic_regenerate(
+                campaign_id=campaign_id, request=request, prompt=prompt, source_revision=source_revision, refinement=refinement
+            )
+
         parent_run_id = source_revision.get("generation_run_id")
         run = self.generation_runs.start_generation_run(
             campaign_id,
@@ -181,6 +189,91 @@ class RevisionService:
                     "status": "succeeded",
                     "result_revision_id": str(revision["id"]),
                     "result_summary": f"Created revision {revision['revision_number']} from requested changes.",
+                    "finished_at": _utc_now_iso(),
+                },
+            )
+        return RegenerateResponse(
+            generation_run=run,
+            revision=self._revision_response(revision),
+            refinement_request_id=str(refinement["id"]) if refinement else None,
+        )
+
+    def edit(self, campaign_id: str, request: RegenerateRequest) -> RegenerateResponse:
+        """Banner-edit: scoped, non-destructive edit of an assembled revision (F-edit)."""
+        campaign = self._get_campaign(campaign_id)
+        refinement = None
+        if request.refinement_request_id:
+            refinement = self.refinement_requests.get(refinement_request_id=request.refinement_request_id)
+            if refinement is None or str(refinement.get("campaign_id")) != campaign_id:
+                raise RefinementRequestNotFound(request.refinement_request_id)
+        prompt = _normalize_prompt(request.prompt or (refinement or {}).get("prompt") or "Edit banner")
+        source_revision_id = request.source_revision_id or (refinement or {}).get("source_revision_id") or campaign.get("selected_revision_id")
+        source_revision = self._source_revision(campaign_id=campaign_id, source_revision_id=source_revision_id)
+        if getattr(self.generation_runs, "orchestrator", None) is None:
+            # No orchestrator (in-memory/tests) → fall back to the deterministic copy path.
+            return self.regenerate(campaign_id, request)
+
+        from app.workflows.banner_creation import _load_runtime_skill
+
+        normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
+        targets = normalize_targets(request.target_nodes, prompt)
+        run, revision_id = self.generation_runs.start_banner_edit_run(
+            campaign_id, source_revision=source_revision, prompt=prompt, targets=targets,
+            started_by=request.requested_by, parent_run_id=source_revision.get("generation_run_id"),
+        )
+        revision = self.revisions.get(revision_id=str(revision_id)) if revision_id else None
+        if revision is None:
+            revision = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id) or source_revision
+        if refinement is not None:
+            self.refinement_requests.update(
+                refinement_request_id=str(refinement["id"]),
+                data={
+                    "status": "succeeded" if run.status == "succeeded" else "failed",
+                    "result_revision_id": str(revision["id"]) if revision else None,
+                    "result_summary": f"Banner edit ({', '.join(targets)}) → revision {revision.get('revision_number') if revision else '?'}.",
+                    "finished_at": _utc_now_iso(),
+                },
+            )
+        return RegenerateResponse(
+            generation_run=run,
+            revision=self._revision_response(revision),
+            refinement_request_id=str(refinement["id"]) if refinement else None,
+        )
+
+    def _agentic_regenerate(
+        self,
+        *,
+        campaign_id: str,
+        request: RegenerateRequest,
+        prompt: str,
+        source_revision: dict[str, Any],
+        refinement: dict[str, Any] | None,
+    ) -> RegenerateResponse:
+        from app.workflows.banner_creation import _load_runtime_skill
+
+        normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
+        targets = normalize_targets(request.target_nodes, prompt)
+        run, revision_id = self.generation_runs.start_refinement_run(
+            campaign_id,
+            prompt=prompt,
+            targets=targets,
+            started_by=request.requested_by,
+            parent_run_id=source_revision.get("generation_run_id"),
+        )
+        # The orchestrator already created/promoted the new revision + pointed the
+        # campaign at it. Read it back for the response.
+        revision = None
+        if revision_id:
+            revision = self.revisions.get(revision_id=str(revision_id))
+        if revision is None:
+            revision = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id) or source_revision
+        if refinement is not None:
+            self.refinement_requests.update(
+                refinement_request_id=str(refinement["id"]),
+                data={
+                    "status": "succeeded" if run.status == "succeeded" else "failed",
+                    "result_revision_id": str(revision["id"]) if revision else None,
+                    "result_summary": f"Agentic refine ({', '.join(targets)}) → revision {revision.get('revision_number') if revision else '?'}.",
                     "finished_at": _utc_now_iso(),
                 },
             )

@@ -80,6 +80,24 @@ class ApprovalService:
         self.comments = comments
         self.refinement_requests = refinement_requests
 
+    @classmethod
+    def from_supabase_client(cls, client: Any) -> "ApprovalService":
+        from app.db.repositories.approval_reviewers import ApprovalReviewerRepository
+        from app.db.repositories.approval_threads import ApprovalThreadRepository
+        from app.db.repositories.campaign_revisions import CampaignRevisionRepository
+        from app.db.repositories.campaigns import CampaignRepository
+        from app.db.repositories.comments import CommentRepository
+        from app.db.repositories.refinement_requests import RefinementRequestRepository
+
+        return cls(
+            campaigns=CampaignRepository(client),
+            revisions=CampaignRevisionRepository(client),
+            threads=ApprovalThreadRepository(client),
+            reviewers=ApprovalReviewerRepository(client),
+            comments=CommentRepository(client),
+            refinement_requests=RefinementRequestRepository(client),
+        )
+
     def request_approval(self, campaign_id: str, request: ApprovalRequestCreate) -> ApprovalThreadResponse:
         campaign = self.campaigns.get(campaign_id=campaign_id)
         if not campaign:
@@ -239,4 +257,11 @@ class ApprovalService:
 
 
 def configured_service() -> ApprovalService:
-    raise ApprovalServiceUnavailable("approval endpoints require request-scoped auth/client configuration")
+    from app.core.settings import Settings
+    from app.services.supabase.client import SupabaseClientFactory
+
+    settings = Settings.from_env()
+    if settings.supabase_url is None or settings.supabase_service_role_key is None:
+        raise ApprovalServiceUnavailable("approval endpoints require Supabase service-role configuration")
+    client = SupabaseClientFactory(settings).service_role_client()
+    return ApprovalService.from_supabase_client(client)

@@ -71,6 +71,7 @@ function revisionMappings(rev) {
 function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) {
   const [variant, setVariant] = useStateCV("A");
   const [segId, setSegId] = useStateCV("masculino");
+  const [variantKey, setVariantKey] = useStateCV(null);  // selected real banner_variant tag
   const [device, setDevice] = useStateCV("desktop");
   const [comments, setComments] = useStateCV(() => COMMENTS_SEED.map((c) => ({ ...c })));
   const [approvers, setApprovers] = useStateCV(() => APPROVERS_SEED.map((a) => ({ ...a })));
@@ -151,10 +152,10 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
           setThreadId(thread.id || thread.thread_id);
           setThreadStatus(thread.status || null);
           setApprovalMode("backend");
-          const backendApprovers = mapBackendApprovers(thread);
-          const backendComments = mapBackendComments(thread);
-          if (backendApprovers) setApprovers(backendApprovers);
-          if (backendComments) setComments(backendComments);
+          // Real thread → show ONLY real data. No backend reviewers/comments means an
+          // empty panel, not the demo seeds (Mara Voss / Diego Salas would be fake here).
+          setApprovers(mapBackendApprovers(thread) || []);
+          setComments(mapBackendComments(thread) || []);
           onNotice && onNotice({ tone: "green", text: "Hilo de aprobación backend cargado" });
         } else {
           setApprovalMode("local");
@@ -172,6 +173,68 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   }, [campaign && campaign.id]);
 
   const seg = SEGMENTS[segId];
+  // Real banner data from the persisted backend revision: concept copy, the
+  // generated image, and the attached AI background. Null → demo fallback.
+  const liveConcept = revisionMode === "backend" && revision && revision.concept ? revision.concept : null;
+  const liveCopy = (liveConcept && liveConcept.copy) || {};
+  const liveGenArt = (liveConcept && liveConcept.generated_art) || [];
+  const liveLastArt = liveGenArt.length ? liveGenArt[liveGenArt.length - 1] : null;
+  const liveBgObj = liveConcept && liveConcept.background;
+  // Real personalization variants (one banner_variant per tag). Each has its own
+  // copy; the shared layers (background + image) come from the concept.
+  const realVariants = liveConcept && Array.isArray(revision.variants) ? revision.variants : [];
+  const selectedVariant = realVariants.find((v) => v.segment_key === variantKey) || realVariants[0] || null;
+  const variantCopy = selectedVariant || {};
+  // Per-variant featured product image (when the variant chose its own product),
+  // else the shared generated art. So switching Hombre/Mujer swaps the perfume photo.
+  const variantProduct = (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.featured_product) || {};
+  // Agent-proposed typography (may be a non-brand Google Font chosen to fit the concept).
+  const liveFonts = (liveConcept && liveConcept.art_direction && liveConcept.art_direction.fonts) || null;
+  const displayFont = (liveFonts && liveFonts.display) || tweaks.bannerFont || "Space Grotesk";
+  const bodyFont = (liveFonts && liveFonts.body) || "Inter";
+  const live = liveConcept ? {
+    eyebrow: String((selectedVariant ? variantCopy.eyebrow : null) || liveCopy.eyebrow || liveCopy.audience || "").toUpperCase().slice(0, 40) || null,
+    headline: (selectedVariant ? variantCopy.headline : null) || liveCopy.headline || null,
+    headlineRuns: (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.headline_runs) || null,
+    sub: (selectedVariant ? variantCopy.subheadline : null) || liveCopy.subheadline || null,
+    cta: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
+    // The discount badge needs the actual % — pick the first copy that carries one
+    // (cta/sub/headline); avoids showing CTA words like "Explora tu" in the badge.
+    promo: [
+      (selectedVariant ? variantCopy.cta_text : null), variantCopy.subheadline, variantCopy.headline,
+      liveCopy.cta, liveCopy.subheadline, liveCopy.headline,
+    ].find((s) => s && /\d{1,3}\s*%/.test(s)) || null,
+    brandName: "",
+    imageUrl: variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
+    bgCss: (liveBgObj && liveBgObj.css) || null,
+    displayFont, bodyFont,
+    layout: (liveConcept.art_direction && liveConcept.art_direction.layout) || null,
+    // The background CSS was authored with a legible copy color (its first `color:`),
+    // but that color lands on the empty .hb-bg layer. Lift it onto the actual copy so
+    // the headline keeps the contrast the agent designed for this background.
+    textColor: (liveConcept.art_direction && liveConcept.art_direction.ink) || (() => {
+      // Fallback: contrast ink derived from the bg's base color luminance.
+      const css = (liveBgObj && liveBgObj.css) || "";
+      const m = css.match(/background(?:-color)?\s*:\s*[^;]*?#([0-9a-fA-F]{3,6})/);
+      if (!m) return "#111111";
+      let h = m[1]; if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+      const r = parseInt(h.slice(0,2),16)/255, g = parseInt(h.slice(2,4),16)/255, b = parseInt(h.slice(4,6),16)/255;
+      return (0.2126*r + 0.7152*g + 0.0722*b) >= 0.5 ? "#111111" : "#FFFFFF";
+    })(),
+  } : null;
+  // Load the agent-chosen Google Fonts once per pairing (idempotent <link> inject).
+  useEffectCV(() => {
+    if (!liveConcept) return;
+    const families = [displayFont, bodyFont].filter(Boolean);
+    families.forEach((fam) => {
+      const id = "gf-" + fam.replace(/[^a-z0-9]/gi, "-").toLowerCase();
+      if (document.getElementById(id)) return;
+      const link = document.createElement("link");
+      link.id = id; link.rel = "stylesheet";
+      link.href = "https://fonts.googleapis.com/css2?family=" + encodeURIComponent(fam).replace(/%20/g, "+") + ":wght@400;600;700;800;900&display=swap";
+      document.head.appendChild(link);
+    });
+  }, [liveConcept, displayFont, bodyFont]);
   const approvedCount = approvers.filter((a) => a.status === "approved").length;
   const allApproved = approvedCount === approvers.length;
   const missing = approvers.length - approvedCount;
@@ -294,36 +357,61 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     const t = text.toLowerCase();
     setRefining(true);
     setRefineInput("");
-    // Fire the backend regeneration in parallel with the local visual feedback,
-    // so the canvas stays responsive but the notice reflects backend truth.
-    const backend = GenerationApi.regenerate(campaign, { prompt: text, source_revision_id: revision && revision.id, requested_by: AIJOLOT_DEMO_IDS.user })
-      .catch((e) => ({ ok: true, fallback: true, reason: "Backend no aceptó el refinamiento (" + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) + ").", data: null }));
+    // Scoped, non-destructive edit: the backend classifies the target
+    // (text/background/image) and returns a NEW revision; the canvas Banner
+    // re-renders from revision.concept. A light local shim keeps it responsive.
+    const backend = GenerationApi.bannerEdit(campaign, text, null, revision && revision.id)
+      .catch((e) => ({ ok: true, fallback: true, reason: "Backend no aceptó la edición (" + (typeof errorText !== "undefined" ? errorText(e) : (e.message || "error")) + ").", data: null }));
     setTimeout(async () => {
+      // Optimistic shim for responsiveness — but snapshot prior state so we can roll
+      // back if the backend edit doesn't actually land (no false "applied" success).
+      const prevApplied = applied;
+      let prevComments = null;
       const next = { ...applied };
-      const acks = [];
-      if (/bril|luz|clar|ilumin/.test(t)) { next.brighter = true; acks.push("subí el brillo del fondo"); }
-      if (/bot|cta|contrast|resalt/.test(t)) { next.ctaContrast = true; acks.push("cambié el botón a color contraste"); }
-      if (/oscur|sobrio/.test(t)) { next.brighter = false; acks.push("oscurecí el fondo"); }
+      if (/bril|luz|clar|ilumin/.test(t)) next.brighter = true;
+      if (/bot|cta|contrast|resalt/.test(t)) next.ctaContrast = true;
+      if (/oscur|sobrio/.test(t)) next.brighter = false;
       setApplied(next);
-      // resolve any comment the instruction addresses
-      setComments((arr) => arr.map((c) => {
-        const ct = c.text.toLowerCase();
-        if (!c.resolved && ((/bril|luz/.test(t) && /bril|luz/.test(ct)) || (/bot|cta|contrast|resalt/.test(t) && /bot|cta|contrast|resalt/.test(ct)))) return { ...c, resolved: true };
-        return c;
-      }));
-      const base = acks.length ? "Listo: " + acks.join(" y ") + "." : "Apliqué el ajuste y recompilé el banner.";
+      setComments((arr) => {
+        prevComments = arr;
+        return arr.map((c) => {
+          const ct = c.text.toLowerCase();
+          if (!c.resolved && ((/bril|luz/.test(t) && /bril|luz/.test(ct)) || (/bot|cta|contrast|resalt/.test(t) && /bot|cta|contrast|resalt/.test(ct)))) return { ...c, resolved: true };
+          return c;
+        });
+      });
+      const rollback = () => { setApplied(prevApplied); if (prevComments) setComments(prevComments); };
       const r = await backend;
-      if (r && !r.fallback) {
-        setRefineMsg(base);
-        onNotice && onNotice({ tone: "green", text: "Refinamiento enviado al backend" });
-        const rev = await GenerationApi.latestRevision(campaign);
-        if (rev && !rev.fallback && rev.data) setRevision(rev.data);
+      let run = r && r.data && r.data.generation_run;
+      let editedRevision = r && r.data && r.data.revision;
+      const targets = (run && run.metadata && run.metadata.edit_targets) || [];
+      if (r && !r.fallback && run) {
+        const TERMINAL = ["succeeded", "failed", "escalated"];
+        // Async job: poll the run until it finishes (the edit runs in the
+        // background; image edits can take ~10-20s), then load the new revision.
+        for (let attempt = 0; attempt < 30 && !TERMINAL.includes(run.status); attempt += 1) {
+          await new Promise((res) => setTimeout(res, 1500));
+          try { run = (await GenerationApi.get(run.id)) || run; } catch (_e) { break; }
+        }
+        if (run.status === "succeeded") {
+          const rev = await GenerationApi.latestRevision(campaign);
+          if (rev && !rev.fallback && rev.data) editedRevision = rev.data;
+          if (editedRevision) setRevision(editedRevision);
+          const label = targets.length ? targets.join(", ") : "banner";
+          setRefineMsg(`Editado (${label}) · revisión #${editedRevision ? editedRevision.revision_number : "?"}`);
+          onNotice && onNotice({ tone: "green", text: `Edición aplicada en backend (${label}); el resto se preservó.` });
+        } else {
+          rollback();  // backend didn't apply → undo the optimistic shim
+          setRefineMsg("La edición no terminó.");
+          onNotice && onNotice({ tone: "amber", text: (run && run.error_message) || "El backend no confirmó la edición; revertí el cambio." });
+        }
       } else {
-        setRefineMsg(base + " (local, sin backend)");
-        onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "Refinamiento aplicado solo localmente." });
+        rollback();  // no backend → don't leave a false "applied" state
+        setRefineMsg("Edición no aplicada (sin backend).");
+        onNotice && onNotice({ tone: "amber", text: (r && r.reason) || "El backend no aceptó la edición; no se aplicó." });
       }
       setRefining(false);
-    }, 1500);
+    }, 1200);
   }
 
   async function publish() {
@@ -434,12 +522,12 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
               <div ref={stageRef} onClick={addComment} style={{ position: "relative", cursor: commentMode ? "crosshair" : "default" }}>
                 {cellCount > 1 ? (
                   <BannerLayout layout={gridLayout} gap={12} cell={(i) => (
-                    <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={tweaks.bannerFont} accent={bannerAccent}
-                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} />
+                    <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
+                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} live={live} breakpoint={device} />
                   )} />
                 ) : (
-                  <Banner seg={seg} variant={layoutVariant} slot font={tweaks.bannerFont} accent={bannerAccent}
-                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} />
+                  <Banner seg={seg} variant={layoutVariant} slot font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
+                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} live={live} breakpoint={device} />
                 )}
 
                 {/* refine shimmer overlay */}
@@ -475,27 +563,48 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Icon name="users-round" size={15} color="#0891B2" />
               <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 14, color: "#002B57" }}>Hiper-personalización · Customer Tags</span>
-              <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8", marginLeft: "auto" }}>{seg.audience}</span>
+              <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8", marginLeft: "auto" }}>{selectedVariant ? (selectedVariant.audience_rule && selectedVariant.audience_rule.audience) || selectedVariant.segment_label : seg.audience}</span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-              {SEGMENT_ORDER.map((id) => {
-                const s = SEGMENTS[id]; const on = segId === id;
-                return (
-                  <button key={id} onClick={() => selectSegment(id)} style={{
-                    display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, cursor: "pointer", textAlign: "left",
-                    border: `1.5px solid ${on ? "#22D3EE" : "#EEF2F6"}`, background: on ? "rgba(34,211,238,.08)" : "rgba(248,250,252,0.7)", transition: "all .15s",
-                  }}>
-                    <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: `linear-gradient(150deg,${s.palette.bgB},${s.palette.bgA})`, display: "flex", alignItems: "center", justifyContent: "center", color: s.palette.cap }}>
-                      <Icon name={s.icon} size={15} />
-                    </div>
-                    <div style={{ minWidth: 0 }}>
-                      <div style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>{s.label.split(": ")[1] || s.label}</div>
-                      <div style={{ fontFamily: "Space Grotesk", fontSize: 10, color: "#94A3B8" }}>{s.tag}</div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+            {realVariants.length ? (
+              <div style={{ display: "grid", gridTemplateColumns: `repeat(${Math.min(realVariants.length, 3)},1fr)`, gap: 10 }}>
+                {realVariants.map((v) => {
+                  const on = (variantKey || (realVariants[0] && realVariants[0].segment_key)) === v.segment_key;
+                  return (
+                    <button key={v.id || v.segment_key} onClick={() => setVariantKey(v.segment_key)} style={{
+                      display: "flex", flexDirection: "column", gap: 3, padding: "11px 13px", borderRadius: 12, cursor: "pointer", textAlign: "left",
+                      border: `1.5px solid ${on ? "#22D3EE" : "#EEF2F6"}`, background: on ? "rgba(34,211,238,.08)" : "rgba(248,250,252,0.7)", transition: "all .15s",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <Icon name="user-round" size={14} color={on ? "#0891B2" : "#94A3B8"} />
+                        <span style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>{v.segment_label || v.segment_key}</span>
+                      </div>
+                      <span style={{ fontFamily: "Space Grotesk", fontSize: 9.5, color: "#94A3B8" }}>{v.customer_tag || v.segment_key}</span>
+                      <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#64748B", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{v.headline || "—"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+                {SEGMENT_ORDER.map((id) => {
+                  const s = SEGMENTS[id]; const on = segId === id;
+                  return (
+                    <button key={id} onClick={() => selectSegment(id)} style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "11px 13px", borderRadius: 12, cursor: "pointer", textAlign: "left",
+                      border: `1.5px solid ${on ? "#22D3EE" : "#EEF2F6"}`, background: on ? "rgba(34,211,238,.08)" : "rgba(248,250,252,0.7)", transition: "all .15s",
+                    }}>
+                      <div style={{ width: 30, height: 30, borderRadius: 8, flexShrink: 0, background: `linear-gradient(150deg,${s.palette.bgB},${s.palette.bgA})`, display: "flex", alignItems: "center", justifyContent: "center", color: s.palette.cap }}>
+                        <Icon name={s.icon} size={15} />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 600, color: "#002B57" }}>{s.label.split(": ")[1] || s.label}</div>
+                        <div style={{ fontFamily: "Space Grotesk", fontSize: 10, color: "#94A3B8" }}>{s.tag}</div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
             <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#68737D", display: "flex", alignItems: "center", gap: 6 }}>
               <Icon name={revisionMode === "backend" ? "database" : "info"} size={12} color="#94A3B8" /> {backendNotice}
             </div>

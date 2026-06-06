@@ -5,8 +5,22 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from pydantic import BaseModel, Field
+
 from app.agents.state import BannerSessionState, Campaign, Concept, Variant
+from app.agents.tools import gemini_text
 from app.schemas.brand import BrandContext
+
+EST_CONCEPT_COPY_USD = 0.002
+
+
+class _ConceptCopy(BaseModel):
+    """Structured banner copy for the Gemini generation call."""
+
+    eyebrow: str = Field(default="", description="Short kicker, <=4 words")
+    headline: str = Field(default="", description="Punchy benefit-led headline, <=8 words")
+    subheadline: str = Field(default="", description="One supporting line, <=16 words")
+    cta: str = Field(default="", description="Action-first CTA, <=5 words")
 
 
 def _get(obj: Any, key: str, default: Any = "") -> Any:
@@ -90,6 +104,55 @@ def _append_required_phrase(base: str, phrase: str, limit: int) -> str:
     return f"{shortened_base}{separator if shortened_base else ''}{phrase}"
 
 
+def _placement_tokens(placement: str) -> set[str]:
+    return {tok for tok in re.split(r"[^a-z0-9]+", str(placement or "").lower()) if len(tok) > 2}
+
+
+def _resolve_layout(
+    *,
+    layout_candidates: list[dict[str, Any]] | None,
+    placement: str,
+    fallback_layout: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Ground the layout in a KG ``liquid_pattern`` doc when one is available.
+
+    Picks the candidate whose category/applicable_when best matches the
+    placement, falling back to the top-ranked candidate, then to the
+    deterministic layout string when retrieval returned nothing.
+    """
+    candidates = [c for c in (layout_candidates or []) if c.get("title")]
+    if not candidates:
+        return fallback_layout, []
+
+    placement_tokens = _placement_tokens(placement)
+
+    def _match_score(doc: dict[str, Any]) -> int:
+        meta = doc.get("metadata") or {}
+        haystack = f"{meta.get('category', '')} {meta.get('applicable_when', '')}".lower()
+        return sum(1 for tok in placement_tokens if tok in haystack)
+
+    ranked = sorted(candidates, key=lambda d: (-_match_score(d), -float(d.get("score") or 0.0)))
+    chosen = ranked[0]
+    meta = chosen.get("metadata") or {}
+    applicable = str(meta.get("applicable_when") or "").strip()
+    title = str(chosen.get("title") or "Layout pattern").strip()
+    layout = _truncate(f"{title} — {applicable}" if applicable else title, 200)
+
+    source_refs = [
+        {
+            "kind": str(doc.get("kind") or "liquid_pattern"),
+            "id": doc.get("id"),
+            "title": str(doc.get("title") or ""),
+            "category": (doc.get("metadata") or {}).get("category"),
+            "applicable_when": (doc.get("metadata") or {}).get("applicable_when"),
+            "score": doc.get("score"),
+            "selected": doc is chosen,
+        }
+        for doc in ranked
+    ]
+    return layout, source_refs
+
+
 def _catalog_summary(catalog_context: Any) -> str:
     items = _get(catalog_context, "items", []) or []
     if not items:
@@ -106,6 +169,7 @@ def draft_concept(
     brand_context: BrandContext,
     variants: list[Variant] | None = None,
     best_practices: list[dict[str, Any]] | None = None,
+    layout_candidates: list[dict[str, Any]] | None = None,
     placement_context: Any = None,
     catalog_context: Any = None,
     art_direction: Any = None,
@@ -142,11 +206,18 @@ def draft_concept(
     fold = _get(art_direction, "fold_percentage", 55)
     background_mode = _get(art_direction, "background_mode", "hero")
 
-    layout = f"{placement} split layout: copy block left, product/visual right, focal area safe within {fold}% fold"
+    fallback_layout = f"{placement} split layout: copy block left, product/visual right, focal area safe within {fold}% fold"
+    layout, source_refs = _resolve_layout(
+        layout_candidates=layout_candidates,
+        placement=placement,
+        fallback_layout=fallback_layout,
+    )
+    layout_note = [f"KG layout: {source_refs[0]['title']}"] if source_refs else []
     hierarchy_notes = "; ".join(
         [
             "One headline, one support line, one CTA",
             f"Audience rationale: {audience}",
+            *layout_note,
             *(variant_notes[:2] or []),
             *(practice_notes[:2] or []),
         ]
@@ -169,7 +240,7 @@ def draft_concept(
         copy={
             "headline": headline,
             "subheadline": subcopy,
-            "cta": _truncate(_remove_prohibited(cta, prohibited_words) or "Shop now", 28),
+            "cta": _truncate(_remove_prohibited(cta, prohibited_words) or "Shop now", 40),
             "audience": _remove_prohibited(audience, prohibited_words),
             "rationale": _remove_prohibited(f"Connects {goal} to {audience} with {urgency} urgency.", prohibited_words),
         },
@@ -181,7 +252,106 @@ def draft_concept(
         },
         image_prompt=image_prompt,
         hierarchy_notes=hierarchy_notes,
+        source_refs=source_refs,
     )
+
+
+def _product_lines(catalog_context: Any) -> str:
+    items = _get(catalog_context, "items", []) or []
+    titles = []
+    for item in items[:4]:
+        title = _get(item, "title", "")
+        if title:
+            titles.append(str(title))
+    return "; ".join(titles)
+
+
+def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, audience_override: str = "") -> str:
+    brief = _brief(campaign)
+    goal = _get(brief, "goal", "")
+    audience = audience_override or _get(brief, "audience", "")
+    tone = _get(brief, "tone", "") or ", ".join(brand_context.voice.tone)
+    urgency = _get(brief, "urgency", "")
+    cta = _get(brief, "cta", "")
+    products = _product_lines(catalog_context)
+    practices = "; ".join([str(d.get("title", "")) for d in (best_practices or [])[:4] if d.get("title")])
+    required = ", ".join(brand_context.voice.required_phrases or [])
+    prohibited = ", ".join(brand_context.voice.prohibited_words or [])
+    lang = "Spanish" if re.search(r"[áéíóúñ¿¡]|\b(de|para|con|los|las|promo)\b", f"{goal} {audience}", re.I) else "the brief's language"
+    return (
+        "You are a senior ecommerce copywriter. Write ONE banner's hero copy.\n"
+        f"Campaign goal: {goal}\nAudience: {audience}\nTone: {tone}\nUrgency: {urgency}\n"
+        f"Offer / CTA seed: {cta}\nFeatured products: {products or 'the featured catalog'}\n"
+        f"Layout direction: {layout_hint}\n"
+        f"Best-practice notes from our knowledge base: {practices or 'standard ecommerce banner hierarchy'}\n"
+        f"Brand required phrases: {required or 'none'}\nProhibited words (never use): {prohibited or 'none'}\n\n"
+        f"Write in {lang}. Be specific to the products and the offer — not generic. "
+        "One headline (<=8 words, benefit-led, may reference the product/season), one short eyebrow (<=4 words), "
+        "one supporting subheadline (<=16 words), one action-first CTA (<=5 words). "
+        "No clickbait, no prohibited words, no emojis. Return JSON matching the schema."
+    )
+
+
+async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any, audience_override: str = "") -> dict[str, str] | None:
+    if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
+        return None
+    try:
+        from app.services.gemini.cost_guard import get_default_cost_guard
+
+        guard = cost_guard or get_default_cost_guard(settings)
+        if not guard.check_and_reserve(EST_CONCEPT_COPY_USD).allowed:
+            return None
+        result = await gemini_text.generate(
+            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint, audience_override=audience_override),
+            model=gemini_text.FLASH_MODEL,
+            structured=_ConceptCopy,
+        )
+    except gemini_text.GeminiUnavailable:
+        return None
+    except Exception:  # noqa: BLE001 — any failure → deterministic copy
+        return None
+    prohibited = brand_context.voice.prohibited_words or []
+    out: dict[str, str] = {}
+    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 40)):
+        value = _remove_prohibited(str(_get(result, key, "")), prohibited)
+        if value:
+            out[key] = _truncate(value, limit)
+    return out or None
+
+
+async def copy_for_audience(
+    *,
+    campaign: Any,
+    brand_context: BrandContext,
+    catalog_context: Any = None,
+    best_practices: list[dict[str, Any]] | None = None,
+    layout_hint: str = "",
+    audience: str,
+    settings: Any = None,
+    cost_guard: Any = None,
+) -> dict[str, str]:
+    """Variant-specific banner copy for one audience (F11 — N variants by tag).
+
+    Deterministic base (audience-overridden) refined by Gemini when available.
+    Returns {eyebrow, headline, subheadline, cta}.
+    """
+    brief = _brief(campaign)
+    overridden = {
+        "goal": _get(brief, "goal", ""), "audience": audience or _get(brief, "audience", ""),
+        "cta": _get(brief, "cta", ""), "tone": _get(brief, "tone", ""),
+        "urgency": _get(brief, "urgency", ""), "placement": _get(brief, "placement", ""),
+    }
+    base = draft_concept(campaign=overridden, brand_context=brand_context, best_practices=best_practices, catalog_context=catalog_context)
+    copy = {k: base.copy.get(k, "") for k in ("eyebrow", "headline", "subheadline", "cta")}
+    copy["eyebrow"] = copy.get("eyebrow") or (audience or "").upper()[:32]
+    gem = await _gemini_copy(
+        campaign=overridden, brand_context=brand_context, catalog_context=catalog_context,
+        best_practices=best_practices, layout_hint=layout_hint or base.layout,
+        settings=settings, cost_guard=cost_guard, audience_override=audience,
+    )
+    if gem:
+        copy.update({k: v for k, v in gem.items() if v})
+    return copy
 
 
 async def run(
@@ -191,9 +361,12 @@ async def run(
     brand_context: BrandContext | None = None,
     variants: list[Variant] | None = None,
     best_practices: list[dict[str, Any]] | None = None,
+    layout_candidates: list[dict[str, Any]] | None = None,
     placement_context: Any = None,
     catalog_context: Any = None,
     art_direction: Any = None,
+    settings: Any = None,
+    cost_guard: Any = None,
 ) -> Concept:
     if state is not None:
         campaign = campaign or state.campaign
@@ -204,12 +377,25 @@ async def run(
         raise ValueError("campaign is required")
     if brand_context is None:
         raise ValueError("brand_context is required")
-    return draft_concept(
+    concept = draft_concept(
         campaign=campaign,
         brand_context=brand_context,
         variants=variants,
         best_practices=best_practices,
+        layout_candidates=layout_candidates,
         placement_context=placement_context,
         catalog_context=catalog_context,
         art_direction=art_direction,
     )
+    # Quality jump: replace the deterministic template copy with Gemini-written,
+    # product- and offer-specific banner copy when a key + budget are available.
+    gem = await _gemini_copy(
+        campaign=campaign, brand_context=brand_context, catalog_context=catalog_context,
+        best_practices=best_practices, layout_hint=concept.layout, settings=settings, cost_guard=cost_guard,
+    )
+    if gem:
+        for key in ("eyebrow", "headline", "subheadline", "cta"):
+            if gem.get(key):
+                concept.copy[key] = gem[key]
+        concept.copy["copy_source"] = "gemini"
+    return concept
