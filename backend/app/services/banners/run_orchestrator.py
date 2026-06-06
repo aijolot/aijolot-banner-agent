@@ -678,9 +678,11 @@ class RunOrchestrator:
             png = chroma_key_to_png(raw_bytes)
         except ValueError:
             return None
-        # Sanity: a real cutout removes a meaningful chunk of background; if almost
-        # nothing was keyed, the model likely ignored the green field — skip it.
-        if transparent_fraction(png) < 0.08:
+        # Sanity: a clean cut-out keys out a large green margin. If little was removed,
+        # the model rendered a full scene instead of flat green (un-keyable) — reject it
+        # so the Canvas falls back to the plain product photo rather than show a messy
+        # rectangle with baked-in scenery/text.
+        if transparent_fraction(png) < 0.25:
             return None
         try:
             row = self.asset_service.upload_png(
@@ -709,14 +711,16 @@ class RunOrchestrator:
         goal = getattr(campaign_state, "goal", "") or ""
         tone = _brand_tone(brand) or ""
         prompt = (
-            "You are an art director defining the VISUAL CONCEPT for an ecommerce hero image of this product: "
-            f"{product_title}. Read the campaign and propose 2-4 tasteful props/elements plus lighting and mood "
-            "that genuinely fit THIS campaign — derive them from the brief, do NOT default to fruit/citrus or any "
-            "preset theme unless the campaign is explicitly about that.\n"
+            "You are an art director defining the VISUAL CONCEPT for a CUT-OUT ecommerce hero of this product: "
+            f"{product_title}. The product will be isolated on a transparent background, so propose only 2-3 small "
+            "FLOATING props/accents plus a lighting style that genuinely fit THIS campaign — derive them from the "
+            "brief; do NOT default to fruit/citrus or any preset theme unless the campaign is explicitly about that.\n"
             f"Campaign goal: {_short(goal, 120)}\nHeadline: {_short(headline, 90)}\nBrand tone: {_short(tone, 80)}\n"
-            "Constraints: product stays the hero; elegant and premium, not cluttered; NO text, NO logos, NO people. "
-            "Return JSON {scene} — one concise sentence describing the props + lighting/mood (no product description, "
-            "no background color instructions)."
+            "HARD CONSTRAINTS: the props must FLOAT around the product — NO environment, NO scene, NO floor, NO "
+            "table or pedestal, NO room, NO plants/foliage, NO horizon, NO background imagery. NO text, NO logos, "
+            "NO people. Keep it minimal (the product is the hero).\n"
+            "Return JSON {scene} — one concise sentence: the floating props + lighting style only (no product "
+            "description, no background/color instructions)."
         )
         try:
             from app.agents.tools import gemini_text
@@ -741,15 +745,19 @@ class RunOrchestrator:
             "keep it elegant and minimal — do not invent a specific unrelated theme."
         )
         return (
-            f"E-commerce banner HERO image of THIS exact product: {product}. "
+            f"E-commerce banner HERO cut-out of THIS exact product: {product}. "
             "Use the provided product photo as the visual reference — keep the bottle/package real shape, "
             "colors and label EXACTLY; do not invent a different product. "
             f"Campaign mood: {_short(headline, 80)}. {scene_line} "
-            "Premium, not cluttered; the product stays the hero. "
-            "CRITICAL OUTPUT RULE: render the product and props on a PERFECTLY UNIFORM, FLAT, SOLID PURE GREEN "
-            "background (hex #00FF00 chroma green) that fills the entire frame. No checkerboard, no gradient, no "
-            "scenery, no floor, no shadows on a surface — just the cutout subject on flat #00FF00 green so the "
-            "green can be keyed out to transparency. Portrait 3:4 framing, product centered with breathing room."
+            "The props must FLOAT next to the product — NO environment, NO floor, NO table/pedestal, NO room, NO "
+            "plants, NO horizon, NO surface the product rests on. Premium, minimal; the product is the hero. "
+            "ABSOLUTELY NO TEXT of any kind in the image: no words, letters, numbers, prices, percentages, '%', "
+            "'OFF', taglines, captions, watermarks, logos or labels added on top — text is added later by the banner. "
+            "CRITICAL OUTPUT RULE: render the product and floating props on a PERFECTLY UNIFORM, FLAT, SOLID PURE "
+            "GREEN background (hex #00FF00 chroma green) filling the ENTIRE frame to every edge. No checkerboard, no "
+            "gradient, no scenery, no floor, no cast shadow on a surface — only the cut-out subject + floating props "
+            "on flat #00FF00 so the green keys out to transparency. Portrait 3:4, product centered with generous "
+            "empty green margins around it (do not let the product or props touch the frame edges)."
         )
 
     async def _optimize_assets(

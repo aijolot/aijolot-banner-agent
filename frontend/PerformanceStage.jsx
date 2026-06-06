@@ -137,7 +137,7 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
       headlineRuns: (v && v.audience_rule && v.audience_rule.headline_runs) || null,
       sub: (v && v.subheadline) || (c.copy && c.copy.subheadline) || null,
       cta: (v && v.cta_text) || (c.copy && c.copy.cta) || null,
-      promo: (v && v.cta_text) || (c.copy && c.copy.cta) || null,
+      promo: [(v && v.cta_text), (v && v.subheadline), (v && v.headline), c.copy && c.copy.cta, c.copy && c.copy.subheadline, c.copy && c.copy.headline].find((s) => s && /\d{1,3}\s*%/.test(s)) || null,
       brandName: "",
       imageUrl: fp.product_hero_url || fp.product_image_url || (lastArt && lastArt.public_url) || null,
       bgCss: (c.background && c.background.css) || null,

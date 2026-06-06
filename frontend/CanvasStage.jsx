@@ -198,7 +198,12 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     headlineRuns: (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.headline_runs) || null,
     sub: (selectedVariant ? variantCopy.subheadline : null) || liveCopy.subheadline || null,
     cta: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
-    promo: (selectedVariant ? variantCopy.cta_text : null) || liveCopy.cta || null,
+    // The discount badge needs the actual % — pick the first copy that carries one
+    // (cta/sub/headline); avoids showing CTA words like "Explora tu" in the badge.
+    promo: [
+      (selectedVariant ? variantCopy.cta_text : null), variantCopy.subheadline, variantCopy.headline,
+      liveCopy.cta, liveCopy.subheadline, liveCopy.headline,
+    ].find((s) => s && /\d{1,3}\s*%/.test(s)) || null,
     brandName: "",
     imageUrl: variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
     bgCss: (liveBgObj && liveBgObj.css) || null,

@@ -114,7 +114,7 @@
       var tX = num(L.textX, 6), tY = num(L.textY, 50), tW = num(L.textW, 48);
       var align = (L.textAlign === "center" || L.textAlign === "right") ? L.textAlign : "left";
       var items = align === "center" ? "center" : align === "right" ? "flex-end" : "flex-start";
-      var hX = num(L.heroX, 76), hY = num(L.heroY, 50), hW = num(L.heroW, 46), hH = num(L.heroH, 92);
+      var hX = num(L.heroX, 74), hY = num(L.heroY, 50), hW = num(L.heroW, 46), hH = num(L.heroH, 80);
       var hero = img
         ? '<img class="hb-genimg" style="position:absolute;left:' + hX + "%;top:" + hY + "%;width:" + hW +
           "%;height:" + hH + "%;transform:translate(-50%,-50%);object-fit:contain;z-index:" + heroZ + '" src="' + esc(img) + '">'

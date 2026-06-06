@@ -84,11 +84,12 @@ def clamp_layout(ad: "ArtDirection") -> dict:
         "textY": c(ad.text_y, 10, 90, 50),
         "textW": c(ad.text_w, 24, 70, 48),
         "textAlign": align,
-        "heroX": c(ad.hero_x, 20, 98, 76),
-        "heroY": c(ad.hero_y, 10, 90, 50),
-        # Hero may grow large (up to 85% wide / 130% tall to crop-grow).
-        "heroW": c(ad.hero_w, 24, 85, 46),
-        "heroH": c(ad.hero_h, 60, 130, 92),
+        # Keep the hero center inside (≤92) so it never jams against the right edge.
+        "heroX": c(ad.hero_x, 25, 92, 74),
+        "heroY": c(ad.hero_y, 12, 88, 50),
+        # Bounded so the hero keeps breathing room from the banner edges (no full-bleed).
+        "heroW": c(ad.hero_w, 24, 80, 46),
+        "heroH": c(ad.hero_h, 55, 90, 80),
         "heroBehind": bool(ad.hero_behind),
         "aspectRatio": 2.4,
     }
