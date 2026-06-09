@@ -80,6 +80,63 @@ class RegenerateRequest(BaseModel):
     structured_changes: dict[str, Any] | None = Field(default=None)
 
 
+class StructuredLayoutEdit(BaseModel):
+    """Direct, instant layout edit (percent composition; camelCase to match the
+    stored ``art_direction.layout`` shape). All optional — only present keys patch."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    textX: float | None = None
+    textY: float | None = None
+    textW: float | None = None
+    textAlign: str | None = None
+    heroX: float | None = None
+    heroY: float | None = None
+    heroW: float | None = None
+    heroH: float | None = None
+    heroBehind: bool | None = None
+
+
+class StructuredFontsEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display: str | None = None
+    body: str | None = None
+
+
+class StructuredCopyEdit(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    headline: str | None = None
+    subheadline: str | None = None
+    eyebrow: str | None = None
+    cta: str | None = None
+
+
+class StructuredEdit(BaseModel):
+    """A direct, no-LLM banner edit. Every section is optional and server-clamped
+    (layout via clamp_layout, fonts via the allow-list, runs via contrast gating)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    layout: StructuredLayoutEdit | None = None
+    fonts: StructuredFontsEdit | None = None
+    ink: str | None = None
+    copy: StructuredCopyEdit | None = None
+    # Per-variant headline emphasis runs, keyed by banner_variant_id.
+    headline_runs: dict[str, list[dict[str, Any]]] | None = None
+
+
+class ApplyEditsRequest(BaseModel):
+    """Request for POST /campaigns/{id}/apply-edits (instant edit, no agent run)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    structured_changes: StructuredEdit
+    source_revision_id: str | None = Field(default=None, pattern=UUID_PATTERN)
+    requested_by: str | None = Field(default=None, pattern=UUID_PATTERN)
+
+
 class RevisionVariantResponse(BaseModel):
     id: str
     revision_id: str = Field(..., pattern=UUID_PATTERN)
@@ -126,6 +183,29 @@ class RegenerateResponse(BaseModel):
     generation_run: GenerationRunResponse
     revision: CampaignRevisionResponse
     refinement_request_id: str | None = None
+
+
+class CampaignPlanResponse(BaseModel):
+    """Cheap, human-readable plan surfaced BEFORE the costly build phase.
+
+    Built deterministically from the concept + art direction + background, plus a
+    wireframe spec (the ``bannerLiveHTML`` ``live`` shape with ``imageUrl=""`` so
+    the frontend renders boxes/colors with no generated image).
+    """
+
+    revision_id: str
+    campaign_id: str = Field(..., pattern=UUID_PATTERN)
+    generation_run_id: str | None = None
+    status: str = "plan"
+    theme: str = ""
+    typography: dict[str, Any] = Field(default_factory=dict)
+    color_guidance: dict[str, Any] = Field(default_factory=dict)
+    product_intent: list[dict[str, Any]] = Field(default_factory=list)
+    copy_preview: dict[str, Any] = Field(default_factory=dict)
+    layout_note: str = ""
+    hierarchy_notes: str = ""
+    wireframe: dict[str, Any] = Field(default_factory=dict)
+    estimated_image_cost_note: str = ""
 
 
 class VariantSelectionResponse(BaseModel):

@@ -15,6 +15,40 @@ from app.schemas.approvals import (
 from app.services.banners.status_machine import APPROVED, CHANGES_REQUESTED, NEEDS_REVIEW
 
 
+def _region_for_pin(pin_x: Any, pin_y: Any, layout: dict[str, Any]) -> str:
+    """Name the banner element a pinned comment sits over, from the revision layout."""
+    try:
+        px, py = float(pin_x), float(pin_y)
+    except (TypeError, ValueError):
+        return "banner"
+    layout = layout or {}
+    hx, hy, hw, hh = layout.get("heroX"), layout.get("heroY"), layout.get("heroW"), layout.get("heroH")
+    if None not in (hx, hy, hw, hh):
+        if abs(px - float(hx)) <= float(hw) / 2 and abs(py - float(hy)) <= float(hh) / 2:
+            return "hero/image"
+    tx, ty, tw = layout.get("textX"), layout.get("textY"), layout.get("textW")
+    if tx is not None and tw is not None:
+        if float(tx) <= px <= float(tx) + float(tw) and (ty is None or abs(py - float(ty)) <= 35):
+            return "headline/copy"
+    return "background"
+
+
+def _spatial_prompt(base_prompt: str, comments: list[dict[str, Any]], layout: dict[str, Any]) -> str:
+    """Weave each pinned comment's coordinates + the element it sits over into the
+    refinement prompt, so the agent edits the right place (routes via refinement-route)."""
+    lines: list[str] = []
+    for comment in comments or []:
+        px, py = comment.get("pin_x"), comment.get("pin_y")
+        if px is None or py is None:
+            continue
+        region = _region_for_pin(px, py, layout)
+        body = " ".join(str(comment.get("body") or "").split())
+        lines.append(f'- at ({float(px):g},{float(py):g}) over {region}: "{body}"')
+    if not lines:
+        return base_prompt
+    return base_prompt + "\nSpatial feedback (banner coordinates, 0-100 from top-left):\n" + "\n".join(lines)
+
+
 class ApprovalError(Exception):
     pass
 
@@ -171,6 +205,22 @@ class ApprovalService:
             self.campaigns.update(campaign_id=thread["campaign_id"], data={"status": NEEDS_REVIEW})
         return self._hydrate_thread(thread)
 
+    def _enrich_prompt_with_pins(self, base_prompt: str, comment_ids: Any, revision: dict[str, Any] | None) -> str:
+        """Fold the coordinates of the addressed pinned comments into the prompt."""
+        ids = list(comment_ids or [])
+        if not ids:
+            return base_prompt
+        comments: list[dict[str, Any]] = []
+        for cid in ids:
+            try:
+                comment = self.comments.get(comment_id=str(cid))
+            except Exception:  # noqa: BLE001 — best-effort enrichment
+                comment = None
+            if comment:
+                comments.append(comment)
+        layout = (((revision or {}).get("concept") or {}).get("art_direction") or {}).get("layout") or {}
+        return _spatial_prompt(base_prompt, comments, layout)
+
     def request_changes(self, thread_id: str, request: ChangeRequestCreate) -> ApprovalThreadResponse:
         thread = self.threads.get(thread_id=thread_id)
         if not thread:
@@ -187,12 +237,14 @@ class ApprovalService:
         thread = self.threads.update(thread_id=thread_id, data={"status": "changes_requested", "resolved_at": _now()}) or thread
         self.campaigns.update(campaign_id=thread["campaign_id"], data={"status": CHANGES_REQUESTED})
         if request.prompt:
+            source_revision = self.revisions.get(revision_id=thread["revision_id"]) if thread.get("revision_id") else None
+            enriched_prompt = self._enrich_prompt_with_pins(request.prompt, request.addressed_comment_ids, source_revision)
             self.refinement_requests.create(
                 data={
                     "campaign_id": thread["campaign_id"],
                     "source_revision_id": thread["revision_id"],
                     "requested_by": request.user_id,
-                    "prompt": request.prompt,
+                    "prompt": enriched_prompt,
                     "addressed_comment_ids": request.addressed_comment_ids,
                     "status": "queued",
                 }
@@ -212,12 +264,13 @@ class ApprovalService:
         if not revision:
             raise CampaignRevisionNotFound(campaign_id)
         self._ensure_revision_belongs(campaign_id=campaign_id, revision=revision)
+        enriched_prompt = self._enrich_prompt_with_pins(request.prompt, request.addressed_comment_ids, revision)
         row = self.refinement_requests.create(
             data={
                 "campaign_id": campaign_id,
                 "source_revision_id": revision["id"],
                 "requested_by": request.requested_by,
-                "prompt": request.prompt,
+                "prompt": enriched_prompt,
                 "addressed_comment_ids": request.addressed_comment_ids,
                 "status": "queued",
             }

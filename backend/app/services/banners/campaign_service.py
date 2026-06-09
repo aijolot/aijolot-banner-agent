@@ -131,7 +131,8 @@ class CampaignService:
             raise CampaignNotEditable(campaign_id)
         brief_data = campaign.structured_brief.model_dump()
         for key in ("goal", "audience", "cta", "tone", "urgency", "placement", "deadline",
-                    "promo", "personalization_dimension", "personalization_variants"):
+                    "promo", "personalization_dimension", "personalization_variants",
+                    "products", "destination_url"):
             if key in fields and fields[key] is not None:
                 brief_data[key] = fields[key]
         campaign.structured_brief = StructuredBrief(**brief_data)

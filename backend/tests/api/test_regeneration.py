@@ -99,6 +99,40 @@ def test_list_revisions_endpoint_returns_preserved_revisions(monkeypatch) -> Non
     assert body[1]["variants"]
 
 
+def test_apply_edits_endpoint_creates_revision_without_agent(monkeypatch) -> None:
+    from app.api.v1 import generation
+
+    service, campaigns, revisions, _variants, _refinements = _service()
+    monkeypatch.setattr(generation, "_revision_service", lambda: service)
+
+    response = client.post(
+        f"/api/v1/campaigns/{CAMPAIGN_ID}/apply-edits",
+        json={"structured_changes": {"layout": {"textX": 30}, "fonts": {"display": "Anton"}}},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["revision"]["id"] == REVISION_2
+    assert body["generation_run"]["metadata"]["no_agent"] is True
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == REVISION_2
+    layout = revisions.rows[REVISION_2]["concept"]["art_direction"]["layout"]
+    assert layout["textX"] == 30
+
+
+def test_apply_edits_endpoint_rejects_unknown_keys(monkeypatch) -> None:
+    from app.api.v1 import generation
+
+    service, *_ = _service()
+    monkeypatch.setattr(generation, "_revision_service", lambda: service)
+
+    response = client.post(
+        f"/api/v1/campaigns/{CAMPAIGN_ID}/apply-edits",
+        json={"structured_changes": {"layout": {"bogusKey": 1}}},
+    )
+
+    assert response.status_code == 422
+
+
 def test_regenerate_endpoint_404s_for_missing_refinement(monkeypatch) -> None:
     from app.api.v1 import generation
 

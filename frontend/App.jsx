@@ -1,5 +1,5 @@
 /* global React, useTweaks, TweaksPanel, TweakSection, TweakSelect, TweakRadio,
-   Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, GenerateStage,
+   Sidebar, Topbar, CampaignsView, ModulePlaceholder, BrandContextView, BriefStage, PlanStage, GenerateStage,
    CanvasStage, PerformanceStage, Icon, Badge, PlacementApi, CampaignApi, isApiCampaign */
 // Aijolot Banner Agent — app orchestrator.
 const { useState: useStateA, useRef: useRefA } = React;
@@ -13,11 +13,12 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 const STEPS = [
   { id: "placement", label: "Ubicación", icon: "store" },
   { id: "brief", label: "Brief", icon: "message-square" },
+  { id: "plan", label: "Plan", icon: "clipboard-list" },
   { id: "generate", label: "Generación", icon: "wand-sparkles" },
   { id: "canvas", label: "Lienzo", icon: "layout-template" },
   { id: "performance", label: "Performance", icon: "bar-chart-3" },
 ];
-const STAGE_CRUMB = { campaigns: "", placement: "Ubicación", brief: "Brief comercial", generate: "Generación", canvas: "Lienzo colaborativo", performance: "Performance" };
+const STAGE_CRUMB = { campaigns: "", placement: "Ubicación", brief: "Brief comercial", plan: "Plan de campaña", generate: "Generación", canvas: "Lienzo colaborativo", performance: "Performance" };
 
 function Stepper({ stage, goTo }) {
   const cur = STEPS.findIndex((s) => s.id === stage);
@@ -25,7 +26,7 @@ function Stepper({ stage, goTo }) {
     <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "10px 14px", borderRadius: 14, background: "rgba(255,255,255,0.7)", border: "1px solid rgba(255,255,255,0.6)", boxShadow: "0 10px 28px rgba(15,23,42,0.06)", marginBottom: 20, flexWrap: "wrap" }}>
       {STEPS.map((s, i) => {
         const done = i < cur, active = i === cur;
-        const clickable = s.id !== "generate" && i <= cur;
+        const clickable = s.id !== "generate" && s.id !== "plan" && i <= cur;
         return (
           <React.Fragment key={s.id}>
             <button onClick={() => clickable && goTo(s.id)} style={{
@@ -58,6 +59,9 @@ function App() {
   const [art] = useStateA(() => ({ bg: "usage", fold: 60 }));
   const [campaign, setCampaign] = useStateA(null);
   const [apiNotice, setApiNotice] = useStateA(null);
+  // The BUILD run started when the user approves the plan; GenerateStage polls it
+  // instead of starting a fresh generation run.
+  const [buildRun, setBuildRun] = useStateA(null);
   // Dedupe placement persistence: placement→brief advance AND campaign-ready (when a
   // prototype becomes a backend UUID during intake) both used to save, racing. Save
   // once per (campaign, placement) pair.
@@ -123,8 +127,9 @@ function App() {
   } else {
     let view;
     if (stage === "placement") view = <PlacementStage onNotice={setApiNotice} onNext={handlePlacementNext} />;
-    else if (stage === "brief") view = <BriefStage campaign={campaign} onGenerate={(c) => { setCampaign(c); setStage("generate"); }} onCampaignReady={onCampaignReady} onNotice={setApiNotice} placement={placement} />;
-    else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} onNotice={setApiNotice} onDone={() => setStage("canvas")} />;
+    else if (stage === "brief") view = <BriefStage campaign={campaign} onGenerate={(c) => { setCampaign(c); setBuildRun(null); setStage("plan"); }} onCampaignReady={onCampaignReady} onNotice={setApiNotice} placement={placement} />;
+    else if (stage === "plan") view = <PlanStage campaign={campaign} placement={placement} onNotice={setApiNotice} onApprove={(run) => { setBuildRun(run); setStage("generate"); }} onBack={() => setStage("brief")} />;
+    else if (stage === "generate") view = <GenerateStage campaign={campaign} placement={placement} art={art} initialRun={buildRun} onNotice={setApiNotice} onDone={() => setStage("canvas")} />;
     else if (stage === "canvas") view = <CanvasStage campaign={campaign} tweaks={t} placement={placement} art={art} onNotice={setApiNotice} onPublish={() => setStage("performance")} />;
     else view = <PerformanceStage campaign={campaign} tweaks={t} onNotice={setApiNotice} onBack={() => setStage("canvas")} />;
     body = <><Stepper stage={stage} goTo={setStage} />{apiNotice ? <div style={{ marginBottom: 12 }}><Badge tone={apiNotice.tone || "slate"} icon={apiNotice.tone === "green" ? "wifi" : "wifi-off"}>{apiNotice.text}</Badge></div> : null}{view}</>;

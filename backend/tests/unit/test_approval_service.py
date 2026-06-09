@@ -256,6 +256,36 @@ def test_create_refinement_request_stores_without_regeneration(services) -> None
     assert campaigns.rows[CAMPAIGN_ID]["status"] == "changes_requested"
 
 
+def test_region_for_pin_classifies_against_layout() -> None:
+    from app.services.approvals.approval_service import _region_for_pin
+
+    layout = {"heroX": 74, "heroY": 50, "heroW": 46, "heroH": 80, "textX": 6, "textY": 50, "textW": 46}
+    assert _region_for_pin(80, 50, layout) == "hero/image"
+    assert _region_for_pin(10, 50, layout) == "headline/copy"
+    assert _region_for_pin(50, 5, layout) == "background"
+    assert _region_for_pin(None, None, layout) == "banner"
+
+
+def test_create_refinement_request_threads_pinned_comment_coordinates(services) -> None:
+    approval, _comment, _campaigns, refinements = services
+    approval.revisions.rows[REVISION_ID]["concept"] = {
+        "art_direction": {"layout": {"heroX": 74, "heroY": 50, "heroW": 46, "heroH": 80, "textX": 6, "textY": 50, "textW": 46}}
+    }
+    approval.comments.create(
+        data={"approval_thread_id": THREAD_ID, "campaign_id": CAMPAIGN_ID, "pin_x": 80, "pin_y": 50, "body": "haz el frasco más grande"}
+    )
+
+    approval.create_refinement_request(
+        CAMPAIGN_ID,
+        RefinementRequestCreate(requested_by=USER_1, prompt="Aplica los comentarios", addressed_comment_ids=[COMMENT_ID]),
+    )
+
+    stored = refinements.rows[-1]["prompt"]
+    assert "over hero/image" in stored
+    assert "(80,50)" in stored
+    assert "haz el frasco más grande" in stored
+
+
 def test_revision_must_belong_to_campaign_for_approval_and_refinement(services) -> None:
     approval, _comment, _campaigns, _refinements = services
 

@@ -238,6 +238,37 @@ def test_concept_adapts_to_catalog_and_promo() -> None:
     assert "25% OFF" in copyd["cta"]
 
 
+def test_brief_products_ground_concept_without_catalog_snapshot() -> None:
+    # Campaign-level products picked in the brief should ground the concept copy
+    # even when there is NO catalog snapshot service wired.
+    campaigns = InMemoryCampaigns()
+    campaigns.rows[CAMPAIGN_ID]["structured_brief"]["products"] = [
+        {"product_title": "Afnan 9PM EDP 100ml", "product_gid": "gid://shopify/Product/77", "price": "1,299"}
+    ]
+    campaigns.rows[CAMPAIGN_ID]["structured_brief"]["destination_url"] = "/collections/perfumes"
+    revisions = InMemoryRevisions()
+    variants = InMemoryVariants()
+    layouts = InMemoryLayoutVariants()
+    audits = InMemoryAuditReports()
+    orchestrator = RunOrchestrator(
+        revisions=revisions, variants=variants, layout_variants=layouts, audit_reports=audits,
+        campaigns=campaigns, asset_service=None, team_id="team-1",  # no catalog
+    )
+    service = GenerationRunService(
+        run_repository=InMemoryGenerationRunRepository(),
+        event_repository=InMemoryGenerationEventRepository(),
+        campaign_repository=campaigns, orchestrator=orchestrator, team_id="team-1",
+    )
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+    assert run.status == "succeeded"
+    revision = next(iter(revisions.rows.values()))
+    assert "Afnan 9PM" in revision["concept"]["copy"]["headline"]
+    # Destination URL flows into the banner variant CTA link.
+    rows = variants.list_by_revision_id(revision_id=revision["id"])
+    assert rows and rows[0]["cta_url"] == "/collections/perfumes"
+
+
 def test_generates_one_banner_variant_per_personalization_variant() -> None:
     campaigns = InMemoryCampaigns()
     campaigns.rows[CAMPAIGN_ID]["structured_brief"]["personalization_variants"] = [
@@ -265,6 +296,88 @@ def test_generates_one_banner_variant_per_personalization_variant() -> None:
     assert {r["segment_key"] for r in rows} == {"male", "female"}
     assert {r["customer_tag"] for r in rows} == {"gender:male", "gender:female"}
     assert all(r.get("headline") for r in rows)
+
+
+async def _boom_no_image(**_kwargs):
+    raise AssertionError("image work must not run in the plan phase")
+
+
+def test_plan_phase_stops_before_image_and_does_not_promote() -> None:
+    service, campaigns, revisions, variants, layouts, audits = _build_service()
+    # Fail loudly if the plan phase reaches any image work.
+    service.orchestrator._generate_image = _boom_no_image  # type: ignore[attr-defined]
+    service.orchestrator._compose_variant_hero = _boom_no_image  # type: ignore[attr-defined]
+
+    run, revision_id = service.start_plan_run(CAMPAIGN_ID)
+
+    assert run.status == "succeeded"
+    assert run.frontend_step == "concept"
+    assert run.metadata["phase"] == "plan"
+    assert run.metadata["awaiting_approval"] is True
+
+    # A plan revision exists but is NOT promoted (no image/render/audit ran).
+    assert revision_id is not None
+    revision = revisions.rows[revision_id]
+    assert revision["status"] == "plan"
+    assert audits.rows == []
+    assert variants.rows == {}
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] is None
+
+    # No generate_image event leaked into the run.
+    node_keys = [e.node_key for e in service.list_events(run.id)]
+    assert "generate_image" not in node_keys
+    assert node_keys[-1] == "draft_banner_concept"
+
+
+def test_plan_phase_builds_wireframe_spec_without_image() -> None:
+    service, _campaigns, revisions, *_ = _build_service()
+    run, revision_id = service.start_plan_run(CAMPAIGN_ID)
+    assert run.status == "succeeded"
+
+    plan = revisions.rows[revision_id]["concept"]["plan"]
+    assert plan["wireframe"]["imageUrl"] == ""
+    assert plan["wireframe"]["headline"]
+    assert plan["typography"]["display"]
+    assert plan["copy_preview"]["headline"]
+    assert plan["product_intent"]  # at least the default audience
+
+
+def test_approve_resumes_into_build_and_promotes() -> None:
+    service, campaigns, revisions, variants, layouts, audits = _build_service()
+    _plan_run, plan_revision_id = service.start_plan_run(CAMPAIGN_ID)
+    plan_revision = revisions.rows[plan_revision_id]
+
+    run, revision_id = service.start_build_run(CAMPAIGN_ID, plan_revision=plan_revision)
+
+    assert run.status == "succeeded"
+    assert run.frontend_step == "review_publish"
+    assert run.metadata["phase"] == "build"
+    # Same revision, now promoted with real artifacts.
+    assert revision_id == plan_revision_id
+    revision = revisions.rows[plan_revision_id]
+    assert revision["status"] == "selected"
+    assert revision["html_preview"] and "<" in revision["html_preview"]
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == plan_revision_id
+    # Build ran the image + audit nodes.
+    node_keys = [e.node_key for e in service.list_events(run.id)]
+    assert "generate_image" in node_keys
+    assert len(audits.rows) == 1
+    assert layouts.list_by_revision_id(revision_id=plan_revision_id)
+
+
+def test_iterate_redrafts_plan_without_image_cost() -> None:
+    service, _campaigns, revisions, *_ = _build_service()
+    service.orchestrator._generate_image = _boom_no_image  # type: ignore[attr-defined]
+    service.orchestrator._compose_variant_hero = _boom_no_image  # type: ignore[attr-defined]
+
+    run1, rev1 = service.start_plan_run(CAMPAIGN_ID)
+    run2, rev2 = service.start_plan_run(CAMPAIGN_ID, prompt="cambia el fondo a algo más vibrante")
+
+    assert run1.status == "succeeded" and run2.status == "succeeded"
+    # A fresh plan revision was drafted (number incremented), still status "plan".
+    assert rev2 is not None and rev2 != rev1
+    assert revisions.rows[rev2]["status"] == "plan"
+    assert revisions.rows[rev2]["revision_number"] == revisions.rows[rev1]["revision_number"] + 1
 
 
 def test_orchestrator_failure_is_recorded_honestly() -> None:

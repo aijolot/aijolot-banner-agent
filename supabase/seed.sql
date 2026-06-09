@@ -85,10 +85,27 @@ on conflict (key) do update set
   config_schema = excluded.config_schema,
   is_active = true;
 
--- Demo team/store/brand without users. The app can attach authenticated users later.
-insert into public.teams (id, name, slug)
-values ('00000000-0000-0000-0000-000000000001', 'Aijolot Demo Team', 'aijolot-demo')
+-- Demo identity: a REAL backend user (auth.users + profiles) so every FK-constrained
+-- write path works under header-auth demo mode — approval threads, comments, refinement
+-- requests, generation runs, campaigns.created_by all reference public.profiles(id) →
+-- auth.users(id). Without this the approval/comment services fail closed (FK 23503) and
+-- the canvas falls back to local seeds. auth.users only requires `id` locally.
+insert into auth.users (id)
+values ('00000000-0000-0000-0000-000000000601')
+on conflict (id) do nothing;
+
+insert into public.profiles (id, full_name, initials, role_title)
+values ('00000000-0000-0000-0000-000000000601', 'Mara Voss', 'MV', 'Gerente E-commerce')
+on conflict (id) do update set full_name = excluded.full_name, initials = excluded.initials, role_title = excluded.role_title;
+
+-- Demo team/store/brand. The demo user above is its first member/owner.
+insert into public.teams (id, name, slug, created_by)
+values ('00000000-0000-0000-0000-000000000001', 'Aijolot Demo Team', 'aijolot-demo', '00000000-0000-0000-0000-000000000601')
 on conflict (slug) do update set name = excluded.name;
+
+insert into public.team_members (team_id, user_id, role)
+values ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000601', 'owner')
+on conflict do nothing;
 
 insert into public.stores
   (id, team_id, shop_domain, display_name, shopify_api_version, theme_id, status)

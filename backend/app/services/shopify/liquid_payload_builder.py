@@ -93,6 +93,7 @@ def build_liquid_payload(
     brand: Any = None,
     assets: BannerAssets | None = None,
     placement: str | dict[str, Any] | None = None,
+    cta_url: str | None = None,
 ) -> LiquidPayload:
     """Build a controlled Shopify OS 2.0 section/snippet/config payload.
 
@@ -128,6 +129,9 @@ def build_liquid_payload(
 
     config_json = json.dumps(config, sort_keys=True, separators=(",", ":"))
     safe_image_url = _escape_liquid_string(image_url)
+    # CTA destination from the brief (validated absolute URL or "/path"); the merchant
+    # can still override it via the section setting. Default falls back to the catalog.
+    cta_default = _escape_liquid_string(str(cta_url or "/collections/all"))
     snippet = """{% comment %} Aijolot controlled banner block. Do not inject raw Liquid from campaign inputs. {% endcomment %}
 <div class=\"aijolot-banner__copy\">
   {% if eyebrow != blank %}<p class=\"aijolot-banner__eyebrow\">{{ eyebrow }}</p>{% endif %}
@@ -175,7 +179,7 @@ Aijolot Banner Agent OS 2.0 section. Payload config hash: {digest}.
   "name": "Aijolot campaign banner",
   "settings": [
     {{"type":"url","id":"image_url","label":"Background image URL"}},
-    {{"type":"text","id":"cta_url","label":"CTA URL","default":"/collections/all"}}
+    {{"type":"text","id":"cta_url","label":"CTA URL","default":"{cta_default}"}}
   ],
   "presets": [{{"name":"Aijolot campaign banner"}}]
 }}

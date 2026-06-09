@@ -153,7 +153,7 @@ class RunOrchestrator:
             node = "intake_campaign_idea"
             recorder.start(node)
             campaign_state = self._campaign_from_row(campaign_row, brand)
-            catalog_context = self._load_catalog_context(campaign_id)
+            catalog_context = self._load_catalog_context(campaign_id, campaign_row)
             promo_text = self._promo_text(campaign_row, catalog_context)
             if promo_text and promo_text.lower() not in campaign_state.cta.lower():
                 campaign_state.cta = _short(f"{campaign_state.cta} · {promo_text}", 60)
@@ -225,6 +225,70 @@ class RunOrchestrator:
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
+            # Nodes 6–9 (image → optimize → render → audit) + promote. Shared with
+            # the approve/build phase via _assemble_and_audit.
+            return await self._assemble_and_audit(
+                run_id=run_id,
+                campaign_id=campaign_id,
+                recorder=recorder,
+                concept=concept,
+                brand=brand,
+                campaign_state=campaign_state,
+                state_variants=state_variants,
+                variant_rows=variant_rows,
+                revision_id=revision_id,
+                banner_variant_id=banner_variant_id,
+                background=background,
+                art_direction=art_direction,
+                fonts=fonts,
+                total_cost=total_cost,
+                is_refine=is_refine,
+                target_set=target_set,
+                cta_url=self._destination_url(campaign_row),
+            )
+        except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
+            if node:
+                recorder.fail(node, {"error": type(exc).__name__, "detail": _short(str(exc), 280)})
+            return OrchestratorOutcome(
+                status="failed",
+                frontend_step=recorder.last_frontend_step or "intake_context",
+                events=recorder.events,
+                error_message=f"{type(exc).__name__}: {exc}"[:500],
+                total_cost_usd=round(total_cost, 6),
+                metadata={"facade_version": "f5-run-orchestrator", "failed_node": node},
+            )
+
+    async def _assemble_and_audit(
+        self,
+        *,
+        run_id: str,
+        campaign_id: str,
+        recorder: "_EventRecorder",
+        concept: Any,
+        brand: Any,
+        campaign_state: StateCampaign,
+        state_variants: list[StateVariant],
+        variant_rows: list[dict[str, Any]],
+        revision_id: str,
+        banner_variant_id: str | None,
+        background: dict[str, Any] | None,
+        art_direction: dict[str, Any] | None,
+        fonts: dict[str, Any],
+        total_cost: float = 0.0,
+        is_refine: bool = False,
+        target_set: set[str] | None = None,
+        metadata_extra: dict[str, Any] | None = None,
+        cta_url: str | None = None,
+    ) -> OrchestratorOutcome:
+        """Nodes 6–9 (image → optimize → render → audit) + promote.
+
+        Shared back half of the pipeline: used by the single-pass ``execute`` and
+        by ``execute_build_phase`` (approve-the-plan path). Has its own
+        try/except so a failure here is recorded honestly with the right node.
+        """
+        target_set = target_set or set()
+        node = ""
+        try:
             # 6 — image (cost-gated; degrades to free fake provider)
             node = "generate_image"
             recorder.start(node)
@@ -264,7 +328,7 @@ class RunOrchestrator:
             # Render the Liquid with one variant per personalization tag so the
             # storefront section switches copy by customer tag (served-by-tag).
             liquid_variants = _liquid_variants_from_rows(variant_rows)
-            liquid_section = await self._render_liquid(concept, liquid_variants, brand, assets, campaign_state.placement)
+            liquid_section = await self._render_liquid(concept, liquid_variants, brand, assets, campaign_state.placement, cta_url=cta_url)
             preview_path = _first_asset_path(assets)
             image_url = _first_asset_public_url(assets)
             # Surface the generated image + background onto the concept so the
@@ -330,7 +394,8 @@ class RunOrchestrator:
             )
 
             # Promote the new revision: supersede any prior selection, point the
-            # campaign at it. Mirrors the regenerate bookkeeping.
+            # campaign at it. Mirrors the regenerate bookkeeping. (For the build
+            # phase this also flips the "plan" revision to "selected".)
             self._promote_revision(campaign_id=campaign_id, revision_id=revision_id)
 
             return OrchestratorOutcome(
@@ -345,6 +410,135 @@ class RunOrchestrator:
                     "audit_status": audit_report.status,
                     "variants": len(variant_rows),
                     "refine_targets": sorted(target_set) if is_refine else None,
+                    **(metadata_extra or {}),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
+            if node:
+                recorder.fail(node, {"error": type(exc).__name__, "detail": _short(str(exc), 280)})
+            return OrchestratorOutcome(
+                status="failed",
+                frontend_step=recorder.last_frontend_step or "render_audit",
+                events=recorder.events,
+                error_message=f"{type(exc).__name__}: {exc}"[:500],
+                total_cost_usd=round(total_cost, 6),
+                metadata={"facade_version": "f5-run-orchestrator", "failed_node": node, **(metadata_extra or {})},
+            )
+
+    async def execute_plan_phase(
+        self,
+        *,
+        run_id: str,
+        campaign_row: dict[str, Any],
+        prompt: str | None = None,
+        targets: list[str] | None = None,
+    ) -> OrchestratorOutcome:
+        """Cheap, deterministic-friendly PLAN phase: nodes 1–5 only.
+
+        Drafts the concept + art direction + background (all FLASH-text/cheap and
+        degrade without a key), builds a readable plan + a wireframe spec (no
+        generated image), and persists a revision with ``status="plan"`` as the
+        resume point. Never runs image/optimize/render/audit, never promotes.
+        ``prompt``/``targets`` switch it into plan-iterate mode (re-draft the plan
+        with the user's feedback).
+        """
+        campaign_id = str(campaign_row["id"])
+        is_refine = bool(prompt) or bool(targets)
+        target_set = set(targets or [])
+        recorder = _EventRecorder(run_id=run_id)
+        node = ""
+        try:
+            node = "load_brand_context"
+            recorder.start(node)
+            brand = self._resolve_brand(campaign_row)
+            recorder.succeed(node, {"brand_id": brand.id, "name": brand.name})
+
+            node = "intake_campaign_idea"
+            recorder.start(node)
+            campaign_state = self._campaign_from_row(campaign_row, brand)
+            catalog_context = self._load_catalog_context(campaign_id, campaign_row)
+            promo_text = self._promo_text(campaign_row, catalog_context)
+            if promo_text and promo_text.lower() not in campaign_state.cta.lower():
+                campaign_state.cta = _short(f"{campaign_state.cta} · {promo_text}", 60)
+            recorder.succeed(
+                node,
+                {
+                    "goal": campaign_state.goal,
+                    "placement": campaign_state.placement,
+                    "source": "structured_brief",
+                    "catalog_items": len((catalog_context or {}).get("items") or []),
+                    "promo": promo_text or None,
+                },
+            )
+
+            node = "capture_user_personalization"
+            recorder.start(node)
+            state_variants = [StateVariant(customer_tag="all", intent_delta="default")]
+            recorder.succeed(node, {"segments": len(state_variants)})
+
+            node = "research_best_practices"
+            recorder.start(node)
+            best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
+            recorder.succeed(node, {"retrieved": len(best_practices)})
+
+            node = "draft_banner_concept"
+            recorder.start(node)
+            layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
+            concept = await self._run_concept(
+                campaign_state, brand, state_variants, best_practices, layout_candidates, catalog_context
+            )
+            if is_refine and prompt:
+                concept.copy["revision_note"] = _short(prompt, 280)
+                concept.hierarchy_notes = f"Refine: {_short(prompt, 120)}; {concept.hierarchy_notes}"
+            background = await self._refine_background(concept, brand)
+            art_direction = await self._propose_art_direction(concept, brand)
+            fonts = art_direction.get("fonts") or {}
+            recorder.succeed(
+                node,
+                {
+                    "layout": _short(concept.layout),
+                    "fonts": f"{fonts.get('display')}/{fonts.get('body')}",
+                    "headline": _short(concept.copy.get("headline", "")),
+                    "background": (background or {}).get("name") if background else None,
+                    "phase": "plan",
+                },
+            )
+
+            # Persist the plan revision (status="plan") — NO image/render/audit.
+            revision = self._create_revision(
+                campaign_id=campaign_id, run_id=run_id, concept=concept, background=background, status="plan"
+            )
+            revision_id = str(revision["id"])
+            concept_dict = _concept_dict(concept)
+            if background:
+                concept_dict["background"] = background
+            concept_dict["art_direction"] = {
+                "fonts": art_direction.get("fonts") or fonts,
+                "layout": art_direction.get("layout") or {},
+                "ink": _bg_text_ink(background),
+            }
+            concept_dict["plan"] = self._build_campaign_plan(
+                concept=concept,
+                background=background,
+                art_direction=art_direction,
+                campaign_row=campaign_row,
+                campaign_state=campaign_state,
+                revision_id=revision_id,
+                run_id=run_id,
+            )
+            self.revisions.update(revision_id=revision_id, data=_json_safe({"concept": concept_dict}))
+
+            return OrchestratorOutcome(
+                status="succeeded",
+                frontend_step="concept",
+                events=recorder.events,
+                revision_id=revision_id,
+                total_cost_usd=0.0,
+                metadata={
+                    "facade_version": "plan-phase",
+                    "phase": "plan",
+                    "awaiting_approval": True,
+                    "refine_targets": sorted(target_set) if is_refine else None,
                 },
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -355,8 +549,108 @@ class RunOrchestrator:
                 frontend_step=recorder.last_frontend_step or "intake_context",
                 events=recorder.events,
                 error_message=f"{type(exc).__name__}: {exc}"[:500],
-                total_cost_usd=round(total_cost, 6),
-                metadata={"facade_version": "f5-run-orchestrator", "failed_node": node},
+                metadata={"facade_version": "plan-phase", "failed_node": node},
+            )
+
+    async def execute_build_phase(
+        self,
+        *,
+        run_id: str,
+        campaign_row: dict[str, Any],
+        plan_revision: dict[str, Any],
+    ) -> OrchestratorOutcome:
+        """Approve-the-plan BUILD phase: reuse the approved creative verbatim and
+        run the costly nodes 6–9 on the existing plan revision, then promote it.
+
+        The concept/background/art-direction are read back from the plan revision
+        (no re-draft), so what the user approved is exactly what gets built. Early
+        nodes (1–4) are re-emitted cheaply so the 5-step progress UI completes.
+        """
+        campaign_id = str(campaign_row["id"])
+        recorder = _EventRecorder(run_id=run_id)
+        node = ""
+        try:
+            node = "load_brand_context"
+            recorder.start(node)
+            brand = self._resolve_brand(campaign_row)
+            recorder.succeed(node, {"brand_id": brand.id, "name": brand.name})
+
+            node = "intake_campaign_idea"
+            recorder.start(node)
+            campaign_state = self._campaign_from_row(campaign_row, brand)
+            catalog_context = self._load_catalog_context(campaign_id, campaign_row)
+            recorder.succeed(node, {"goal": campaign_state.goal, "source": "approved_plan"})
+
+            node = "capture_user_personalization"
+            recorder.start(node)
+            state_variants = [StateVariant(customer_tag="all", intent_delta="default")]
+            recorder.succeed(node, {"segments": len(state_variants)})
+
+            node = "research_best_practices"
+            recorder.start(node)
+            best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
+            recorder.succeed(node, {"retrieved": len(best_practices)})
+
+            # Reuse the APPROVED creative verbatim (no re-draft): the plan is the contract.
+            node = "draft_banner_concept"
+            recorder.start(node)
+            cdict = dict(plan_revision.get("concept") or {})
+            concept = _dict_to_concept(cdict)
+            background = cdict.get("background")
+            art_direction = cdict.get("art_direction") or {}
+            fonts = art_direction.get("fonts") or {}
+            recorder.succeed(
+                node,
+                {
+                    "layout": _short(concept.layout),
+                    "source": "approved_plan",
+                    "fonts": f"{fonts.get('display')}/{fonts.get('body')}",
+                },
+            )
+
+            revision_id = str(plan_revision["id"])
+            self._create_layout_variants(revision_id, concept)
+            variant_rows = await self._create_variant_banners(
+                revision_id=revision_id,
+                concept=concept,
+                campaign_state=campaign_state,
+                campaign_row=campaign_row,
+                brand=brand,
+                catalog_context=catalog_context,
+                best_practices=best_practices,
+                text_ink=_bg_text_ink(background),
+            )
+            banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
+
+            return await self._assemble_and_audit(
+                run_id=run_id,
+                campaign_id=campaign_id,
+                recorder=recorder,
+                concept=concept,
+                brand=brand,
+                campaign_state=campaign_state,
+                state_variants=state_variants,
+                variant_rows=variant_rows,
+                revision_id=revision_id,
+                banner_variant_id=banner_variant_id,
+                background=background,
+                art_direction=art_direction,
+                fonts=fonts,
+                total_cost=0.0,
+                is_refine=False,
+                target_set=set(),
+                metadata_extra={"phase": "build"},
+                cta_url=self._destination_url(campaign_row),
+            )
+        except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
+            if node:
+                recorder.fail(node, {"error": type(exc).__name__, "detail": _short(str(exc), 280)})
+            return OrchestratorOutcome(
+                status="failed",
+                frontend_step=recorder.last_frontend_step or "intake_context",
+                events=recorder.events,
+                error_message=f"{type(exc).__name__}: {exc}"[:500],
+                metadata={"facade_version": "build-phase", "failed_node": node},
             )
 
     async def edit_revision(
@@ -444,7 +738,7 @@ class RunOrchestrator:
             recorder.start(node)
             concept_model = _dict_to_concept(cdict)
             html_standalone = await self._render_html(concept_model, assets, brand)
-            liquid_section = await self._render_liquid(concept_model, _liquid_variants_from_rows(variant_rows), brand, assets, campaign_state.placement)
+            liquid_section = await self._render_liquid(concept_model, _liquid_variants_from_rows(variant_rows), brand, assets, campaign_state.placement, cta_url=self._destination_url(campaign_row))
             self.revisions.update(revision_id=revision_id, data=_json_safe({"html_preview": html_standalone, "preview_storage_path": preview_path, "liquid_config": self._liquid_config(concept_model, liquid_section, campaign_state.placement), "concept": cdict}))
             recorder.succeed(node, {"html_bytes": len(html_standalone)})
 
@@ -567,17 +861,40 @@ class RunOrchestrator:
             cost_guard=self.cost_guard,
         )
 
-    def _load_catalog_context(self, campaign_id: str) -> dict[str, Any] | None:
-        if self.catalog is None:
+    def _load_catalog_context(self, campaign_id: str, campaign_row: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        snapshot_items: list[dict[str, Any]] = []
+        discount_rule: dict[str, Any] = {}
+        if self.catalog is not None:
+            try:
+                snapshot = self.catalog.get_latest_by_campaign_id(campaign_id=campaign_id)
+            except Exception:  # noqa: BLE001 — catalog grounding is best-effort
+                snapshot = None
+            if snapshot:
+                snapshot_items = [i for i in (snapshot.get("items") or []) if i.get("title")]
+                discount_rule = snapshot.get("discount_rule") or {}
+        # Campaign-level products picked in the brief take precedence and ground the
+        # concept even when no catalog snapshot exists; the snapshot fills the rest.
+        brief_items = _brief_product_items(campaign_row)
+        def _dup(item: dict[str, Any]) -> bool:
+            gid = str(item.get("shopify_product_gid") or item.get("shopify_gid") or "")
+            title = str(item.get("title") or "").lower()
+            for b in brief_items:
+                if (gid and gid == str(b.get("shopify_product_gid") or "")) or (title and title == str(b.get("title") or "").lower()):
+                    return True
+            return False
+        items = brief_items + [i for i in snapshot_items if not _dup(i)]
+        if not items and not discount_rule:
             return None
-        try:
-            snapshot = self.catalog.get_latest_by_campaign_id(campaign_id=campaign_id)
-        except Exception:  # noqa: BLE001 — catalog grounding is best-effort
-            return None
-        if not snapshot:
-            return None
-        items = [i for i in (snapshot.get("items") or []) if i.get("title")]
-        return {"items": items, "discount_rule": snapshot.get("discount_rule") or {}}
+        return {"items": items, "discount_rule": discount_rule}
+
+    @staticmethod
+    def _destination_url(campaign_row: dict[str, Any]) -> str:
+        """The CTA destination from the brief, defaulting to the storefront catalog."""
+        structured = campaign_row.get("structured_brief") or {}
+        if not isinstance(structured, dict):
+            structured = dict(getattr(structured, "model_dump", lambda: {})() or {})
+        url = str(structured.get("destination_url") or "").strip()
+        return url or "/collections/all"
 
     @staticmethod
     def _promo_text(campaign_row: dict[str, Any], catalog_context: dict[str, Any] | None) -> str:
@@ -803,10 +1120,10 @@ class RunOrchestrator:
         return await skill.run(concept, assets, brand)
 
     async def _render_liquid(
-        self, concept: Any, variants: list[StateVariant], brand: Any, assets: Any, placement: str
+        self, concept: Any, variants: list[StateVariant], brand: Any, assets: Any, placement: str, cta_url: str | None = None
     ) -> str:
         skill = _load_runtime_skill("liquid-section-build")
-        payload = await skill.run(concept, variants, brand, assets=assets, placement=placement)
+        payload = await skill.run(concept, variants, brand, assets=assets, placement=placement, cta_url=cta_url)
         if isinstance(payload, dict):
             return str(payload.get("section") or "")
         return str(payload or "")
@@ -837,7 +1154,7 @@ class RunOrchestrator:
 
     # --- persistence helpers ---------------------------------------------
 
-    def _create_revision(self, *, campaign_id: str, run_id: str, concept: Any, background: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _create_revision(self, *, campaign_id: str, run_id: str, concept: Any, background: dict[str, Any] | None = None, status: str = "draft") -> dict[str, Any]:
         latest = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id)
         revision_number = int((latest or {}).get("revision_number") or 0) + 1
         concept_dict = _concept_dict(concept)
@@ -846,12 +1163,14 @@ class RunOrchestrator:
         # Created as draft; promoted to "selected" only once the pipeline
         # finishes (see _promote_revision). A mid-pipeline failure therefore
         # leaves an inert draft instead of a half-built "selected" revision.
+        # The plan phase passes status="plan" to persist a resume point that is
+        # NOT yet a selectable revision (no image/render/audit ran).
         return self.revisions.create(
             data={
                 "campaign_id": campaign_id,
                 "generation_run_id": run_id,
                 "revision_number": revision_number,
-                "status": "draft",
+                "status": status,
                 "concept": _json_safe(concept_dict),
                 "liquid_config": {},
                 "html_preview": None,
@@ -901,6 +1220,105 @@ class RunOrchestrator:
             "bodyFont": fonts.get("body") or "Inter",
             "textColor": art_direction.get("ink") or _bg_text_ink(background),
             "layout": art_direction.get("layout") or {},
+        }
+
+    @staticmethod
+    def _plan_wireframe_spec(
+        concept: Any,
+        background: dict[str, Any] | None,
+        art_direction: dict[str, Any],
+    ) -> dict[str, Any]:
+        """The ``bannerLiveHTML`` ``live`` spec for the deterministic plan wireframe.
+
+        Same shape the canvas/review renderer expects, but ``imageUrl=""`` so the
+        frontend draws a placeholder hero box instead of a generated image.
+        """
+        copy = getattr(concept, "copy", None) or {}
+        fonts = art_direction.get("fonts") or {}
+        return {
+            "eyebrow": copy.get("eyebrow") or "",
+            "headline": copy.get("headline") or "",
+            "headlineRuns": None,
+            "sub": copy.get("subheadline") or "",
+            "cta": copy.get("cta") or "",
+            "promo": copy.get("cta") or "",
+            "imageUrl": "",
+            "bgCss": (background or {}).get("css") or "",
+            "displayFont": fonts.get("display") or "Space Grotesk",
+            "bodyFont": fonts.get("body") or "Inter",
+            "textColor": art_direction.get("ink") or _bg_text_ink(background),
+            "layout": art_direction.get("layout") or {},
+        }
+
+    def _build_campaign_plan(
+        self,
+        *,
+        concept: Any,
+        background: dict[str, Any] | None,
+        art_direction: dict[str, Any],
+        campaign_row: dict[str, Any],
+        campaign_state: StateCampaign,
+        revision_id: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        """Readable, deterministic plan block stored on the revision concept.
+
+        Surfaces WHAT will be generated (typography, color classes, product/theme
+        intent) + a wireframe spec, so the user can iterate before the costly build.
+        """
+        copy = getattr(concept, "copy", None) or {}
+        fonts = art_direction.get("fonts") or {}
+        # Product intent per personalization variant (falls back to a single default).
+        specs = self._variant_specs(campaign_row, campaign_state)
+        product_intent: list[dict[str, Any]] = []
+        for spec in specs:
+            product_intent.append(
+                {
+                    "segment_label": spec.get("label"),
+                    "audience": spec.get("audience"),
+                    "product_title": spec.get("product_title"),
+                    "product_gid": spec.get("product_gid"),
+                    "has_hero_planned": bool(spec.get("product_image_url")),
+                }
+            )
+        if not product_intent:
+            product_intent = [
+                {
+                    "segment_label": "Default audience",
+                    "audience": campaign_state.audience,
+                    "product_title": None,
+                    "product_gid": None,
+                    "has_hero_planned": False,
+                }
+            ]
+        theme = _short(getattr(concept, "image_prompt", "") or getattr(concept, "hierarchy_notes", ""), 280)
+        return {
+            "revision_id": revision_id,
+            "generation_run_id": run_id,
+            "status": "plan",
+            "theme": theme,
+            "typography": {
+                "display": fonts.get("display"),
+                "body": fonts.get("body"),
+                "rationale": fonts.get("rationale") or "",
+            },
+            "color_guidance": {
+                "background_name": (background or {}).get("name"),
+                "background_description": (background or {}).get("description"),
+                "palette_usage": dict(getattr(concept, "palette_usage", None) or {}),
+                "text_ink": _bg_text_ink(background),
+            },
+            "product_intent": product_intent,
+            "copy_preview": {
+                "eyebrow": copy.get("eyebrow"),
+                "headline": copy.get("headline"),
+                "subheadline": copy.get("subheadline"),
+                "cta": copy.get("cta"),
+            },
+            "layout_note": _short(getattr(concept, "layout", ""), 160),
+            "hierarchy_notes": _short(getattr(concept, "hierarchy_notes", ""), 400),
+            "wireframe": self._plan_wireframe_spec(concept, background, art_direction),
+            "estimated_image_cost_note": "La imagen del producto y el render final se generan al aprobar el plan.",
         }
 
     async def _style_headline(self, headline: str, brand: Any, *, ink: str | None = None) -> list[dict[str, Any]]:
@@ -1062,6 +1480,7 @@ class RunOrchestrator:
         specs = self._variant_specs(campaign_row, campaign_state)
         concept_skill = _load_runtime_skill("banner-concept-draft")
         base_copy = concept.copy or {}
+        cta_url = self._destination_url(campaign_row)
         rows: list[dict[str, Any]] = []
         for index, spec in enumerate(specs):
             # Each variant features its own product (when chosen): ground the copy on a
@@ -1109,7 +1528,7 @@ class RunOrchestrator:
                     "headline": final_headline,
                     "subheadline": copy.get("subheadline"),
                     "cta_text": copy.get("cta") or campaign_state.cta,
-                    "cta_url": "/collections/all",
+                    "cta_url": cta_url,
                     "palette": dict(concept.palette_usage or {}),
                 }
             )
@@ -1358,6 +1777,48 @@ def _variant_product_ref(spec: dict[str, Any]) -> dict[str, Any]:
         if value:
             ref[key] = value
     return ref
+
+
+def _coerce_price(value: Any) -> float | None:
+    """Best-effort numeric price from a brief product (e.g. "1,299.00" or "$12.99")."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    match = re.search(r"\d+(?:[.,]\d+)?", str(value).replace(",", ""))
+    if not match:
+        return None
+    try:
+        return float(match.group(0))
+    except ValueError:
+        return None
+
+
+def _brief_product_items(campaign_row: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Catalog-shaped items from the campaign-level ``products`` picked in the brief."""
+    if not campaign_row:
+        return []
+    structured = campaign_row.get("structured_brief") or {}
+    if not isinstance(structured, dict):
+        structured = dict(getattr(structured, "model_dump", lambda: {})() or {})
+    out: list[dict[str, Any]] = []
+    for product in structured.get("products") or []:
+        if not isinstance(product, dict):
+            continue
+        title = str(product.get("product_title") or "").strip()
+        gid = product.get("product_gid")
+        if not title and not gid:
+            continue
+        item: dict[str, Any] = {
+            "title": title or "Featured product",
+            "shopify_product_gid": gid,
+            "image_url": product.get("product_image_url"),
+        }
+        price = _coerce_price(product.get("price"))
+        if price is not None:
+            item["price"] = price
+        out.append(item)
+    return out
 
 
 def _variant_catalog_context(catalog_context: dict[str, Any] | None, spec: dict[str, Any]) -> dict[str, Any] | None:
