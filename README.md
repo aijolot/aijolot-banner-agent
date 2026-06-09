@@ -157,10 +157,31 @@ supabase/migrations/20260528190000_initial_schema.sql
 supabase/migrations/20260529000000_kg_pgvector.sql
 supabase/migrations/20260601010500_task20_performance_non_live_sources.sql
 supabase/seed.sql
+supabase/seeds/kg_documents.sql
 .env.example
 ```
 
 Expected seeded records include placement types, demo team/store, demo brand context, Shopify resource cache examples, KG/static recommendations, and optimization/performance examples.
+
+### Knowledge graph (`kg_documents`) auto-seed
+
+The KG corpus is populated automatically on every fresh environment: `supabase
+db reset` applies migrations and then loads `supabase/seeds/kg_documents.sql`
+(wired via `config.toml [db.seed].sql_paths`). That file ships the full corpus
+**with embeddings baked in**, so a new database needs **no `GOOGLE_API_KEY` and
+no Gemini calls** to come up fully seeded. The seed is authoritative and
+idempotent (`delete` + `insert`), safe to re-apply.
+
+Source of truth is still the Markdown under `docs/kg_seed/**/*.md`. Regenerate
+the SQL seed whenever the corpus changes:
+
+```bash
+python scripts/kg_seed.py        # docs/kg_seed/**/*.md -> embeddings -> kg_documents (needs GOOGLE_API_KEY)
+python scripts/kg_export_sql.py  # kg_documents -> supabase/seeds/kg_documents.sql (no Gemini calls)
+```
+
+`supabase/seeds/kg_documents.sql` is a generated artifact — edit the Markdown,
+not the SQL, then re-run the two commands above and commit the result.
 
 Stop local Supabase:
 
@@ -212,6 +233,11 @@ When changing schema:
 3. Run `supabase db reset`.
 4. Run backend tests.
 5. Update docs when behavior changes.
+
+When changing the KG corpus (`docs/kg_seed/**/*.md`): re-run `python
+scripts/kg_seed.py` then `python scripts/kg_export_sql.py` to regenerate
+`supabase/seeds/kg_documents.sql`, and commit the regenerated seed so fresh
+environments pick up the change via `supabase db reset`.
 
 Rules:
 
