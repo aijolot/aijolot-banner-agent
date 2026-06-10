@@ -24,12 +24,17 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Protocol
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from app.core.settings import MissingSettingsError, Settings
 from app.db.repositories.brand_discovery_runs import BrandDiscoveryRunRepository
 from app.db.repositories.stores import StoreRepository
-from app.schemas.brand_discovery import BrandDiscoverySnapshot, BrandDiscoveryStatus
+from app.schemas.brand_discovery import (
+    BrandDiscoverySnapshot,
+    BrandDiscoveryStatus,
+    BrandRecommendationDraft,
+)
+from app.services.brands.brand_recommendations import BrandRecommendationService
 from app.services.brands.brand_service import (
     BrandNotFound,
     BrandService,
@@ -46,6 +51,7 @@ __all__ = [
     "BrandNotFound",
     "DiscoveryPersistenceUnavailable",
     "DiscoveryRunCreateRequest",
+    "DiscoveryRunMissingSnapshot",
     "DiscoveryUnavailable",
     "StoreNotFound",
     "configured_discovery_service",
@@ -54,6 +60,10 @@ __all__ = [
 
 class DiscoveryUnavailable(RuntimeError):
     """Raised when discovery cannot run because no Shopify Admin client is configured."""
+
+
+class DiscoveryRunMissingSnapshot(RuntimeError):
+    """Raised when a recommendation is requested for a run without usable snapshot evidence."""
 
 
 class DiscoveryRunCreateRequest(BaseModel):
@@ -77,7 +87,8 @@ class BrandDiscoveryRunPayload(BaseModel):
 
     ``snapshot`` carries the full :class:`BrandDiscoverySnapshot` shape (raw
     evidence with provenance). ``recommendation`` stays an empty dict until the
-    Gemini recommendation step (Task 5) fills it.
+    Gemini recommendation step (``POST .../recommendations``) attaches a
+    :class:`BrandRecommendationDraft` dump.
     """
 
     id: str
@@ -119,6 +130,14 @@ class DiscoveryRunsRepositoryProtocol(Protocol):
 
 class StoreRepositoryProtocol(Protocol):
     def get(self, *, store_id: str, team_id: str | None = None) -> dict[str, Any] | None: ...
+
+
+class ColorRecommenderProtocol(Protocol):
+    """Subset of :class:`BrandRecommendationService` the run workflow relies on."""
+
+    async def recommend_colors(
+        self, *, brand: Any, snapshot: BrandDiscoverySnapshot
+    ) -> BrandRecommendationDraft: ...
 
 
 ClientProvider = Callable[[], ShopifyDiscoveryClient | None]
@@ -197,6 +216,68 @@ class BrandDiscoveryService:
         if brand_id is not None and str(row.get("brand_id")) != brand_id:
             return None
         return self._payload_from_row(row)
+
+    async def recommend_colors_for_run(
+        self,
+        brand_id: str,
+        run_id: str,
+        *,
+        recommender: ColorRecommenderProtocol | None = None,
+    ) -> dict[str, Any] | None:
+        """Generate + persist a Gemini-backed color recommendation draft for one run.
+
+        Returns the updated run payload, or ``None`` when the run is not visible
+        for this team/brand (routes map to 404). Raises
+        :class:`DiscoveryRunMissingSnapshot` when the run carries no usable
+        snapshot evidence (routes map to 409) and lets
+        ``BrandRecommendationUnavailable`` propagate (routes map to 503) -- the
+        draft is never faked without Gemini.
+        """
+
+        run = self.get_run(run_id, brand_id=brand_id)
+        if run is None:
+            return None
+        snapshot_payload = run.get("snapshot")
+        if not isinstance(snapshot_payload, dict) or not snapshot_payload:
+            raise DiscoveryRunMissingSnapshot(f"discovery run '{run_id}' has no snapshot")
+        brand = self.brand_service.get_brand(brand_id)  # BrandNotFound propagates -> 404
+        try:
+            snapshot = BrandDiscoverySnapshot.model_validate(snapshot_payload)
+        except ValidationError as exc:
+            raise DiscoveryRunMissingSnapshot(
+                f"discovery run '{run_id}' snapshot is not usable"
+            ) from exc
+        service = recommender if recommender is not None else BrandRecommendationService()
+        draft = await service.recommend_colors(brand=brand, snapshot=snapshot)
+        return self.attach_recommendation(run_id, draft, brand_id=brand_id)
+
+    def attach_recommendation(
+        self,
+        run_id: str,
+        recommendation: BrandRecommendationDraft | dict[str, Any],
+        *,
+        brand_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Persist a recommendation draft onto an existing run row (status unchanged)."""
+
+        team_id = self._require_persistence()
+        assert self.runs_repository is not None
+        row = self.runs_repository.get(run_id=run_id, team_id=team_id)
+        if row is None:
+            return None
+        if brand_id is not None and str(row.get("brand_id")) != brand_id:
+            return None
+        payload = (
+            recommendation.model_dump(mode="json")
+            if isinstance(recommendation, BrandRecommendationDraft)
+            else dict(recommendation)
+        )
+        updated = self.runs_repository.update_status(
+            run_id=run_id, team_id=team_id, status=str(row.get("status")), recommendation=payload
+        )
+        if updated is None:
+            return None
+        return self._payload_from_row(updated)
 
     # -- internals -------------------------------------------------------------
 

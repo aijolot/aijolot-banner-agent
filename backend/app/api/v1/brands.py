@@ -17,9 +17,11 @@ from app.services.brands.brand_discovery_service import (
     BrandDiscoveryService,
     DiscoveryPersistenceUnavailable,
     DiscoveryRunCreateRequest,
+    DiscoveryRunMissingSnapshot,
     DiscoveryUnavailable,
     StoreNotFound,
 )
+from app.services.brands.brand_recommendations import BrandRecommendationUnavailable
 from app.services.brands.markdown_importer import BrandMarkdownImportError
 from app.services.brands.palette_suggestions import PaletteSuggestionService, PaletteSuggestionUnavailable
 
@@ -120,6 +122,27 @@ def get_discovery_run(request: Request, brand_id: BrandIdPath, run_id: RunIdPath
     service = _discovery_service(request)
     try:
         run = service.get_run(str(run_id), brand_id=brand_id)
+    except (DiscoveryPersistenceUnavailable, MissingSettingsError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"discovery run '{run_id}' not found")
+    return run
+
+
+@router.post("/{brand_id}/discovery-runs/{run_id}/recommendations", response_model=BrandDiscoveryRunPayload)
+async def recommend_discovery_colors(request: Request, brand_id: BrandIdPath, run_id: RunIdPath) -> dict:
+    """Turn a run's discovery evidence into a Gemini-backed color role draft and persist it
+    (team-scoped: the run must belong to the request team and the path brand)."""
+
+    service = _discovery_service(request)
+    try:
+        run = await service.recommend_colors_for_run(brand_id, str(run_id))
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except DiscoveryRunMissingSnapshot as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except BrandRecommendationUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except (DiscoveryPersistenceUnavailable, MissingSettingsError) as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     if run is None:

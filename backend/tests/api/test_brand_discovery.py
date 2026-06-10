@@ -14,9 +14,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.agents.tools import gemini_text
 from app.main import app
 from app.schemas.brand_discovery import BrandDiscoverySnapshot
 from app.services.brands import brand_discovery_service as discovery_module
+from app.services.brands import brand_recommendations as recommendations_module
 from app.services.brands.brand_discovery_service import BrandDiscoveryService
 from app.services.brands.brand_service import BrandService
 
@@ -188,6 +190,40 @@ def _stub_collector(monkeypatch, result: BrandDiscoverySnapshot | Exception) -> 
     return calls
 
 
+def _gemini_recommendation_payload() -> dict[str, Any]:
+    base = {
+        "usage_hint": "Use it in banners.",
+        "agent_hint": "Guidance for the agent.",
+        "variants": [],
+        "rationale": "Backed by theme evidence.",
+        "evidence_refs": ["theme_settings:config/settings_data.json"],
+    }
+    return {
+        "colors": [
+            {**base, "role_key": "primary", "base_hex": "#112233", "label": "Theme Ink"},
+            {**base, "role_key": "secondary", "base_hex": "#F4EDE2", "label": "Sand"},
+            {**base, "role_key": "tertiary", "base_hex": "#FF6B5C", "label": "Coral Pop"},
+        ],
+        "summary": "Navy-led palette from theme settings.",
+    }
+
+
+def _stub_gemini(monkeypatch, result: Any) -> dict[str, Any]:
+    """Fake the Gemini call inside BrandRecommendationService (no real AI in tests)."""
+
+    captured: dict[str, Any] = {}
+
+    async def fake_generate(prompt, *, model, structured=None):
+        captured["prompt"] = prompt
+        captured["model"] = model
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(recommendations_module.gemini_text, "generate", fake_generate)
+    return captured
+
+
 # ---------------------------------------------------------------------------
 # POST /brands/{brand_id}/discovery-runs (root prototype)
 # ---------------------------------------------------------------------------
@@ -203,7 +239,7 @@ def test_root_post_creates_succeeded_run_and_persists_snapshot(harness, monkeypa
     assert body["brand_id"] == "demo_brand"
     assert body["status"] == "succeeded"
     assert body["store_id"] is None
-    assert body["recommendation"] == {}  # reserved for Task 5
+    assert body["recommendation"] == {}  # stays empty until POST .../recommendations runs
     assert body["created_at"] and body["updated_at"]
     assert body["snapshot"]["colors"][0]["hex"] == "#112233"
     assert body["snapshot"]["fonts"][0]["family"] == "Archivo Black"
@@ -338,6 +374,86 @@ def test_get_run_through_other_brand_path_is_404(harness, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# POST /brands/{brand_id}/discovery-runs/{run_id}/recommendations (Task 5)
+# ---------------------------------------------------------------------------
+
+
+def test_root_recommendations_persist_gemini_draft_and_return_updated_run(harness, monkeypatch) -> None:
+    _stub_collector(monkeypatch, _snapshot())
+    captured = _stub_gemini(monkeypatch, _gemini_recommendation_payload())
+    run_id = client.post("/brands/demo_brand/discovery-runs", json={}).json()["id"]
+
+    response = client.post(f"/brands/demo_brand/discovery-runs/{run_id}/recommendations")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == run_id
+    assert body["status"] == "succeeded"  # run status unchanged by the recommendation step
+    recommendation = body["recommendation"]
+    assert [color["role_key"] for color in recommendation["colors"]] == ["primary", "secondary", "tertiary"]
+    assert recommendation["colors"][0]["base_hex"] == "#112233"
+    assert recommendation["colors"][0]["evidence_refs"] == ["theme_settings:config/settings_data.json"]
+    assert recommendation["summary"] == "Navy-led palette from theme settings."
+    assert recommendation["fonts"] == []  # reserved for Task 6
+    assert "shpat_secret_never_leaks" not in response.text
+
+    # Draft persisted onto the run row, snapshot left untouched.
+    stored_run = harness.runs.rows[run_id]
+    assert stored_run["status"] == "succeeded"
+    assert stored_run["recommendation"]["summary"] == "Navy-led palette from theme settings."
+    assert stored_run["snapshot"]["colors"][0]["hex"] == "#112233"
+
+    # The Gemini prompt carried the snapshot evidence and the existing brand roles.
+    prompt = str(captured["prompt"])
+    assert "#112233" in prompt
+    assert "theme_settings:config/settings_data.json" in prompt
+    assert "#111111" in prompt  # existing approved color system (derived from the brand palette)
+
+
+def test_root_recommendations_unknown_run_returns_404(harness, monkeypatch) -> None:
+    _stub_gemini(monkeypatch, _gemini_recommendation_payload())
+
+    response = client.post(f"/brands/demo_brand/discovery-runs/{UNKNOWN_RUN_ID}/recommendations")
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"]
+
+
+def test_root_recommendations_cross_brand_run_returns_404(harness, monkeypatch) -> None:
+    _stub_collector(monkeypatch, _snapshot())
+    _stub_gemini(monkeypatch, _gemini_recommendation_payload())
+    run_id = client.post("/brands/demo_brand/discovery-runs", json={}).json()["id"]
+
+    response = client.post(f"/brands/other_brand/discovery-runs/{run_id}/recommendations")
+
+    assert response.status_code == 404
+    assert harness.runs.rows[run_id]["recommendation"] == {}
+
+
+def test_root_recommendations_run_without_snapshot_returns_409(harness, monkeypatch) -> None:
+    _stub_gemini(monkeypatch, _gemini_recommendation_payload())
+    row = harness.runs.insert(team_id="team-1", brand_id="demo_brand", status="running")
+
+    response = client.post(f"/brands/demo_brand/discovery-runs/{row['id']}/recommendations")
+
+    assert response.status_code == 409
+    assert "has no snapshot" in response.json()["detail"]
+    assert harness.runs.rows[row["id"]]["recommendation"] == {}
+
+
+def test_root_recommendations_gemini_unavailable_returns_503_and_persists_nothing(harness, monkeypatch) -> None:
+    _stub_collector(monkeypatch, _snapshot())
+    _stub_gemini(monkeypatch, gemini_text.GeminiUnavailable("Gemini is unavailable: set GOOGLE_API_KEY"))
+    run_id = client.post("/brands/demo_brand/discovery-runs", json={}).json()["id"]
+
+    response = client.post(f"/brands/demo_brand/discovery-runs/{run_id}/recommendations")
+
+    assert response.status_code == 503
+    assert "Gemini is unavailable" in response.json()["detail"]
+    assert harness.runs.rows[run_id]["recommendation"] == {}  # no fake/deterministic fallback draft
+
+
+# ---------------------------------------------------------------------------
 # /api/v1 canonical routes (request-scoped team context)
 # ---------------------------------------------------------------------------
 
@@ -345,6 +461,7 @@ def test_get_run_through_other_brand_path_is_404(harness, monkeypatch) -> None:
 def test_v1_discovery_routes_fail_closed_without_context(harness) -> None:
     assert client.post("/api/v1/brands/demo_brand/discovery-runs", json={}).status_code == 401
     assert client.get(f"/api/v1/brands/demo_brand/discovery-runs/{UNKNOWN_RUN_ID}").status_code == 401
+    assert client.post(f"/api/v1/brands/demo_brand/discovery-runs/{UNKNOWN_RUN_ID}/recommendations").status_code == 401
     assert harness.requested_team_ids == []  # no service is even built without auth
 
 
@@ -381,9 +498,46 @@ def test_v1_unknown_brand_returns_404(harness, monkeypatch) -> None:
     assert response.status_code == 404
 
 
+def test_v1_recommendations_use_request_team_scope(harness, monkeypatch) -> None:
+    _stub_collector(monkeypatch, _snapshot())
+    _stub_gemini(monkeypatch, _gemini_recommendation_payload())
+    run_id = client.post("/api/v1/brands/demo_brand/discovery-runs", headers=AUTH_TEAM_1, json={}).json()["id"]
+
+    recommended = client.post(
+        f"/api/v1/brands/demo_brand/discovery-runs/{run_id}/recommendations", headers=AUTH_TEAM_1
+    )
+
+    assert recommended.status_code == 200
+    body = recommended.json()
+    assert [color["role_key"] for color in body["recommendation"]["colors"]] == ["primary", "secondary", "tertiary"]
+    assert harness.requested_team_ids == ["team-1", "team-1"]
+    assert harness.runs.rows[run_id]["recommendation"]["summary"] == "Navy-led palette from theme settings."
+
+    # The persisted draft is also visible on subsequent reads of the run.
+    fetched = client.get(f"/api/v1/brands/demo_brand/discovery-runs/{run_id}", headers=AUTH_TEAM_1)
+    assert fetched.status_code == 200
+    assert fetched.json()["recommendation"]["colors"][0]["base_hex"] == "#112233"
+
+
+def test_v1_recommendations_from_other_team_is_404(harness, monkeypatch) -> None:
+    _stub_collector(monkeypatch, _snapshot())
+    _stub_gemini(monkeypatch, _gemini_recommendation_payload())
+    run_id = client.post("/api/v1/brands/demo_brand/discovery-runs", headers=AUTH_TEAM_1, json={}).json()["id"]
+
+    cross_team = client.post(
+        f"/api/v1/brands/demo_brand/discovery-runs/{run_id}/recommendations", headers=AUTH_TEAM_2
+    )
+
+    assert cross_team.status_code == 404
+    assert "team-1" not in cross_team.text
+    assert harness.runs.rows[run_id]["recommendation"] == {}
+
+
 def test_discovery_routes_are_present_in_openapi_contract() -> None:
     paths = client.get("/openapi.json").json()["paths"]
     assert "/api/v1/brands/{brand_id}/discovery-runs" in paths
     assert "/api/v1/brands/{brand_id}/discovery-runs/{run_id}" in paths
+    assert "/api/v1/brands/{brand_id}/discovery-runs/{run_id}/recommendations" in paths
     assert "/brands/{brand_id}/discovery-runs" in paths
     assert "/brands/{brand_id}/discovery-runs/{run_id}" in paths
+    assert "/brands/{brand_id}/discovery-runs/{run_id}/recommendations" in paths

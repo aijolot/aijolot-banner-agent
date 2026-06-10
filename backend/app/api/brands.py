@@ -1,10 +1,11 @@
 """Brand endpoints (GH-26 / GH-17).
 
-    GET  /brands                                   -> list of brand summaries
-    GET  /brands/{id}                              -> full BrandContext
-    PUT  /brands/{id}                              -> validate + persist, returns the saved BrandContext
-    POST /brands/{id}/discovery-runs               -> run Shopify brand discovery synchronously
-    GET  /brands/{id}/discovery-runs/{run_id}      -> one persisted discovery run
+    GET  /brands                                                 -> list of brand summaries
+    GET  /brands/{id}                                            -> full BrandContext
+    PUT  /brands/{id}                                            -> validate + persist, returns the saved BrandContext
+    POST /brands/{id}/discovery-runs                             -> run Shopify brand discovery synchronously
+    GET  /brands/{id}/discovery-runs/{run_id}                    -> one persisted discovery run
+    POST /brands/{id}/discovery-runs/{run_id}/recommendations    -> Gemini color role draft for a run
 """
 
 from __future__ import annotations
@@ -24,9 +25,11 @@ from app.services.brands.brand_discovery_service import (
     BrandDiscoveryRunPayload,
     DiscoveryPersistenceUnavailable,
     DiscoveryRunCreateRequest,
+    DiscoveryRunMissingSnapshot,
     DiscoveryUnavailable,
     StoreNotFound,
 )
+from app.services.brands.brand_recommendations import BrandRecommendationUnavailable
 from app.services.brands.markdown_importer import BrandMarkdownImportError
 from app.services.brands.palette_suggestions import PaletteSuggestionService, PaletteSuggestionUnavailable
 
@@ -106,6 +109,26 @@ def get_discovery_run(brand_id: BrandIdPath, run_id: RunIdPath) -> dict:
     try:
         service = brand_discovery_service.configured_discovery_service()
         run = service.get_run(str(run_id), brand_id=brand_id)
+    except (DiscoveryPersistenceUnavailable, MissingSettingsError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"discovery run '{run_id}' not found")
+    return run
+
+
+@router.post("/{brand_id}/discovery-runs/{run_id}/recommendations", response_model=BrandDiscoveryRunPayload)
+async def recommend_discovery_colors(brand_id: BrandIdPath, run_id: RunIdPath) -> dict:
+    """Turn a run's discovery evidence into a Gemini-backed color role draft and persist it."""
+
+    try:
+        service = brand_discovery_service.configured_discovery_service()
+        run = await service.recommend_colors_for_run(brand_id, str(run_id))
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except DiscoveryRunMissingSnapshot as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except BrandRecommendationUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
     except (DiscoveryPersistenceUnavailable, MissingSettingsError) as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     if run is None:
