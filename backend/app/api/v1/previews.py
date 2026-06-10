@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from typing import Annotated, Any, Callable
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from app.core.dependencies import get_supabase_client_factory
@@ -37,30 +37,36 @@ def _read_with_retry(reader: Callable[[], Any]) -> Any:
     raise last_exc
 
 
-def _rls_client(factory: SupabaseClientFactory, authorization: str | None) -> Any:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="Bearer token required for campaign preview access")
-    token = authorization.split(" ", 1)[1].strip()
-    if not token:
-        raise HTTPException(status_code=401, detail="Bearer token required for campaign preview access")
-    client = factory.anon_client()
-    postgrest = getattr(client, "postgrest", None)
-    auth = getattr(postgrest, "auth", None)
-    if callable(auth):
-        auth(token)
-        return client
-    raise HTTPException(status_code=503, detail="RLS-scoped Supabase client unavailable")
+def _scoped_client(factory: SupabaseClientFactory, request: Any, campaign_id: str) -> Any:
+    """Team-scoped access like the rest of /api/v1: validate the campaign belongs
+    to the caller's team, then read with the service-role client.
+
+    (The previous implementation demanded a real Supabase JWT for an RLS anon
+    client — with the demo auth headers it ALWAYS failed with 503. Real JWT/RLS
+    returns with the auth project.)
+    """
+    from app.core.auth import require_user_context
+    from app.db.repositories.campaigns import CampaignRepository
+
+    context = require_user_context(request)
+    client = factory.service_role_client()
+    campaign = _read_with_retry(
+        lambda: CampaignRepository(client).get(campaign_id=campaign_id, team_id=context.team_id)
+    )
+    if not campaign:
+        raise HTTPException(status_code=404, detail="campaign not found")
+    return client
 
 
 @router.get("/{campaign_id}/preview", response_class=HTMLResponse)
 def get_campaign_preview(
     campaign_id: str,
+    request: Request,
     factory: Annotated[SupabaseClientFactory, Depends(get_supabase_client_factory)],
-    authorization: Annotated[str | None, Header()] = None,
 ) -> HTMLResponse:
-    """Return latest rendered standalone HTML preview for a campaign via RLS-scoped client."""
+    """Latest rendered standalone HTML preview, scoped to the caller's team."""
     try:
-        client = _rls_client(factory, authorization)
+        client = _scoped_client(factory, request, campaign_id)
         revision = _read_with_retry(
             lambda: CampaignRevisionRepository(client).get_latest_by_campaign_id(campaign_id=campaign_id)
         )
@@ -82,12 +88,12 @@ def get_campaign_preview(
 @router.get("/{campaign_id}/audit-report")
 def get_campaign_audit_report(
     campaign_id: str,
+    request: Request,
     factory: Annotated[SupabaseClientFactory, Depends(get_supabase_client_factory)],
-    authorization: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
-    """Return latest deterministic audit report for a campaign via RLS-scoped client."""
+    """Latest deterministic audit report, scoped to the caller's team."""
     try:
-        client = _rls_client(factory, authorization)
+        client = _scoped_client(factory, request, campaign_id)
         report = _read_with_retry(
             lambda: AuditReportRepository(client).get_latest_by_campaign_id(campaign_id=campaign_id)
         )
