@@ -685,6 +685,22 @@ class RunOrchestrator:
                 prev_art=prev_art if not needs_redraft else {},
             )
 
+            # El placement deja de ser un paso manual previo: el agente propone
+            # el SET de piezas (dónde, cuántas, formato) como consecuencia del
+            # brief. Patch-only iterates conservan la propuesta anterior.
+            prev_plan_block = dict(prev_concept.get("plan") or {})
+            if not needs_redraft and prev_plan_block.get("placement_plan"):
+                placement_plan = dict(prev_plan_block["placement_plan"])
+            else:
+                placement_skill = _load_runtime_skill("placement-plan-recommend")
+                placement_plan = (
+                    await placement_skill.recommend(
+                        campaign_row, brand,
+                        creative_mode=str(mode.get("creative_mode") or "composite"),
+                        settings=self.settings, cost_guard=self.cost_guard,
+                    )
+                ).model_dump()
+
             # Directed ink ops (contrast complaints / explicit text colors).
             ink_override: str | None = None
             ink_sections: dict[str, str] = dict(prev_art.get("ink_sections") or {})
@@ -713,6 +729,7 @@ class RunOrchestrator:
                     "decision_trace": decision_trace,
                     "creative_mode": mode.get("creative_mode"),
                     "include_humans": mode.get("include_humans"),
+                    "placement_pieces": len(placement_plan.get("pieces") or []),
                     "phase": "plan",
                 },
             )
@@ -756,6 +773,7 @@ class RunOrchestrator:
                 run_id=run_id,
             )
             concept_dict["plan"]["decision_trace"] = decision_trace
+            concept_dict["plan"]["placement_plan"] = placement_plan
             concept_dict["plan"]["creative_mode"] = mode.get("creative_mode")
             concept_dict["plan"]["include_humans"] = bool(mode.get("include_humans"))
             concept_dict["plan"]["mode_rationale"] = str(mode.get("mode_rationale") or "")

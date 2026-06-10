@@ -211,6 +211,9 @@ class CampaignPlanResponse(BaseModel):
     hierarchy_notes: str = ""
     wireframe: dict[str, Any] = Field(default_factory=dict)
     decision_trace: dict[str, Any] = Field(default_factory=dict)
+    # Piezas propuestas por el agente (placement-plan-recommend): dónde, cuántas
+    # y en qué formato — la pieza priority=1 es la que genera el build.
+    placement_plan: dict[str, Any] = Field(default_factory=dict)
     creative_mode: str = "composite"
     include_humans: bool = False
     mode_rationale: str = ""

@@ -88,8 +88,8 @@ function App() {
     try {
       const c = await CampaignApi.create({ title: "Nueva campaña", raw_brief: "" });
       setCampaign(c);
-      setApiNotice({ tone: "green", text: "Campaña creada: " + c.id });
-      setStage("placement");
+      setApiNotice({ tone: "green", text: "Campaña creada: " + c.id + " — describe tu idea; el agente propondrá ubicaciones y piezas en el plan." });
+      setStage("brief");
     } catch (e) {
       // Producción: sin backend NO hay campaña — error visible, sin modo prototipo.
       setCampaign(null);

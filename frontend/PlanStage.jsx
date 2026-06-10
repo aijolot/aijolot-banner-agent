@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, SEGMENTS, PlanApi, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign, DecisionTraceCard */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, SEGMENTS, PlanApi, GenerationApi, CatalogApi, PlacementApi, CampaignApi, ArtDirectionApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign, DecisionTraceCard */
 // Aijolot Banner Agent — Stage 3: iterative CAMPAIGN PLAN gate.
 // Shows a cheap, readable plan (typography, color classes, product/theme intent)
 // plus a DETERMINISTIC wireframe (no generated image) so the user can iterate the
@@ -106,6 +106,23 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
   }, []);
 
   const [modeBusy, setModeBusy] = React.useState(false);
+  const [pieceBusy, setPieceBusy] = React.useState(null);
+  const [appliedPiece, setAppliedPiece] = React.useState(null);
+  // El agente propuso el set de piezas; aplicar una la convierte en la
+  // ubicación de la campaña (y actualiza el brief para consistencia).
+  async function applyPiece(piece) {
+    if (pieceBusy) return;
+    setPieceBusy(piece.placement_key);
+    const r = await PlacementApi.applySuggested(campaign, piece);
+    if (r.fallback) {
+      onNotice && onNotice({ tone: "red", text: r.reason || "No se pudo aplicar la ubicación." });
+    } else {
+      setAppliedPiece(piece.placement_key);
+      onNotice && onNotice({ tone: "green", text: `Ubicación aplicada: ${piece.label}.` });
+      try { await CampaignApi.patch(campaign.id, { placement: piece.label }); } catch (e) { /* best-effort */ }
+    }
+    setPieceBusy(null);
+  }
   // C0 — user override: persist mode_source='user' then re-plan so the wireframe
   // and downstream build respect the chosen mode.
   async function overrideMode(creative_mode, include_humans) {
@@ -209,6 +226,49 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
               </div>
               <div style={{ fontFamily: "Inter", fontSize: 11, color: "#94A3B8" }}>El recuadro del producto es un marcador; la imagen real se genera al aprobar.</div>
             </GlassCard>
+
+            {plan.placement_plan && (plan.placement_plan.pieces || []).length ? (
+              <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>Piezas y ubicaciones propuestas</span>
+                  <Badge tone="cyan" icon="layout-grid">{plan.placement_plan.pieces.length} pieza{plan.placement_plan.pieces.length === 1 ? "" : "s"}</Badge>
+                </div>
+                {plan.placement_plan.rationale ? (
+                  <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B" }}>{plan.placement_plan.rationale}</div>
+                ) : null}
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {plan.placement_plan.pieces.map((piece) => (
+                    <div key={piece.placement_key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: 11,
+                      background: piece.priority === 1 ? "rgba(34,211,238,0.07)" : "rgba(248,250,252,0.8)",
+                      border: `1px solid ${piece.priority === 1 ? "rgba(8,145,178,0.3)" : "#EEF2F6"}` }}>
+                      <span style={{ width: 22, height: 22, borderRadius: 7, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                        background: piece.priority === 1 ? "#0891B2" : "#E2E8F0", color: piece.priority === 1 ? "#fff" : "#64748B",
+                        fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 11.5 }}>{piece.priority}</span>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
+                          <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12.5, color: "#002B57" }}>{piece.label}</span>
+                          {piece.format ? <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>{piece.format}</span> : null}
+                          <Badge tone="slate">{piece.creative_mode === "full_picture" ? "Escena completa" : piece.creative_mode === "video" ? "Video" : "Producto recortado"}</Badge>
+                          {piece.priority === 1 ? <Badge tone="cyan" icon="sparkles">Se genera al aprobar</Badge> : null}
+                        </div>
+                        {piece.rationale ? <div style={{ fontFamily: "Inter", fontSize: 11, color: "#64748B", marginTop: 2 }}>{piece.rationale}</div> : null}
+                      </div>
+                      {appliedPiece === piece.placement_key ? (
+                        <Badge tone="green" icon="check">Aplicada</Badge>
+                      ) : (
+                        <Button variant={piece.priority === 1 ? "primary" : "ghost"} icon={pieceBusy === piece.placement_key ? "loader" : "map-pin"}
+                          onClick={() => applyPiece(piece)} disabled={!!pieceBusy}>
+                          Usar ubicación
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>
+                  La pieza 1 es la que se genera al aprobar este plan; las demás quedan como backlog de la campaña.
+                </div>
+              </GlassCard>
+            ) : null}
 
             <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>

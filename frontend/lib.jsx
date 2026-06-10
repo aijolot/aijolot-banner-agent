@@ -366,6 +366,26 @@ const PlacementApi = {
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), payload);
     return { ok: true, fallback: false, data };
   },
+  // Aplica una pieza propuesta por el agente (placement-plan-recommend) como
+  // ubicación de la campaña. Si el target exige recurso (colección/producto),
+  // el backend lo dirá — el error se muestra, no se inventa un handle.
+  async applySuggested(campaign, piece) {
+    if (!isApiCampaign(campaign)) return fallbackResult("La ubicación requiere una campaña de backend (UUID).", null);
+    const payload = {
+      store_id: window.AIJOLOT_STORE_ID || AIJOLOT_DEMO_IDS.store,
+      placement_type_key: piece.placement_key,
+      mode: "existing_section",
+      target_type: piece.target || "home",
+      slot: piece.slot || null,
+    };
+    try {
+      await this.validate(payload);
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), payload);
+      return { ok: true, fallback: false, data };
+    } catch (e) {
+      return fallbackResult("No se pudo aplicar la ubicación sugerida (" + errorText(e) + ").", null);
+    }
+  },
 };
 
 const CatalogApi = {

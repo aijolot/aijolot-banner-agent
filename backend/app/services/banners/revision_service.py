@@ -322,6 +322,7 @@ class RevisionService:
             hierarchy_notes=str(plan.get("hierarchy_notes") or ""),
             wireframe=dict(plan.get("wireframe") or {}),
             decision_trace=dict(plan.get("decision_trace") or {}),
+            placement_plan=dict(plan.get("placement_plan") or {}),
             creative_mode=str(plan.get("creative_mode") or "composite"),
             include_humans=bool(plan.get("include_humans")),
             mode_rationale=str(plan.get("mode_rationale") or ""),
