@@ -380,6 +380,58 @@ def test_iterate_redrafts_plan_without_image_cost() -> None:
     assert revisions.rows[rev2]["revision_number"] == revisions.rows[rev1]["revision_number"] + 1
 
 
+def test_plan_exposes_image_plan_with_prompt_and_scene() -> None:
+    """The plan must show the EXACT prompt the build will use (user-correctable)."""
+    service, _campaigns, revisions, *_ = _build_service()
+    _run, rev = service.start_plan_run(CAMPAIGN_ID)
+
+    image_plan = revisions.rows[rev]["concept"]["plan"]["image_plan"]
+    assert image_plan["scene"]
+    assert image_plan["prompt"] and "16:9" in image_plan["prompt"]
+    assert image_plan["source"] == "agent"
+    assert image_plan["video_requested"] is False
+    assert isinstance(image_plan["video_enabled"], bool)
+
+
+def test_image_scene_correction_is_directed_and_used_by_build() -> None:
+    """User corrects the image scene in the plan → only the image prompt changes
+    (copy/background intact) and the BUILD generates with the corrected scene."""
+    service, _campaigns, revisions, *_ = _build_service()
+    _run1, rev1 = service.start_plan_run(CAMPAIGN_ID)
+    before = revisions.rows[rev1]["concept"]
+
+    scene = "estadio de futbol lleno, ambiente de mundial, confeti verde y dorado"
+    run2, rev2 = service.start_plan_run(CAMPAIGN_ID, prompt=scene, targets=["image"])
+    assert run2.status == "succeeded"
+    after = revisions.rows[rev2]["concept"]
+
+    # Directed: scene overridden, everything else untouched.
+    assert after["art_direction"]["image_prompt_override"] == scene
+    image_plan = after["plan"]["image_plan"]
+    assert image_plan["scene"] == scene
+    assert image_plan["source"] == "user"
+    assert scene in image_plan["prompt"]
+    assert after["copy"]["headline"] == before["copy"]["headline"]
+    assert (after.get("background") or {}).get("css") == (before.get("background") or {}).get("css")
+    assert run2.metadata["interpreted_ops"] == ["set_image_prompt"]
+
+    # Build uses the override as the prompt seed.
+    captured: dict = {}
+    orchestrator = service.orchestrator
+    real_generate = orchestrator._generate_image
+
+    async def _spy(**kwargs):
+        result = await real_generate(**kwargs)
+        captured.update(result[1])
+        return result
+
+    orchestrator._generate_image = _spy  # type: ignore[attr-defined]
+    run3, _rev3 = service.start_build_run(CAMPAIGN_ID, plan_revision=revisions.rows[rev2])
+    assert run3.status == "succeeded"
+    assert captured.get("prompt_source") == "user"
+    assert scene in str(captured.get("refined_prompt") or "")
+
+
 def test_orchestrator_failure_is_recorded_honestly() -> None:
     service, *_ = _build_service()
 

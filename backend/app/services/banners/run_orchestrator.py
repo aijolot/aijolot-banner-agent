@@ -717,6 +717,21 @@ class RunOrchestrator:
                 else:
                     ink_override = value
 
+            # Directed image-scene op: the user corrected WHAT the image should
+            # show. The override is the new scene seed; it survives patch-only
+            # iterations and is dropped on a full concept redraft (new concept →
+            # new brief-grounded scene).
+            image_op = next((o for o in (rplan.ops if rplan else []) if o.op == "set_image_prompt"), None)
+            if image_op is not None and (image_op.instruction or prompt or "").strip():
+                image_prompt_override: str | None = _short((image_op.instruction or prompt or "").strip(), 600)
+                image_prompt_source = "user"
+            elif not needs_redraft and prev_art.get("image_prompt_override"):
+                image_prompt_override = str(prev_art["image_prompt_override"])
+                image_prompt_source = str(prev_art.get("image_prompt_source") or "user")
+            else:
+                image_prompt_override = None
+                image_prompt_source = "agent"
+
             decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand, lang=lang).model_dump()
             recorder.succeed(
                 node,
@@ -759,6 +774,8 @@ class RunOrchestrator:
                 "layout": art_direction.get("layout") or {},
                 "ink": ink,
                 **({"ink_sections": ink_sections} if ink_sections else {}),
+                **({"image_prompt_override": image_prompt_override, "image_prompt_source": image_prompt_source}
+                   if image_prompt_override else {}),
                 **mode,
             }
             concept_dict["art_direction"] = final_art_direction
@@ -784,6 +801,24 @@ class RunOrchestrator:
             concept_dict["plan"]["include_humans"] = bool(mode.get("include_humans"))
             concept_dict["plan"]["mode_rationale"] = str(mode.get("mode_rationale") or "")
             concept_dict["plan"]["mode_source"] = str(mode.get("mode_source") or "agent")
+            # image_plan — the EXACT prompt the build will send to the image model,
+            # plus the editable scene seed. Shown in the plan so the user corrects
+            # the image BEFORE paying for the build (op: set_image_prompt).
+            scene_seed = image_prompt_override or str(getattr(concept, "image_prompt", "") or "")
+            planned_image_prompt = await _load_runtime_skill("image-prompt-refine").run(
+                {"image_prompt": scene_seed, "layout": getattr(concept, "layout", "")},
+                brand_context=brand,
+                art_direction=final_art_direction,
+            )
+            wants_video = str(mode.get("creative_mode") or "") == "video"
+            concept_dict["plan"]["image_plan"] = {
+                "scene": scene_seed,
+                "prompt": planned_image_prompt,
+                "source": image_prompt_source if image_prompt_override else "agent",
+                "creative_mode": str(mode.get("creative_mode") or "composite"),
+                "video_requested": wants_video,
+                "video_enabled": bool(getattr(self.settings, "video_generation_enabled", False)),
+            }
             self.revisions.update(revision_id=revision_id, data=_json_safe({"concept": concept_dict}))
 
             return OrchestratorOutcome(
@@ -1215,7 +1250,13 @@ class RunOrchestrator:
         from app.services.banners.image_gen import generate_image
 
         prompt_skill = _load_runtime_skill("image-prompt-refine")
-        refined_prompt = await prompt_skill.run(concept, brand_context=brand, art_direction=art_direction)
+        # A user-corrected scene (plan's image_plan / op set_image_prompt) replaces
+        # the concept's scene seed verbatim — the plan is the contract.
+        override = str((art_direction or {}).get("image_prompt_override") or "").strip()
+        prompt_input: Any = (
+            {"image_prompt": override, "layout": getattr(concept, "layout", "")} if override else concept
+        )
+        refined_prompt = await prompt_skill.run(prompt_input, brand_context=brand, art_direction=art_direction)
         image_bytes, meta, cost = await generate_image(
             refined_prompt,
             settings=self.settings,
@@ -1224,6 +1265,7 @@ class RunOrchestrator:
             concept=concept,
         )
         meta["refined_prompt"] = refined_prompt
+        meta["prompt_source"] = "user" if override else "agent"
         return image_bytes, meta, cost
 
     async def _compose_variant_hero(

@@ -26,6 +26,7 @@ _TARGET_OPS: dict[str, str] = {
     "background": "change_background",
     "copy": "edit_copy",
     "layout": "adjust_layout",
+    "image": "set_image_prompt",
     "concept": "redraft_concept",
 }
 
@@ -99,6 +100,7 @@ def _concept_summary(concept: dict[str, Any] | None) -> str:
         f"Layout: {concept.get('layout', '')}",
         f"Background: {background.get('name', '')} — {background.get('description', '')}"
         + (" (contains decorative SVG shapes)" if has_svg else ""),
+        f"Planned image scene: {art.get('image_prompt_override') or concept.get('image_prompt', '')}",
     ]
     return "\n".join(lines)
 
@@ -118,10 +120,14 @@ def _build_prompt(prompt: str, concept: dict[str, Any] | None) -> str:
         "- change_background: regenerate the background treatment (colors/gradient/mood). instruction=the user's direction.\n"
         "- edit_copy: rewrite copy text (headline/sub/eyebrow/CTA wording, tone, urgency). instruction required.\n"
         "- adjust_layout: composition/structure/position changes. instruction required.\n"
+        "- set_image_prompt: change WHAT the generated IMAGE/PHOTO/SCENE shows (subjects, theme, setting — e.g. "
+        "'la imagen no refleja el mundial', 'quiero un estadio de futbol', 'la foto no tiene nada que ver con el brief'). "
+        "instruction = the desired scene, as concrete as possible.\n"
         "- redraft_concept: ONLY when the user wants a fundamentally different creative direction.\n\n"
         "Rules: choose the FEWEST ops that fully satisfy the request — do NOT add ops the user did not ask for. "
         "A text-contrast complaint is set_ink, NOT change_background. A shape/SVG swap is change_decor, NOT "
-        "change_background. Keep instructions in the user's language. Return JSON matching the schema with "
+        "change_background. A complaint about the photo/scene content is set_image_prompt, NOT change_background "
+        "and NOT redraft_concept. Keep instructions in the user's language. Return JSON matching the schema with "
         "targets=[] (it is derived server-side), ops, and a one-line rationale."
     )
 

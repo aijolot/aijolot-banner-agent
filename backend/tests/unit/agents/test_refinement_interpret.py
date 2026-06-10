@@ -58,6 +58,22 @@ def test_explicit_targets_are_authoritative_and_skip_llm():
     assert plan.op_names() == ["change_background"]
 
 
+def test_image_scene_complaint_routes_to_set_image_prompt():
+    plan = _interpret("la imagen no refleja la campaña, quiero una escena del estadio")
+    assert "set_image_prompt" in plan.op_names()
+    assert "change_background" not in plan.op_names()
+    op = next(o for o in plan.ops if o.op == "set_image_prompt")
+    assert "estadio" in (op.instruction or "")
+
+
+def test_explicit_image_target_maps_to_set_image_prompt():
+    scene = "estadio de futbol lleno con confeti"
+    plan = _interpret(scene, targets=["image"])
+    assert plan.source == "explicit"
+    assert plan.op_names() == ["set_image_prompt"]
+    assert plan.ops[0].instruction == scene
+
+
 def test_hex_color_in_prompt_lands_on_set_ink_value():
     plan = _interpret("el texto no contrasta, ponlo en #FFEE00")
     op = next(o for o in plan.ops if o.op == "set_ink")

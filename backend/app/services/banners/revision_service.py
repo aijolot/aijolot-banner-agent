@@ -271,8 +271,9 @@ class RevisionService:
             from app.workflows.banner_creation import _load_runtime_skill
 
             normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
-            # Plan iteration must NEVER touch image generation — strip it from targets.
-            targets = [t for t in normalize_targets(request.target_nodes, prompt) if t != "image"] or None
+            # "image" here means EDIT THE PLANNED IMAGE PROMPT (op set_image_prompt) —
+            # the plan phase structurally never runs image generation, so no cost risk.
+            targets = normalize_targets(request.target_nodes, prompt) or None
         run, _revision_id = self.generation_runs.start_plan_run(
             campaign_id, prompt=prompt, targets=targets, started_by=request.requested_by
         )
@@ -327,6 +328,7 @@ class RevisionService:
             include_humans=bool(plan.get("include_humans")),
             mode_rationale=str(plan.get("mode_rationale") or ""),
             mode_source=str(plan.get("mode_source") or "agent"),
+            image_plan=dict(plan.get("image_plan") or {}),
             estimated_image_cost_note=str(plan.get("estimated_image_cost_note") or ""),
         )
 

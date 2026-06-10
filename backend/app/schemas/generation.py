@@ -218,6 +218,9 @@ class CampaignPlanResponse(BaseModel):
     include_humans: bool = False
     mode_rationale: str = ""
     mode_source: str = "agent"
+    # The EXACT image prompt the build will use + the user-correctable scene seed
+    # (op set_image_prompt) and honest video availability.
+    image_plan: dict[str, Any] = Field(default_factory=dict)
     estimated_image_cost_note: str = ""
 
 

@@ -35,6 +35,7 @@ const OP_LABELS = {
   change_decor: "Elemento decorativo",
   edit_copy: "Copy",
   adjust_layout: "Layout",
+  set_image_prompt: "Escena de la imagen",
   redraft_concept: "Concepto",
 };
 
@@ -48,6 +49,7 @@ const PLAN_SECTIONS = {
   wireframe: (p) => p.wireframe,
   placement: (p) => p.placement_plan,
   mode: (p) => [p.creative_mode, p.include_humans],
+  image: (p) => p.image_plan && [p.image_plan.scene, p.image_plan.prompt],
 };
 
 function diffPlanSections(prev, next) {
@@ -79,6 +81,7 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
   const [iterating, setIterating] = useStateP(false);
   const [agentOps, setAgentOps] = useStateP(null); // ops que el agente entendió del feedback (run.metadata)
   const [changedKeys, setChangedKeys] = useStateP({}); // secciones ajustadas en la última iteración
+  const [imageScene, setImageScene] = useStateP(""); // escena editable del prompt de imagen (image_plan.scene)
   const [approveBusy, setApproveBusy] = useStateP(false);
   const aliveRef = useRefP(true);
   const planRef = useRefP(null);
@@ -128,6 +131,7 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
       const labels = Object.keys(changed).map((k) => ({
         typography: t("Tipografía"), palette: t("Paleta y color"), copy: t("Copy propuesto"), theme: t("Producto y tema"),
         layout: t("Layout"), wireframe: t("Wireframe (baja fidelidad)"), placement: t("Piezas y ubicaciones propuestas"), mode: t("Modo creativo"),
+        image: t("Imagen planeada"),
       })[k]).filter(Boolean);
       onNotice && onNotice({ tone: "green", text: labels.length
         ? t("El agente ajustó") + ": " + labels.join(" · ") + ". " + t("El resto del plan se mantuvo.")
@@ -137,6 +141,7 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
     }
     planRef.current = p.data;
     setPlan(p.data);
+    setImageScene(((p.data || {}).image_plan || {}).scene || "");
     setStatus("ready");
   }
 
@@ -195,6 +200,26 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
     const r = await PlanApi.iterate(campaign, "Aplica el modo creativo seleccionado", ["concept"]);
     if (!r.fallback && r.data) await pollAndLoad(r.data, { preserve: true });
     setModeBusy(false);
+  }
+
+  // El usuario corrige la ESCENA de la imagen (op dirigida set_image_prompt):
+  // target explícito "image" → el agente solo cambia el prompt de imagen, sin
+  // re-draftar copy/fondo/layout.
+  async function applyImageScene() {
+    const scene = imageScene.trim();
+    const current = ((plan || {}).image_plan || {}).scene || "";
+    if (!scene || scene === current.trim() || iterating) return;
+    setIterating(true);
+    setAgentOps(["set_image_prompt"]);
+    setChangedKeys({});
+    const r = await PlanApi.iterate(campaign, scene, ["image"]);
+    if (r.fallback || !r.data) {
+      setIterating(false);
+      onNotice && onNotice({ tone: "amber", text: r.reason || t("No se pudo ajustar el plan") + "." });
+      return;
+    }
+    await pollAndLoad(r.data, { preserve: true });
+    setIterating(false);
   }
 
   async function iterate() {
@@ -302,6 +327,56 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
               </div>
               <div style={{ fontFamily: "Inter", fontSize: 11, color: "#94A3B8" }}>El recuadro del producto es un marcador; la imagen real se genera al aprobar.</div>
             </GlassCard>
+
+            {plan.image_plan ? (
+              <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10,
+                ...(changedKeys.image ? { border: "1px solid rgba(8,145,178,0.45)", boxShadow: "0 0 0 3px rgba(34,211,238,0.12)" } : {}) }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Icon name="image" size={15} color="#0891B2" />
+                  <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>{t("Imagen planeada")}</span>
+                  <Badge tone={plan.image_plan.source === "user" ? "amber" : "cyan"} icon={plan.image_plan.source === "user" ? "user" : "sparkles"}>
+                    {plan.image_plan.source === "user" ? t("Definido por ti") : t("Propuesto por el agente")}
+                  </Badge>
+                  {changedKeys.image ? <Badge tone="cyan" icon="sparkles">{t("Ajustado")}</Badge> : null}
+                </div>
+                {plan.image_plan.video_requested && !plan.image_plan.video_enabled ? (
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "9px 11px", borderRadius: 10,
+                    background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.35)",
+                    fontFamily: "Inter", fontSize: 11.5, color: "#92400E", lineHeight: 1.45 }}>
+                    <Icon name="circle-alert" size={14} color="#D97706" />
+                    <span>{t("Pediste video, pero la generación de video está deshabilitada en este entorno (VIDEO_GENERATION_ENABLED) — se generará una imagen estática como poster.")}</span>
+                  </div>
+                ) : null}
+                <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B" }}>
+                  {t("Esta es la escena con la que el agente generará la imagen. Corrígela si no cuadra con lo que tienes en mente — la imagen solo se genera al aprobar.")}
+                </div>
+                <textarea
+                  value={imageScene}
+                  onChange={(e) => setImageScene(e.target.value)}
+                  rows={3}
+                  style={{ width: "100%", resize: "vertical", borderRadius: 10, border: "1px solid #E2E8F0", padding: "10px 12px",
+                    fontFamily: "Inter", fontSize: 12, color: "#0F172A", outline: "none", lineHeight: 1.5 }}
+                />
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                  <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>
+                    {t("El prompt final se redacta en inglés para el modelo de imagen; puedes escribir tu escena en español.")}
+                  </span>
+                  <Button variant="secondary" icon={iterating ? "loader" : "image"} onClick={applyImageScene}
+                    disabled={iterating || !imageScene.trim() || imageScene.trim() === ((plan.image_plan.scene || "").trim())}>
+                    {iterating ? t("Ajustando…") : t("Aplicar escena al plan")}
+                  </Button>
+                </div>
+                {plan.image_plan.prompt ? (
+                  <details>
+                    <summary style={{ fontFamily: "Inter", fontSize: 11, color: "#0891B2", cursor: "pointer" }}>{t("Ver prompt final (técnico)")}</summary>
+                    <div style={{ marginTop: 6, padding: "9px 11px", borderRadius: 10, background: "rgba(248,250,252,0.9)", border: "1px solid #EEF2F6",
+                      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 10.5, color: "#475569", lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+                      {plan.image_plan.prompt}
+                    </div>
+                  </details>
+                ) : null}
+              </GlassCard>
+            ) : null}
 
             {plan.placement_plan && (plan.placement_plan.pieces || []).length ? (
               <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10,

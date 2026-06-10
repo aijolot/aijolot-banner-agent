@@ -14,7 +14,8 @@ VALID_TARGETS = ("concept", "copy", "image", "background", "layout", "ink", "dec
 
 _KEYWORDS: dict[str, tuple[str, ...]] = {
     "background": ("background", "fondo", "gradient", "gradiente", "color de fondo", "backdrop", "scrim"),
-    "image": ("image", "imagen", "photo", "foto", "picture", "render", "product shot", "modelo", "model", "hero image"),
+    "image": ("image", "imagen", "photo", "foto", "picture", "render", "product shot", "modelo", "model", "hero image",
+              "escena", "scene", "fotografía", "fotografia"),
     "copy": ("copy", "texto", "headline", "título", "titulo", "subtitle", "subhead", "cta", "wording", "mensaje",
              "urgent", "urgente", "tono", "tone", "word", "palabra", "frase"),
     "layout": ("layout", "diseño", "diseno", "estructura", "structure", "composition", "composición", "grid", "placement", "posición"),

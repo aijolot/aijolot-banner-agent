@@ -117,6 +117,17 @@ const I18N_EN = {
   "Copy": "Copy",
   "Concepto": "Concept",
   "Texto": "Text",
+  "Imagen planeada": "Planned image",
+  "Escena de la imagen": "Image scene",
+  "Propuesto por el agente": "Proposed by the agent",
+  "Aplicar escena al plan": "Apply scene to plan",
+  "Ver prompt final (técnico)": "View final prompt (technical)",
+  "Esta es la escena con la que el agente generará la imagen. Corrígela si no cuadra con lo que tienes en mente — la imagen solo se genera al aprobar.":
+    "This is the scene the agent will use to generate the image. Correct it if it doesn't match what you have in mind — the image is only generated on approval.",
+  "El prompt final se redacta en inglés para el modelo de imagen; puedes escribir tu escena en español.":
+    "The final prompt is written in English for the image model; you can write your scene in any language.",
+  "Pediste video, pero la generación de video está deshabilitada en este entorno (VIDEO_GENERATION_ENABLED) — se generará una imagen estática como poster.":
+    "You asked for video, but video generation is disabled in this environment (VIDEO_GENERATION_ENABLED) — a static image will be generated as the poster.",
   "Wireframe (baja fidelidad)": "Wireframe (low fidelity)",
   "Sin imagen": "No image",
   "Tipografía": "Typography",

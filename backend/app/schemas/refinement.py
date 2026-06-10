@@ -16,6 +16,7 @@ VALID_OPS = (
     "change_decor",  # swap/edit decorative shapes (SVG motifs) inside the background
     "edit_copy",  # rewrite specific copy fields (instruction-led)
     "adjust_layout",  # nudge composition/structure
+    "set_image_prompt",  # change WHAT the generated image/scene shows (instruction = the scene)
     "redraft_concept",  # full creative re-draft
 )
 
