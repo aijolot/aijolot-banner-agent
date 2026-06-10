@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, Banner,
-   ApprovalPanel, CommentsPanel, SEGMENTS, SEGMENT_ORDER, VARIANTS, COMMENTS_SEED, APPROVERS_SEED,
+   ApprovalPanel, CommentsPanel, SEGMENTS, SEGMENT_ORDER, VARIANTS,
    ReviewApi, GenerationApi, CampaignApi, errorText, layoutCells, BannerLayout, UUID_RE, AIJOLOT_DEMO_IDS,
    isApiCampaign */
 // Aijolot Banner Agent — Stage 3: collaborative canvas (Modules 4, 6, 7).
@@ -22,13 +22,13 @@ function mapBackendApprovers(thread) {
   const reviewers = thread && Array.isArray(thread.reviewers) ? thread.reviewers : [];
   if (!reviewers.length) return null;
   return reviewers.map((r, i) => {
-    const seed = APPROVERS_SEED[i % APPROVERS_SEED.length];
+    const shortId = r.user_id ? String(r.user_id).slice(0, 8) : String(i + 1);
     return {
-      ...seed,
-      id: r.user_id || r.id || seed.id,
+      id: r.user_id || r.id || `reviewer-${i + 1}`,
       backendReviewerId: r.id,
-      name: r.user_id ? `Reviewer ${String(r.user_id).slice(0, 8)}` : seed.name,
-      role: r.role_label || seed.role || "Reviewer backend",
+      name: r.user_id ? `Reviewer ${shortId}` : `Reviewer ${i + 1}`,
+      initials: `R${i + 1}`,
+      role: r.role_label || "Reviewer backend",
       status: backendReviewerStatus(r.status),
       note: r.note || null,
       backend: true,
@@ -91,8 +91,8 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const [segId, setSegId] = useStateCV("masculino");
   const [variantKey, setVariantKey] = useStateCV(null);  // selected real banner_variant tag
   const [device, setDevice] = useStateCV("desktop");
-  const [comments, setComments] = useStateCV(() => COMMENTS_SEED.map((c) => ({ ...c })));
-  const [approvers, setApprovers] = useStateCV(() => APPROVERS_SEED.map((a) => ({ ...a })));
+  const [comments, setComments] = useStateCV([]);
+  const [approvers, setApprovers] = useStateCV([]);
   // Canvas mode: view | edit (direct, no-LLM) | comment (pins → agent).
   const [mode, setMode] = useStateCV("view");
   const commentMode = mode === "comment";
@@ -141,11 +141,11 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
       setThreadId(null);
       setThreadStatus(null);
       setApprovalMode("local");
-      setApprovers(APPROVERS_SEED.map((a) => ({ ...a, localPrototype: true })));
-      setComments(COMMENTS_SEED.map((c) => ({ ...c, localPrototype: true })));
+      setApprovers([]);
+      setComments([]);
       setBackendCampaignStatus((campaign && campaign.status) || "draft");
       if (!campaign || !isApiCampaign || !isApiCampaign(campaign)) {
-        setBackendNotice("Vista local/prototipo: variantes, comentarios y aprobaciones no están respaldados por backend.");
+        setBackendNotice("Esta campaña no tiene ID de backend — el lienzo requiere una revisión real. Regresa al brief.");
         return;
       }
       try {

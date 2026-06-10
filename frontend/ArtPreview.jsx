@@ -1,4 +1,4 @@
-/* global React, Icon, BannerLayout, layoutCells, HERO_STYLES, CAMPAIGN */
+/* global React, Icon, BannerLayout, layoutCells, HERO_STYLES */
 // Aijolot Banner Agent — composition preview (one tile + fold viewport).
 
 // One composition tile (bg layer + optional usage model + product + live copy).
@@ -16,7 +16,7 @@ function Comp({ art, seg, allModels, mini, live }) {
   const accent = (live && live.accent) || p.accent;
   const eyebrow = (live && live.eyebrow) || seg.eyebrow;
   const headline = (live && live.headline) || seg.headline;
-  const promo = (live && live.promo) || CAMPAIGN.promo;
+  const promo = (live && live.promo) || "";
   return (
     <div style={{ position: "relative", height: "100%", minHeight: mini ? 90 : 150, width: "100%", flex: 1, borderRadius: 8, overflow: "hidden", background: useLiveBg ? "#0b1622" : bg, display: "flex", alignItems: "center", padding: mini ? "10px 13px" : "16px 22px", color: ink }}>
       {useLiveBg ? (<><style dangerouslySetInnerHTML={{ __html: live.bgCss }} /><div className={live.scopeClass} style={{ position: "absolute", inset: 0, zIndex: 0 }} /></>) : null}

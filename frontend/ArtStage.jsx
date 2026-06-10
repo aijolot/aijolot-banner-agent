@@ -1,23 +1,14 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, ModelBank, LayoutDiagram, layoutCells, FoldPreview,
-   SEGMENTS, CATALOG, HERO_STYLES, MODELS, CatalogApi, ArtDirectionApi, BackgroundApi, ArtApi, GenerationApi, isApiCampaign, AIJOLOT_DEMO_IDS, errorText */
+   SEGMENTS, HERO_STYLES, MODELS, CatalogApi, ArtDirectionApi, BackgroundApi, ArtApi, GenerationApi, isApiCampaign, AIJOLOT_DEMO_IDS, errorText */
 // Aijolot Banner Agent — Stage: Art direction (Concept→Product→Background→Assembly).
 const { useState: useStateAR, useEffect: useEffectAR } = React;
 
 const DEFAULT_ART_DIRECTION = { bg: "usage", heroStyle: "rocks", model: "m2", fold: 55 };
 
+// Producción: sin catálogo del backend NO hay items — el selector muestra vacío
+// con error visible en vez de SKUs ficticios.
 function catalogFallbackItems() {
-  return (CATALOG || []).map((p, idx) => ({
-    id: p.sku || `fallback-${idx}`,
-    resource_type: "product",
-    title: p.name,
-    sku: p.sku,
-    price: p.price,
-    sale_price: p.sale,
-    stock: p.stock,
-    segment_key: p.seg,
-    handle: p.sku ? p.sku.toLowerCase() : null,
-    source: "fallback",
-  }));
+  return [];
 }
 
 function normalizeCatalogItems(snapshot) {

@@ -88,12 +88,13 @@ function App() {
     try {
       const c = await CampaignApi.create({ title: "Nueva campaña", raw_brief: "" });
       setCampaign(c);
-      setApiNotice({ tone: "green", text: "Campaña backend creada: " + c.id });
+      setApiNotice({ tone: "green", text: "Campaña creada: " + c.id });
+      setStage("placement");
     } catch (e) {
+      // Producción: sin backend NO hay campaña — error visible, sin modo prototipo.
       setCampaign(null);
-      setApiNotice({ tone: "amber", text: "No se pudo crear campaña backend; continuarás en modo prototipo hasta completar intake: " + (e.message || e.status || "error") });
+      setApiNotice({ tone: "red", text: "No se pudo crear la campaña: " + (e.message || e.status || "error") + ". Verifica que el backend (:8000) y Supabase estén arriba." });
     }
-    setStage("placement");
   }
   async function handlePlacementNext(p) {
     setPlacement(p);
@@ -101,16 +102,21 @@ function App() {
     setStage("brief");
   }
   function hydrateCampaignSelection(c, nextStage) {
-    if (c) setCampaign({ ...c, structured_brief: c.structured_brief || {} });
-    setApiNotice(c && isApiCampaign(c) ? { tone: "green", text: "Campaña backend activa: " + c.id } : { tone: "amber", text: "Campaña demo/prototipo activa; las APIs durables requieren UUID backend." });
+    if (!c || !isApiCampaign(c)) {
+      // Producción: no se navega con campañas sin UUID backend.
+      setApiNotice({ tone: "red", text: "La campaña no tiene ID de backend; no se puede continuar." });
+      return;
+    }
+    setCampaign({ ...c, structured_brief: c.structured_brief || {} });
+    setApiNotice({ tone: "green", text: "Campaña activa: " + c.id });
     setStage(nextStage);
   }
   async function onCampaignReady(c, opts) {
-    setCampaign(c);
     if (!isApiCampaign(c)) {
-      setApiNotice({ tone: "amber", text: "Campaña local/prototipo activa; crea o recupera una campaña backend UUID para persistir y avanzar." });
+      setApiNotice({ tone: "red", text: "El intake no devolvió una campaña de backend; revisa la conexión e inténtalo de nuevo." });
       return;
     }
+    setCampaign(c);
     if (opts && opts.localOnly) return;
     if (!placement) return;
     await persistPlacement(c, placement);
@@ -123,7 +129,10 @@ function App() {
     const labels = { dashboard: "Dashboard", orders: "Pedidos", products: "Productos", analytics: "Analítica" };
     body = <ModulePlaceholder label={labels[nav]} />;
   } else if (stage === "campaigns") {
-    body = <CampaignsView onNew={handleNewCampaign} onResume={(c) => hydrateCampaignSelection(c, "canvas")} onPerf={(c) => hydrateCampaignSelection(c, "performance")} />;
+    body = <>
+      {apiNotice ? <div style={{ marginBottom: 12 }}><Badge tone={apiNotice.tone || "slate"} icon={apiNotice.tone === "green" ? "wifi" : "wifi-off"}>{apiNotice.text}</Badge></div> : null}
+      <CampaignsView onNew={handleNewCampaign} onResume={(c) => hydrateCampaignSelection(c, "canvas")} onPerf={(c) => hydrateCampaignSelection(c, "performance")} />
+    </>;
   } else {
     let view;
     if (stage === "placement") view = <PlacementStage onNotice={setApiNotice} onNext={handlePlacementNext} />;

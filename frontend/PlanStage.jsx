@@ -303,11 +303,12 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
       ) : null}
 
       {status === "prototype" ? (
-        <GlassCard style={{ padding: 24, display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" }}>
-          <div style={{ fontFamily: "Inter", fontSize: 13, color: "#68737D" }}>
-            El plan iterativo requiere una campaña backend (UUID). Puedes continuar a la generación en modo prototipo.
+        <GlassCard style={{ padding: 24, display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start", border: "1px solid rgba(239,68,68,0.3)" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", fontFamily: "Inter", fontSize: 13, color: "#991B1B" }}>
+            <Icon name="circle-alert" size={16} color="#EF4444" />
+            La campaña no tiene ID de backend — no se puede planear ni generar. Regresa al brief y verifica la conexión con el backend.
           </div>
-          <Button variant="primary" icon="chevron-right" onClick={() => onApprove(null)}>Continuar a generación</Button>
+          <Button variant="ghost" icon="chevron-left" onClick={onBack}>Volver al brief</Button>
         </GlassCard>
       ) : null}
     </div>

@@ -1,4 +1,4 @@
-/* global SuggestionsPanel, React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, CAMPAIGN, CampaignApi */
+/* global SuggestionsPanel, React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, CampaignApi */
 // Aijolot Banner Agent — app shell (icon sidebar + topbar) and Campaigns landing.
 
 const NAV = [
@@ -71,18 +71,6 @@ function Topbar({ crumb, onHome }) {
 }
 
 // ---- Campaigns landing ----
-const KPIS = [
-  { icon: "rocket", label: "Campañas activas", value: "3" },
-  { icon: "image", label: "Banners publicados", value: "47" },
-  { icon: "mouse-pointer-click", label: "CTR promedio", value: "4.6%" },
-  { icon: "feather", label: "Peso ahorrado", value: "−81%" },
-];
-
-const RECENT = [
-  { id: CAMPAIGN.id, title: CAMPAIGN.title, promo: CAMPAIGN.promo, window: CAMPAIGN.window, status: "draft", tone: "amber", statusLabel: "Demo/prototipo · En revisión", action: "Continuar", source: "demo" },
-  { id: "CMP-0188", title: "Calzado primavera", promo: "20% OFF", window: "12 — 19 may 2026", status: "live", tone: "green", statusLabel: "Demo/prototipo · Publicado", action: "Ver performance", source: "demo" },
-  { id: "CMP-0185", title: "Skincare — Día Madre", promo: "2x1", window: "1 — 10 may 2026", status: "live", tone: "green", statusLabel: "Demo/prototipo · Publicado", action: "Ver performance", source: "demo" },
-];
 
 function isDraftish(status) {
   return ["draft", "intake", "generating", "review", "failed"].includes(status || "draft");
@@ -141,7 +129,12 @@ function CampaignsView({ onNew, onResume, onPerf }) {
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
-        {KPIS.map((k) => (
+        {[
+          { icon: "rocket", label: "Campañas activas", value: loading ? "…" : String(backendCards.filter((c) => c.status === "live").length || backendCards.length) },
+          { icon: "image", label: "Banners publicados", value: loading ? "…" : String(backendCards.filter((c) => c.status === "live").length) },
+          { icon: "mouse-pointer-click", label: "CTR promedio", value: "—" },
+          { icon: "feather", label: "Peso ahorrado", value: "—" },
+        ].map((k) => (
           <GlassCard key={k.label} style={{ padding: 18 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#68737D", fontFamily: "Inter", fontSize: 13 }}>
               <Icon name={k.icon} size={16} color="#22D3EE" /> {k.label}

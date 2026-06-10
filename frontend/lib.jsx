@@ -360,7 +360,7 @@ const PlacementApi = {
     return { ok: true, fallback: false, data };
   },
   async save(campaign, placement) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend placement API requires a UUID campaign; local intake uses prototype ids unless Supabase is configured.", placement);
+    if (!isApiCampaign(campaign)) return fallbackResult("La ubicación requiere una campaña de backend (UUID) — nada se guardó.", null);
     const payload = placementPayloadFromPrototype(placement);
     await this.validate(payload);
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), payload);
@@ -410,7 +410,7 @@ const ArtDirectionApi = {
     return { ok: true, fallback: false, data };
   },
   async save(campaign, art, placement) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend art-direction API requires a UUID campaign; saved locally in prototype state.", art);
+    if (!isApiCampaign(campaign)) return fallbackResult("La dirección de arte requiere una campaña de backend (UUID) — nada se guardó.", null);
     const payload = {
       background_mode: art.bg || "usage",
       hero_style_key: art.heroStyle || null,
@@ -426,7 +426,7 @@ const ArtDirectionApi = {
 
 const GenerationApi = {
   async start(campaign, metadata) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend generation runs require a UUID campaign; showing labeled prototype progress.", { id: localId("run"), status: "succeeded" });
+    if (!isApiCampaign(campaign)) return fallbackResult("La generación requiere una campaña de backend (UUID).", null);
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/generation-runs`), { metadata: metadata || {} });
     return { ok: true, fallback: false, data };
   },
