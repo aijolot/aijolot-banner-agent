@@ -113,12 +113,29 @@
       : "";
 
     var style = "<style>" + scopedBg(live.bgCss, scopeId) + "</style>";
+    // C1 — full-picture: the generated scene IS the background. Scrim alpha and
+    // focal point come from the backend's measured contrast (adaptive ink/scrim).
+    var bgImg = live.bgImageUrl ? String(live.bgImageUrl) : "";
+    var bgLayer = '<div class="hb-bg"></div>';
+    if (bgImg) {
+      var foc = live.bgFocal || {};
+      var fx = Math.max(0, Math.min(100, num(foc.x, 50)));
+      var fy = Math.max(0, Math.min(100, num(foc.y, 50)));
+      var scr = live.scrim || {};
+      var alpha = Math.max(0, Math.min(0.55, num(scr.alpha, 0)));
+      var dir = (typeof scr.dir === "string" && /^[a-z0-9 %deg]+$/i.test(scr.dir)) ? scr.dir : "90deg";
+      // Single quotes inside url(): the style attribute itself is double-quoted.
+      var layers = (alpha > 0 ? "linear-gradient(" + dir + ", rgba(0,0,0," + alpha + "), rgba(0,0,0,0.04)), " : "") +
+        "url('" + esc(bgImg) + "')";
+      bgLayer = '<div class="hb-bg" style="background-image:' + layers +
+        ";background-size:cover;background-position:" + fx + "% " + fy + '%;background-repeat:no-repeat"></div>';
+    }
     var inner;
     var cls;
     if (stacked) {
       cls = "hb-banner hb-live hb-live-stack";
       var stackHero = img ? '<img class="hb-genimg hb-stack-hero" src="' + esc(img) + '">' : "";
-      inner = '<div class="hb-bg"></div>' + badge +
+      inner = bgLayer + badge +
         '<div class="hb-stack-inner">' + stackHero +
         '<div class="hb-live-copy hb-stack-copy">' + copyInner + "</div></div>";
     } else {
@@ -153,7 +170,7 @@
       var hero = heroItems.slice(1).reverse().concat(heroItems.slice(0, 1)).join("");
       var copy = '<div class="hb-live-copy" style="left:' + tX + "%;top:" + tY + "%;width:" + tW +
         "%;transform:translateY(-50%);text-align:" + align + ";align-items:" + items + ";z-index:3\">" + copyInner + "</div>";
-      inner = '<div class="hb-bg"></div>' + hero + copy + badge;
+      inner = bgLayer + hero + copy + badge;
     }
     return style + '<div id="' + scopeId + '" class="' + cls + '" style="' + vars + '">' + inner + "</div>";
   }

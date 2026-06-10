@@ -236,7 +236,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
       liveCopy.cta, liveCopy.subheadline, liveCopy.headline,
     ].find((s) => s && /\d{1,3}\s*%/.test(s)) || null,
     brandName: "",
-    imageUrl: variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
+    imageUrl: (liveConcept.art_direction && liveConcept.art_direction.full_bleed) ? null : (variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null),
     // W0.2 — multi-product brief: every featured product's cut-out (up to 3).
     imageUrls: (() => {
       const refs = (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.featured_products) || null;
@@ -249,6 +249,10 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     layout: (liveConcept.art_direction && liveConcept.art_direction.layout) || null,
     inkSections: (liveConcept.art_direction && liveConcept.art_direction.ink_sections) || null,
     typeScale: (liveConcept.art_direction && liveConcept.art_direction.type_scale) || null,
+    // C1 — full-picture: the generated scene is the background (no hero cut-out).
+    bgImageUrl: (liveConcept.art_direction && liveConcept.art_direction.full_bleed && liveBgObj && liveBgObj.image_url) || null,
+    bgFocal: (liveConcept.art_direction && liveConcept.art_direction.focal) || null,
+    scrim: (liveConcept.art_direction && liveConcept.art_direction.scrim) || null,
     // The background CSS was authored with a legible copy color (its first `color:`),
     // but that color lands on the empty .hb-bg layer. Lift it onto the actual copy so
     // the headline keeps the contrast the agent designed for this background.
@@ -744,7 +748,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                   return (
                     <React.Fragment>
                       {handle(L.textX + Math.min(L.textW, 20) / 2, L.textY, "Texto", "copy", "move")}
-                      {handle(L.heroX, L.heroY, "Imagen", "hero", "move")}
+                      {!(liveConcept && liveConcept.art_direction && liveConcept.art_direction.full_bleed) && handle(L.heroX, L.heroY, "Imagen", "hero", "move")}
                     </React.Fragment>
                   );
                 })() : null}

@@ -201,6 +201,12 @@ class RunOrchestrator:
             # (and the canvas) shows a real themed background, not a flat default.
             background, _bg_source = await self._refine_background(concept, brand)
             art_direction = await self._propose_art_direction(concept, brand)
+            art_direction = {
+                **art_direction,
+                **(await self._resolve_creative_mode(
+                    campaign_id=campaign_id, campaign_state=campaign_state, brand=brand, prev_art={}
+                )),
+            }
             fonts = art_direction.get("fonts") or {}
             decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand).model_dump()
             recorder.succeed(
@@ -228,6 +234,7 @@ class RunOrchestrator:
                 revision_id=revision_id, concept=concept, campaign_state=campaign_state,
                 campaign_row=campaign_row, brand=brand, catalog_context=catalog_context, best_practices=best_practices,
                 text_ink=_bg_text_ink(background), compose_report=compose_report,
+                compose_heroes=str(art_direction.get("creative_mode") or "composite") == "composite",
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
@@ -298,16 +305,23 @@ class RunOrchestrator:
         target_set = target_set or set()
         node = ""
         try:
+            creative_mode = str((art_direction or {}).get("creative_mode") or "composite")
+            full_bleed = creative_mode in ("full_picture", "video")
+
             # 6 — image (cost-gated; degrades to free fake provider)
             node = "generate_image"
             recorder.start(node)
             image_bytes, image_meta, image_cost = await self._generate_image(
-                concept=concept, brand=brand, campaign_id=campaign_id
+                concept=concept, brand=brand, campaign_id=campaign_id, art_direction=art_direction
             )
             total_cost += image_cost
             recorder.succeed(
                 node,
-                {"provider": image_meta.get("provider"), "size_bytes": image_meta.get("size_bytes")},
+                {
+                    "provider": image_meta.get("provider"),
+                    "size_bytes": image_meta.get("size_bytes"),
+                    "creative_mode": creative_mode,
+                },
                 cost_usd=image_cost,
             )
 
@@ -343,6 +357,34 @@ class RunOrchestrator:
             # Surface the generated image + background onto the concept so the
             # canvas Banner renders them (not just the standalone html_preview).
             concept_dict = _concept_dict(concept)
+            if full_bleed and image_url and art_direction is not None:
+                # C1 — full-picture: the generated scene IS the banner background.
+                # No chroma/compose; copy legibility comes from measured ink + scrim.
+                layout_for_zone = dict(art_direction.get("layout") or {})
+                from app.services.banners.contrast import adaptive_ink_and_scrim
+
+                contrast = adaptive_ink_and_scrim(image_bytes, layout_for_zone)
+                try:
+                    fold = int((art_direction.get("fold_percentage") or 55))
+                except (TypeError, ValueError):
+                    fold = 55
+                text_x = float(layout_for_zone.get("textX") or 6.0)
+                text_w = float(layout_for_zone.get("textW") or 48.0)
+                focal_x = max(0.0, min(100.0, 100.0 - (text_x + text_w / 2.0)))
+                art_direction = {
+                    **art_direction,
+                    "full_bleed": True,
+                    "ink": contrast["ink"],
+                    "scrim": {"dir": contrast["scrim_dir"], "alpha": contrast["scrim_alpha"]},
+                    "focal": {"x": round(focal_x, 1), "y": fold},
+                }
+                background = {
+                    "name": "Escena completa generada",
+                    "description": "Imagen full-bleed generada por el agente (modo full picture).",
+                    "css": "",
+                    "html": "",
+                    "image_url": image_url,
+                }
             if background:
                 concept_dict["background"] = background
             if decision_trace:
@@ -374,7 +416,10 @@ class RunOrchestrator:
                 concept_dict["art_direction"] = {
                     "fonts": art_direction.get("fonts") or fonts,
                     "layout": layout,
-                    "ink": _bg_text_ink(background),
+                    # Full-bleed ink was MEASURED against the generated scene (C1);
+                    # composed banners keep the contrast-from-background heuristic.
+                    "ink": (art_direction.get("ink") if art_direction.get("full_bleed") else _bg_text_ink(background)),
+                    **({k: art_direction[k] for k in ("creative_mode", "include_humans", "mode_rationale", "mode_source", "full_bleed", "scrim", "focal", "ink_sections", "type_scale") if art_direction.get(k) is not None}),
                     **({"review": review_report} if review_report else {}),
                 }
             self.revisions.update(
@@ -738,6 +783,7 @@ class RunOrchestrator:
                 best_practices=best_practices,
                 text_ink=_bg_text_ink(background),
                 compose_report=compose_report,
+                compose_heroes=str((art_direction or {}).get("creative_mode") or "composite") == "composite",
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
@@ -1064,11 +1110,13 @@ class RunOrchestrator:
             return _short(text, 40)
         return ""
 
-    async def _generate_image(self, *, concept: Any, brand: Any, campaign_id: str) -> tuple[bytes, dict[str, Any], float]:
+    async def _generate_image(
+        self, *, concept: Any, brand: Any, campaign_id: str, art_direction: dict[str, Any] | None = None
+    ) -> tuple[bytes, dict[str, Any], float]:
         from app.services.banners.image_gen import generate_image
 
         prompt_skill = _load_runtime_skill("image-prompt-refine")
-        refined_prompt = await prompt_skill.run(concept, brand_context=brand)
+        refined_prompt = await prompt_skill.run(concept, brand_context=brand, art_direction=art_direction)
         return await generate_image(
             refined_prompt,
             settings=self.settings,
@@ -1372,7 +1420,10 @@ class RunOrchestrator:
             "sub": row.get("subheadline") or copy.get("subheadline") or "",
             "cta": row.get("cta_text") or copy.get("cta") or "",
             "promo": row.get("cta_text") or copy.get("cta") or "",
-            "imageUrl": fp.get("product_hero_url") or fp.get("product_image_url") or image_url,
+            "imageUrl": (None if art_direction.get("full_bleed") else (fp.get("product_hero_url") or fp.get("product_image_url") or image_url)),
+            "bgImageUrl": ((background or {}).get("image_url") if art_direction.get("full_bleed") else None),
+            "bgFocal": art_direction.get("focal"),
+            "scrim": art_direction.get("scrim"),
             "imageUrls": [
                 str(r.get("product_hero_url") or r.get("product_image_url"))
                 for r in ((row.get("audience_rule") or {}).get("featured_products") or [])
@@ -1709,6 +1760,7 @@ class RunOrchestrator:
         best_practices: list[dict[str, Any]],
         text_ink: str | None = None,
         compose_report: dict[str, Any] | None = None,
+        compose_heroes: bool = True,
     ) -> list[dict[str, Any]]:
         """One banner_variant per personalization variant, each with its own copy.
 
@@ -1739,7 +1791,7 @@ class RunOrchestrator:
             featured_products: list[dict[str, Any]] = []
             # Compose a campaign-styled, background-removed hero from the variant's
             # real product photo (transparent PNG). None → Canvas uses the raw photo.
-            if has_own_product and spec.get("product_image_url"):
+            if compose_heroes and has_own_product and spec.get("product_image_url"):
                 hero_url, hero_status = await self._compose_variant_hero(
                     spec=spec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id,
                     campaign_state=campaign_state, brand=brand,
@@ -1747,7 +1799,7 @@ class RunOrchestrator:
                 if hero_url:
                     spec = {**spec, "product_hero_url": hero_url}
                 _warn(spec.get("product_title"), hero_status)
-            elif index == 0 and brief_products:
+            elif compose_heroes and index == 0 and brief_products:
                 # Base variant + multi-product brief: one cut-out PER brief product.
                 for p_index, product in enumerate(brief_products):
                     pspec = {
