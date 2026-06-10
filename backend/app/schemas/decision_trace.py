@@ -34,8 +34,15 @@ def build_concept_trace(
     concept: Any,
     best_practices: list[dict[str, Any]] | None,
     brand: Any,
+    lang: str = "es",
 ) -> DecisionTrace:
-    """Trace for the draft_banner_concept decision (layout + copy + paleta)."""
+    """Trace for the draft_banner_concept decision (layout + copy + paleta).
+
+    Fully localized (es/en) so the "¿Por qué?" panel never mixes languages.
+    KG titles inside reasons/sources stay verbatim — they are citations.
+    """
+    from app.core.i18n import t
+
     layout = str(getattr(concept, "layout", "") or "")
     copy = getattr(concept, "copy", None) or {}
     source_refs = list(getattr(concept, "source_refs", None) or [])
@@ -44,25 +51,20 @@ def build_concept_trace(
     reasons: list[str] = []
     if selected:
         when = str(selected.get("applicable_when") or "").strip()
-        reasons.append(
-            f"Layout «{selected.get('title')}» tomado del knowledge graph"
-            + (f" — aplica cuando: {when}" if when else "")
-            + "."
-        )
+        reasons.append(t(lang, "trace.layout_kg", title=selected.get("title"),
+                         when=(t(lang, "trace.layout_kg_when", when=when) if when else "")))
     else:
-        reasons.append("Layout determinista por defecto: no hubo patrones del knowledge graph aplicables. [DETERMINISTIC]")
+        reasons.append(t(lang, "trace.layout_deterministic"))
     if str(copy.get("copy_source") or "") == "gemini":
-        reasons.append("Copy redactado por el modelo a partir del brief, los productos y la voz de marca.")
+        reasons.append(t(lang, "trace.copy_gemini"))
     else:
-        reasons.append("Copy de plantilla determinista (modelo no disponible o sin presupuesto). [DETERMINISTIC]")
+        reasons.append(t(lang, "trace.copy_deterministic"))
     top_bp = [d for d in (best_practices or []) if d.get("title")][:3]
     if top_bp:
-        reasons.append(
-            "Buenas prácticas aplicadas: " + "; ".join(str(d["title"]) for d in top_bp) + "."
-        )
+        reasons.append(t(lang, "trace.best_practices", titles="; ".join(str(d["title"]) for d in top_bp)))
     brand_name = str(getattr(brand, "name", "") or "")
     if brand_name:
-        reasons.append(f"Paleta, tipografía y tono restringidos al brand context «{brand_name}».")
+        reasons.append(t(lang, "trace.brand", brand=brand_name))
 
     sources: list[DecisionSource] = []
     for ref in source_refs[:3]:
@@ -86,4 +88,5 @@ def build_concept_trace(
     if brand_name:
         sources.append(DecisionSource(type="brand", id=str(getattr(brand, "id", "") or "") or None, title=brand_name))
 
-    return DecisionTrace(decision=f"Layout: {layout}" if layout else "Concepto del banner", reasons=reasons, sources=sources)
+    decision = t(lang, "trace.decision.layout", layout=layout) if layout else t(lang, "trace.decision.concept")
+    return DecisionTrace(decision=decision, reasons=reasons, sources=sources)

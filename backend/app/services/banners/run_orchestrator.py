@@ -31,6 +31,7 @@ from typing import Any, Protocol
 from app.agents.state import BannerAssets, BannerSessionState, Campaign as StateCampaign, Concept as StateConcept, Variant as StateVariant
 from app.core.settings import Settings
 from app.schemas.decision_trace import build_concept_trace
+from app.core.i18n import campaign_lang, t as i18n_t
 from app.services.gemini.cost_guard import CostGuard, get_default_cost_guard
 from app.workflows.banner_creation import (
     DETERMINISTIC_LAYOUT_VARIANT_KEYS,
@@ -139,6 +140,7 @@ class RunOrchestrator:
         is attached when ``background`` is a target.
         """
         campaign_id = str(campaign_row["id"])
+        lang = campaign_lang(campaign_row)
         is_refine = bool(prompt) or bool(targets)
         target_set = set(targets or [])
         recorder = _EventRecorder(run_id=run_id)
@@ -205,11 +207,11 @@ class RunOrchestrator:
             art_direction = {
                 **art_direction,
                 **(await self._resolve_creative_mode(
-                    campaign_id=campaign_id, campaign_state=campaign_state, brand=brand, prev_art={}
+                    campaign_id=campaign_id, campaign_state=campaign_state, brand=brand, prev_art={}, lang=lang
                 )),
             }
             fonts = art_direction.get("fonts") or {}
-            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand).model_dump()
+            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand, lang=lang).model_dump()
             recorder.succeed(
                 node,
                 {
@@ -552,6 +554,7 @@ class RunOrchestrator:
         with the user's feedback).
         """
         campaign_id = str(campaign_row["id"])
+        lang = campaign_lang(campaign_row)
         is_refine = bool(prompt) or bool(targets)
         target_set = set(targets or [])
         recorder = _EventRecorder(run_id=run_id)
@@ -683,6 +686,7 @@ class RunOrchestrator:
                 campaign_state=campaign_state,
                 brand=brand,
                 prev_art=prev_art if not needs_redraft else {},
+                lang=lang,
             )
 
             # El placement deja de ser un paso manual previo: el agente propone
@@ -697,7 +701,7 @@ class RunOrchestrator:
                     await placement_skill.recommend(
                         campaign_row, brand,
                         creative_mode=str(mode.get("creative_mode") or "composite"),
-                        settings=self.settings, cost_guard=self.cost_guard,
+                        settings=self.settings, cost_guard=self.cost_guard, lang=lang,
                     )
                 ).model_dump()
 
@@ -713,7 +717,7 @@ class RunOrchestrator:
                 else:
                     ink_override = value
 
-            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand).model_dump()
+            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand, lang=lang).model_dump()
             recorder.succeed(
                 node,
                 {
@@ -1107,6 +1111,7 @@ class RunOrchestrator:
             urgency=structured.get("urgency") or "medium",
             placement=structured.get("placement") or "hero_main",
             deadline=deadline,
+            language=str(structured.get("language") or "es"),
         )
 
     async def _run_skill(self, skill_id: str, campaign: Any, brand: Any) -> list[dict[str, Any]]:
@@ -1734,6 +1739,7 @@ class RunOrchestrator:
         *,
         instruction: str = "",
         base_background: dict[str, Any] | None = None,
+        lang: str = "es",
     ) -> tuple[dict[str, Any] | None, str]:
         """Generate (or directed-edit, W0.1) a background. Returns (background, source).
 
@@ -1744,7 +1750,7 @@ class RunOrchestrator:
         try:
             options, source = await skill.run(
                 concept, brand, count=1, settings=self.settings, cost_guard=self.cost_guard,
-                instruction=instruction, base_background=base_background,
+                instruction=instruction, base_background=base_background, lang=lang,
             )
         except Exception:  # noqa: BLE001 — background is best-effort in refine
             return None, "none"
@@ -1760,6 +1766,7 @@ class RunOrchestrator:
         campaign_state: StateCampaign,
         brand: Any,
         prev_art: dict[str, Any] | None = None,
+        lang: str = "es",
     ) -> dict[str, Any]:
         """C0 — resolve creative_mode/include_humans for this plan."""
         stored = None
@@ -1772,7 +1779,7 @@ class RunOrchestrator:
             return {
                 "creative_mode": str(stored.get("creative_mode") or "composite"),
                 "include_humans": bool(stored.get("include_humans")),
-                "mode_rationale": "Definido por el usuario.",
+                "mode_rationale": i18n_t(lang, "mode.user"),
                 "mode_source": "user",
             }
         prev = dict(prev_art or {})
@@ -1786,7 +1793,7 @@ class RunOrchestrator:
         skill = _load_runtime_skill("creative-mode-recommend")
         rec = await skill.recommend(
             campaign_state, brand, placement=getattr(campaign_state, "placement", "") or "",
-            settings=self.settings, cost_guard=self.cost_guard,
+            settings=self.settings, cost_guard=self.cost_guard, lang=lang,
         )
         return {
             "creative_mode": rec.creative_mode,

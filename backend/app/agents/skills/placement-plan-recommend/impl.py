@@ -57,53 +57,44 @@ def _piece(key: str, *, priority: int, creative_mode: str, rationale: str, targe
     )
 
 
-def fallback_plan(campaign: Any, *, creative_mode: str = "composite") -> PlacementPlanProposal:
-    """Brief-driven deterministic pieces (see SKILL.md rules)."""
+def fallback_plan(campaign: Any, *, creative_mode: str = "composite", lang: str = "es") -> PlacementPlanProposal:
+    """Brief-driven deterministic pieces (see SKILL.md rules). Localized."""
+    from app.core.i18n import t
+
     products = _get(campaign, "products", []) or []
     n_products = len(products) if isinstance(products, list) else 0
     urgency = str(_get(campaign, "urgency", "")).lower()
     promo = str(_get(campaign, "promo", "") or "").strip()
 
     pieces: list[PlacementPiece] = []
-    hero = _piece(
-        "hero_main", priority=1, creative_mode=creative_mode,
-        rationale="La pieza principal de la campaña: máximo impacto above-the-fold en la home.",
-        target="home",
-    )
+    hero = _piece("hero_main", priority=1, creative_mode=creative_mode, rationale=t(lang, "pieces.hero"), target="home")
     if hero:
         pieces.append(hero)
     if n_products >= 1:
-        coll = _piece(
-            "collection_header", priority=2, creative_mode="composite",
-            rationale="Los productos del brief merecen su colección vestida con el mismo look de campaña.",
-        )
+        coll = _piece("collection_header", priority=2, creative_mode="composite", rationale=t(lang, "pieces.collection"))
         if coll:
             pieces.append(coll)
     if urgency == "high" or promo:
         bar = _piece(
             "announcement_bar", priority=len(pieces) + 1, creative_mode="composite",
-            rationale=("La promo se refuerza en toda la tienda con una franja global." if promo
-                       else "La urgencia amerita presencia global en la tienda."),
+            rationale=t(lang, "pieces.bar_promo") if promo else t(lang, "pieces.bar_urgency"),
         )
         if bar:
             pieces.append(bar)
     if n_products >= 2:
-        cross = _piece(
-            "pdp_cross_sell", priority=len(pieces) + 1, creative_mode="composite",
-            rationale="Con varios productos, el cross-sell en PDP multiplica el alcance de la campaña.",
-        )
+        cross = _piece("pdp_cross_sell", priority=len(pieces) + 1, creative_mode="composite", rationale=t(lang, "pieces.cross_sell"))
         if cross:
             pieces.append(cross)
 
     pieces = pieces[:MAX_PIECES]
     return PlacementPlanProposal(
         pieces=pieces,
-        rationale=f"{len(pieces)} pieza(s) derivadas del brief: hero siempre; colección/franja/cross-sell según productos, promo y urgencia.",
+        rationale=t(lang, "pieces.rationale", n=len(pieces)),
         source="deterministic",
     )
 
 
-def _build_prompt(campaign: Any, brand_context: Any, creative_mode: str) -> str:
+def _build_prompt(campaign: Any, brand_context: Any, creative_mode: str, lang_label: str = "Spanish (Mexico)") -> str:
     catalog_lines = "\n".join(
         f"- {key}: {entry.get('label')} — {entry.get('description')} (targets: {', '.join(entry.get('supported_targets') or [])}; {_format_for(entry)})"
         for key, entry in _catalog().items()
@@ -120,8 +111,8 @@ def _build_prompt(campaign: Any, brand_context: Any, creative_mode: str) -> str:
         "Rules: piece with priority 1 is the one built FIRST (usually hero_main). Pick only placements that "
         "genuinely serve this brief — fewer, well-justified pieces beat many. For each piece return "
         "placement_key (from the catalog), target, creative_mode (composite|full_picture|video; video only if "
-        "the hero mode is video), priority (1..n) and a ONE-sentence rationale in Spanish. "
-        "Return JSON {pieces:[...], rationale} matching the schema."
+        f"the hero mode is video), priority (1..n) and a ONE-sentence rationale in {lang_label}. "
+        f"Return JSON {{pieces:[...], rationale}} matching the schema — rationale also in {lang_label}."
     )
 
 
@@ -132,8 +123,11 @@ async def recommend(
     creative_mode: str = "composite",
     settings: Any = None,
     cost_guard: Any = None,
+    lang: str = "es",
 ) -> PlacementPlanProposal:
-    fallback = fallback_plan(campaign, creative_mode=creative_mode)
+    from app.core.i18n import lang_name
+
+    fallback = fallback_plan(campaign, creative_mode=creative_mode, lang=lang)
     if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
         return fallback
     try:
@@ -143,7 +137,7 @@ async def recommend(
         if not guard.check_and_reserve(EST_PLACEMENT_PLAN_USD).allowed:
             return fallback
         result = await gemini_text.generate(
-            _build_prompt(campaign, brand_context, creative_mode),
+            _build_prompt(campaign, brand_context, creative_mode, lang_label=lang_name(lang)),
             model=gemini_text.FLASH_MODEL,
             structured=PlacementPlanProposal,
         )

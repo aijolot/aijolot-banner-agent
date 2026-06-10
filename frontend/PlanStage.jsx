@@ -175,23 +175,23 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <Kicker>Paso 3 de 6 · Plan de campaña</Kicker>
-          <h2 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 26, color: "#002B57", margin: 0 }}>Revisa el plan antes de generar</h2>
+          <Kicker>{t("Paso 3 de 6 · Plan de campaña")}</Kicker>
+          <h2 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 26, color: "#002B57", margin: 0 }}>{t("Revisa el plan antes de generar")}</h2>
           <p style={{ fontFamily: "Inter", fontSize: 13, color: "#68737D", margin: 0, maxWidth: 620 }}>
             Una vista de baja fidelidad de lo que el agente va a crear — tipografías, paleta y tema del producto. Itera la idea; la imagen y el render finales se generan solo al aprobar.
           </p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <Button variant="ghost" icon="chevron-left" onClick={onBack}>Volver al brief</Button>
+          <Button variant="ghost" icon="chevron-left" onClick={onBack}>{t("Volver al brief")}</Button>
           <Button variant="primary" icon="sparkles" onClick={approve} disabled={status !== "ready" || approveBusy}>
-            {approveBusy ? "Generando…" : "Aprobar y generar"}
+            {approveBusy ? t("Generando…") : t("Aprobar y generar")}
           </Button>
         </div>
       </div>
 
       <GlassCard style={{ padding: 12, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         {busy ? <Badge tone="cyan" icon="loader"><span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Spinner size={12} /> Armando el plan…</span></Badge>
-          : status === "ready" ? <Badge tone="green" icon="check">Plan listo · sin costo de imagen</Badge>
+          : status === "ready" ? <Badge tone="green" icon="check">{t("Plan listo · sin costo de imagen")}</Badge>
           : status === "prototype" ? <Badge tone="amber" icon="flask-conical">Prototipo local</Badge>
           : <Badge tone="red" icon="circle-alert">Plan no disponible</Badge>}
         {plan && plan.estimated_image_cost_note ? <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8" }}>{plan.estimated_image_cost_note}</span> : null}
@@ -218,8 +218,8 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>Wireframe (baja fidelidad)</span>
-                <Badge tone="slate" icon="image-off">Sin imagen</Badge>
+                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>{t("Wireframe (baja fidelidad)")}</span>
+                <Badge tone="slate" icon="image-off">{t("Sin imagen")}</Badge>
               </div>
               <div style={{ width: "100%", borderRadius: 12, overflow: "hidden", border: "1px dashed rgba(148,163,184,0.5)" }}>
                 <Banner seg={seg} live={plan.wireframe} idSuffix="plan" breakpoint="desktop" />
@@ -230,7 +230,7 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
             {plan.placement_plan && (plan.placement_plan.pieces || []).length ? (
               <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>Piezas y ubicaciones propuestas</span>
+                  <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>{t("Piezas y ubicaciones propuestas")}</span>
                   <Badge tone="cyan" icon="layout-grid">{plan.placement_plan.pieces.length} pieza{plan.placement_plan.pieces.length === 1 ? "" : "s"}</Badge>
                 </div>
                 {plan.placement_plan.rationale ? (
@@ -248,13 +248,13 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
                         <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap" }}>
                           <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12.5, color: "#002B57" }}>{piece.label}</span>
                           {piece.format ? <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>{piece.format}</span> : null}
-                          <Badge tone="slate">{piece.creative_mode === "full_picture" ? "Escena completa" : piece.creative_mode === "video" ? "Video" : "Producto recortado"}</Badge>
-                          {piece.priority === 1 ? <Badge tone="cyan" icon="sparkles">Se genera al aprobar</Badge> : null}
+                          <Badge tone="slate">{piece.creative_mode === "full_picture" ? t("Escena completa") : piece.creative_mode === "video" ? t("Video") : t("Producto recortado")}</Badge>
+                          {piece.priority === 1 ? <Badge tone="cyan" icon="sparkles">{t("Se genera al aprobar")}</Badge> : null}
                         </div>
                         {piece.rationale ? <div style={{ fontFamily: "Inter", fontSize: 11, color: "#64748B", marginTop: 2 }}>{piece.rationale}</div> : null}
                       </div>
                       {appliedPiece === piece.placement_key ? (
-                        <Badge tone="green" icon="check">Aplicada</Badge>
+                        <Badge tone="green" icon="check">{t("Aplicada")}</Badge>
                       ) : (
                         <Button variant={piece.priority === 1 ? "primary" : "ghost"} icon={pieceBusy === piece.placement_key ? "loader" : "map-pin"}
                           onClick={() => applyPiece(piece)} disabled={!!pieceBusy}>
@@ -272,14 +272,14 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
 
             <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>Modo creativo</span>
+                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>{t("Modo creativo")}</span>
                 <Badge tone={plan.mode_source === "user" ? "amber" : "cyan"} icon={plan.mode_source === "user" ? "user" : "sparkles"}>
-                  {plan.mode_source === "user" ? "Definido por ti" : "Recomendado por el agente"}
+                  {plan.mode_source === "user" ? t("Definido por ti") : t("Recomendado por el agente")}
                 </Badge>
               </div>
               {plan.mode_rationale ? <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B" }}>{plan.mode_rationale}</div> : null}
               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
-                {[["composite", "Producto recortado", "scissors"], ["full_picture", "Escena completa", "image"], ["video", "Video", "clapperboard"]].map(([key, label, icon]) => (
+                {[["composite", t("Producto recortado"), "scissors"], ["full_picture", t("Escena completa"), "image"], ["video", t("Video"), "clapperboard"]].map(([key, label, icon]) => (
                   <button key={key} onClick={() => overrideMode(key, plan.include_humans)} disabled={modeBusy} style={{
                     display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 9999, cursor: "pointer",
                     border: `1px solid ${plan.creative_mode === key ? "rgba(8,145,178,0.5)" : "#E2E8F0"}`,
@@ -297,7 +297,7 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
             </GlassCard>
 
             <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-              <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>Itera la idea</span>
+              <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>{t("Itera la idea")}</span>
               <textarea
                 value={feedback}
                 onChange={(e) => setFeedback(e.target.value)}
@@ -307,7 +307,7 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
               />
               <div style={{ display: "flex", justifyContent: "flex-end" }}>
                 <Button variant="secondary" icon={iterating ? "loader" : "refresh-cw"} onClick={iterate} disabled={iterating || !feedback.trim()}>
-                  {iterating ? "Replaneando…" : "Aplicar al plan"}
+                  {iterating ? t("Replaneando…") : t("Aplicar al plan")}
                 </Button>
               </div>
             </GlassCard>
@@ -368,7 +368,7 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
             <Icon name="circle-alert" size={16} color="#EF4444" />
             La campaña no tiene ID de backend — no se puede planear ni generar. Regresa al brief y verifica la conexión con el backend.
           </div>
-          <Button variant="ghost" icon="chevron-left" onClick={onBack}>Volver al brief</Button>
+          <Button variant="ghost" icon="chevron-left" onClick={onBack}>{t("Volver al brief")}</Button>
         </GlassCard>
       ) : null}
     </div>

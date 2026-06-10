@@ -646,9 +646,9 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ display: "flex", gap: 2, background: "rgba(248,250,252,0.8)", borderRadius: 11, padding: 3 }}>
-              <TabBtn active={mode === "view"} onClick={() => { discardEdits(); setMode("view"); }} title="Solo ver"><Icon name="eye" size={14} /> Ver</TabBtn>
-              <TabBtn active={mode === "edit"} onClick={() => setMode("edit")} title="Editar directo (sin IA)"><Icon name="move" size={14} /> Editar</TabBtn>
-              <TabBtn active={mode === "comment"} onClick={() => { discardEdits(); setMode("comment"); }} title="Comentar (al agente)"><Icon name="message-square" size={14} /> Comentar</TabBtn>
+              <TabBtn active={mode === "view"} onClick={() => { discardEdits(); setMode("view"); }} title="Solo ver"><Icon name="eye" size={14} /> {t("Ver")}</TabBtn>
+              <TabBtn active={mode === "edit"} onClick={() => setMode("edit")} title="Editar directo (sin IA)"><Icon name="move" size={14} /> {t("Editar")}</TabBtn>
+              <TabBtn active={mode === "comment"} onClick={() => { discardEdits(); setMode("comment"); }} title="Comentar (al agente)"><Icon name="message-square" size={14} /> {t("Comentar")}</TabBtn>
             </div>
             <div style={{ display: "flex", gap: 2, background: "rgba(248,250,252,0.8)", borderRadius: 11, padding: 3 }}>
               {DEVICES.map((d) => (
@@ -671,7 +671,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
           {editMode ? (
             <GlassCard style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12.5, color: "#002B57", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="sliders-horizontal" size={14} color="#0891B2" /> Edición directa</span>
+                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12.5, color: "#002B57", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="sliders-horizontal" size={14} color="#0891B2" /> {t("Edición directa")}</span>
                 <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
                   Display
                   <select value={draftFonts.display || (live && live.displayFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, display: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
@@ -679,17 +679,17 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                   </select>
                 </label>
                 <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                  Texto
+                  {AIJOLOT_LANG === "en" ? "Body" : "Texto"}
                   <select value={draftFonts.body || (live && live.bodyFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, body: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
                     {["Inter", "DM Sans", "Work Sans", "Manrope", "IBM Plex Sans", "Public Sans", "Nunito Sans", "Karla", "Figtree"].map((f) => <option key={f} value={f}>{f}</option>)}
                   </select>
                 </label>
                 <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }} title="Aplica un color a TODO el texto (resetea colores por sección)">
-                  Todo el texto
+                  {t("Todo el texto")}
                   <input type="color" value={draftInk || (live && /^#[0-9a-fA-F]{6}$/.test(live.textColor || "") ? live.textColor : "#111111")} onChange={(e) => { setDraftInk(e.target.value); setDraftInkSections({}); }} style={{ width: 28, height: 22, border: "1px solid #E2E8F0", borderRadius: 6, padding: 0, cursor: "pointer" }} />
                 </label>
                 <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }} title="Tamaño de la imagen del producto">
-                  Imagen
+                  {t("Imagen")}
                   <PctStepper
                     pct={Math.round(((curLayout().heroW || 46) / 46) * 100)}
                     min={50} max={170}
@@ -698,12 +698,12 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                 </label>
                 <div style={{ flex: 1 }} />
                 <Button variant="ghost" icon="rotate-ccw" onClick={discardEdits} disabled={!hasEdits || editBusy}>Descartar</Button>
-                <Button variant="primary" icon={editBusy ? "loader" : "check"} onClick={saveEdits} disabled={!hasEdits || editBusy}>{editBusy ? "Aplicando…" : "Aplicar al instante"}</Button>
+                <Button variant="primary" icon={editBusy ? "loader" : "check"} onClick={saveEdits} disabled={!hasEdits || editBusy}>{editBusy ? t("Aplicando…") : t("Aplicar al instante")}</Button>
               </div>
               {/* W0.3 — per-section color + size (% can exceed 100) */}
               <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", borderTop: "1px dashed #E2E8F0", paddingTop: 9 }}>
-                <span style={{ fontFamily: "Inter", fontSize: 10.5, fontWeight: 600, color: "#94A3B8", letterSpacing: ".06em" }}>POR SECCIÓN</span>
-                {[["headline", "Título"], ["subheadline", "Subtítulo"], ["eyebrow", "Eyebrow"], ["cta", "CTA"]].map(([key, label]) => {
+                <span style={{ fontFamily: "Inter", fontSize: 10.5, fontWeight: 600, color: "#94A3B8", letterSpacing: ".06em" }}>{t("POR SECCIÓN")}</span>
+                {[["headline", t("Título")], ["subheadline", t("Subtítulo")], ["eyebrow", "Eyebrow"], ["cta", "CTA"]].map(([key, label]) => {
                   const curInk = draftInkSections[key] || (live && live.inkSections && live.inkSections[key]) || draftInk || (live && /^#[0-9a-fA-F]{6}$/.test(live.textColor || "") ? live.textColor : "#111111");
                   const curScale = draftTypeScale[key] != null ? draftTypeScale[key] : (live && live.typeScale && live.typeScale[key]) || 1;
                   return (

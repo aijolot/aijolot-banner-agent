@@ -89,11 +89,12 @@ def _product_fields(product: Any) -> dict[str, Any]:
     }
 
 
-def _brief_payload(product: dict[str, Any], *, goal: str, urgency: str, promo: str = "") -> dict[str, Any]:
+def _brief_payload(product: dict[str, Any], *, goal: str, urgency: str, promo: str = "", lang: str = "es") -> dict[str, Any]:
     return {
         "title": f"{goal[:60]}",
         "product_image_url": product.get("image_url"),
         "structured_brief": {
+            "language": lang,
             "goal": goal,
             "urgency": urgency,
             **({"promo": promo} if promo else {}),
@@ -117,12 +118,14 @@ class CatalogSignalService:
         team_id: str,
         store_id: str | None = None,
         low_stock_threshold: int = LOW_STOCK_THRESHOLD,
+        lang: str = "es",
     ) -> None:
         self.signals = signals
         self.suggestions = suggestions
         self.team_id = team_id
         self.store_id = store_id
         self.low_stock_threshold = low_stock_threshold
+        self.lang = lang
 
     def scan(self, *, products: list[Any], active_product_gids: set[str] | None = None) -> dict[str, Any]:
         """Compute signals over the cached products and upsert suggestions.
@@ -152,12 +155,14 @@ class CatalogSignalService:
                     team_id=self.team_id, store_id=self.store_id, product_gid=product["gid"],
                     signal_type="low_stock", value={"stock": stock},
                 )
+                from app.core.i18n import t
+
                 self.suggestions.upsert_by_dedupe_key(
                     kind="catalog_signal",
                     dedupe_key=f"catalog:low_stock:{product['gid'] or product['title']}",
-                    title=f"Últimas piezas de «{product['title']}»",
-                    rationale=f"Quedan {stock} unidades en inventario — un banner de urgencia convierte la escasez en ventas.",
-                    payload=_brief_payload(product, goal=f"Liquidar las últimas piezas de {product['title']}", urgency="high"),
+                    title=t(self.lang, "catalog.low_stock.title", title=product["title"]),
+                    rationale=t(self.lang, "catalog.low_stock.rationale", stock=stock),
+                    payload=_brief_payload(product, goal=t(self.lang, "catalog.low_stock.goal", title=product["title"]), urgency="high", lang=self.lang),
                     source_refs=[{"type": "catalog_item", "id": product["gid"], "title": product["title"]}],
                 )
                 created.append("low_stock")
@@ -171,12 +176,14 @@ class CatalogSignalService:
                             team_id=self.team_id, store_id=self.store_id, product_gid=product["gid"],
                             signal_type="new_product", value={"published_at": str(published)},
                         )
+                        from app.core.i18n import t
+
                         self.suggestions.upsert_by_dedupe_key(
                             kind="catalog_signal",
                             dedupe_key=f"catalog:new_product:{product['gid'] or product['title']}",
-                            title=f"Estrena «{product['title']}» con un banner",
-                            rationale="Producto recién publicado sin campaña de lanzamiento.",
-                            payload=_brief_payload(product, goal=f"Lanzamiento de {product['title']}", urgency="medium"),
+                            title=t(self.lang, "catalog.new.title", title=product["title"]),
+                            rationale=t(self.lang, "catalog.new.rationale"),
+                            payload=_brief_payload(product, goal=t(self.lang, "catalog.new.goal", title=product["title"]), urgency="medium", lang=self.lang),
                             source_refs=[{"type": "catalog_item", "id": product["gid"], "title": product["title"]}],
                         )
                         created.append("new_product")
@@ -195,13 +202,15 @@ class CatalogSignalService:
                 signal_type="best_seller",
                 value={"sales_rank": product.get("sales_rank"), "proxy": product.get("sales_rank") is None},
             )
+            from app.core.i18n import t
+
             self.suggestions.upsert_by_dedupe_key(
                 kind="catalog_signal",
                 dedupe_key=f"catalog:best_seller:{product['gid'] or product['title']}",
-                title=f"Destaca tu best-seller «{product['title']}»",
-                rationale="Es tu producto más vendido y merece el hero principal."
-                + (" (ranking estimado por orden del catálogo)" if product.get("sales_rank") is None else ""),
-                payload=_brief_payload(product, goal=f"Destacar el best-seller {product['title']}", urgency="medium"),
+                title=t(self.lang, "catalog.best.title", title=product["title"]),
+                rationale=t(self.lang, "catalog.best.rationale")
+                + (t(self.lang, "catalog.best.proxy") if product.get("sales_rank") is None else ""),
+                payload=_brief_payload(product, goal=t(self.lang, "catalog.best.goal", title=product["title"]), urgency="medium", lang=self.lang),
                 source_refs=[{"type": "catalog_item", "id": product["gid"], "title": product["title"]}],
             )
             created.append("best_seller")
@@ -234,11 +243,14 @@ def handle_catalog_scan_job(job: dict[str, Any]) -> dict[str, Any]:
         signals = InMemoryCatalogSignals()
     suggestions = configured_service_for_team(team_id)
 
+    from app.services.banners.calendar_service import configured_calendar_service_for_team
+
+    team_lang = configured_calendar_service_for_team(team_id).lang
     stores = resource_service.list_stores(limit=5)
     summary: dict[str, Any] = {"stores": len(stores), "suggestions": []}
     for store in stores:
         products = resource_service.list_resources(store.id, resource_type="product", limit=100)
-        service = CatalogSignalService(signals=signals, suggestions=suggestions, team_id=team_id, store_id=store.id)
+        service = CatalogSignalService(signals=signals, suggestions=suggestions, team_id=team_id, store_id=store.id, lang=team_lang)
         result = service.scan(products=products)
         summary["suggestions"].extend(result["suggestions"])
     return summary

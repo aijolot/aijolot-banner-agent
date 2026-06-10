@@ -59,8 +59,11 @@ def evaluate(
     decay_threshold_pct: float = DECAY_THRESHOLD_PCT,
     window_days: int = WINDOW_DAYS,
     max_age_days: int = MAX_AGE_DAYS,
+    lang: str = "es",
 ) -> FatigueSignal | None:
     """Return the strongest fatigue signal for the campaign, or None."""
+    from app.core.i18n import t
+
     now = now or datetime.now(timezone.utc)
 
     # --- CTR decay over the recent window ------------------------------------
@@ -85,10 +88,8 @@ def evaluate(
                 return FatigueSignal(
                     campaign_id=campaign_id,
                     kind="ctr_decay",
-                    reason=(
-                        f"El CTR cayó ~{decay_pct:.0f}% en los últimos {window_days} días "
-                        f"({fitted_first:.2%} → {fitted_last:.2%})."
-                    ),
+                    reason=t(lang, "perf.ctr_decay", decay=f"{decay_pct:.0f}", window=window_days,
+                             start=f"{fitted_first:.2%}", end=f"{fitted_last:.2%}"),
                     metrics={
                         "decay_pct": round(decay_pct, 1),
                         "window_days": window_days,
@@ -106,7 +107,7 @@ def evaluate(
             return FatigueSignal(
                 campaign_id=campaign_id,
                 kind="banner_age",
-                reason=f"El banner lleva {age_days} días publicado sin refresco (umbral: {max_age_days}).",
+                reason=t(lang, "perf.banner_age", age=age_days, max=max_age_days),
                 metrics={"banner_age_days": age_days, "max_age_days": max_age_days},
             )
     return None

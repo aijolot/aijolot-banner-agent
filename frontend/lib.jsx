@@ -149,6 +149,8 @@ const AIJOLOT_DEMO_AUTH_HEADERS = {
   "X-Aijolot-User-Id": AIJOLOT_DEMO_IDS.user,
   "X-Aijolot-Team-Id": AIJOLOT_DEMO_IDS.team,
   "X-Aijolot-Store-Id": AIJOLOT_DEMO_IDS.store,
+  // Idioma del switcher: el backend responde/redacta/razona en este idioma.
+  "X-Aijolot-Lang": (typeof AIJOLOT_LANG !== "undefined" ? AIJOLOT_LANG : "es"),
   "Authorization": `Bearer demo:${AIJOLOT_DEMO_IDS.user}:${AIJOLOT_DEMO_IDS.team}:${AIJOLOT_DEMO_IDS.store}`,
 };
 
@@ -214,7 +216,7 @@ const AijolotApi = {
     const resp = await fetch(this.base + this.v1("/campaigns/intake"), {
       method: "POST",
       headers: { Accept: "text/event-stream", "Content-Type": "application/json", ...AIJOLOT_DEMO_AUTH_HEADERS },
-      body: JSON.stringify({ message, campaign_id: campaignId || null }),
+      body: JSON.stringify({ message, campaign_id: campaignId || null, language: (typeof AIJOLOT_LANG !== "undefined" ? AIJOLOT_LANG : "es") }),
     });
     if (!resp.ok || !resp.body) throw new Error(`intake failed: ${resp.status} ${await resp.text()}`);
     const reader = resp.body.getReader(), decoder = new TextDecoder();
@@ -279,7 +281,12 @@ function placementPayloadFromPrototype(placement) {
 }
 
 const CampaignApi = {
-  async create(input) { return AijolotApi.post(AijolotApi.v1("/campaigns"), input || {}); },
+  async create(input) {
+    const body = { ...(input || {}) };
+    // El brief nace con el idioma del switcher — gobierna todo el pipeline.
+    body.structured_brief = { language: (typeof AIJOLOT_LANG !== "undefined" ? AIJOLOT_LANG : "es"), ...(body.structured_brief || {}) };
+    return AijolotApi.post(AijolotApi.v1("/campaigns"), body);
+  },
   async list() { return AijolotApi.get(AijolotApi.v1("/campaigns")); },
   async listSafe() {
     try {

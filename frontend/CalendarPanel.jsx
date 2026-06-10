@@ -26,9 +26,9 @@ function nextOccurrence(event, today) {
 }
 
 const SOURCE_META = {
-  seed: { label: "Retail MX/Global", tone: "cyan", icon: "calendar" },
-  niche_inferred: { label: "Nicho (agente)", tone: "green", icon: "sparkles" },
-  manual: { label: "Manual", tone: "slate", icon: "user" },
+  seed: { label: t("Retail MX/Global"), tone: "cyan", icon: "calendar" },
+  niche_inferred: { label: t("Nicho (agente)"), tone: "green", icon: "sparkles" },
+  manual: { label: t("Manual"), tone: "slate", icon: "user" },
 };
 
 function fmtDate(d) {
@@ -111,22 +111,22 @@ function CalendarPanel({ onStartBrief, onNotice }) {
     <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <Icon name="calendar-days" size={16} color="#0891B2" />
-        <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 14, color: "#002B57" }}>Calendario comercial</span>
+        <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 14, color: "#002B57" }}>{t("Calendario comercial")}</span>
         {status === "loading" ? <Spinner size={13} /> : null}
         <div style={{ flex: 1 }} />
         <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 6 }}>
-          Anticipación
+          {t("Anticipación")}
           <button onClick={() => changeLead(-7)} disabled={busy === "lead"} style={{ width: 20, height: 20, borderRadius: 6, border: "1px solid #E2E8F0", background: "#fff", cursor: "pointer", fontWeight: 700 }}>−</button>
-          <b style={{ color: "#0891B2", minWidth: 46, textAlign: "center" }}>{lead} días</b>
+          <b style={{ color: "#0891B2", minWidth: 46, textAlign: "center" }}>{lead} {t("días")}</b>
           <button onClick={() => changeLead(7)} disabled={busy === "lead"} style={{ width: 20, height: 20, borderRadius: 6, border: "1px solid #E2E8F0", background: "#fff", cursor: "pointer", fontWeight: 700 }}>+</button>
         </span>
         <Button variant="secondary" icon={busy === "infer" ? "loader" : "sparkles"} onClick={inferNiche} disabled={!!busy}>
-          {busy === "infer" ? "Buscando…" : "Fechas de mi nicho"}
+          {busy === "infer" ? t("Buscando…") : t("Fechas de mi nicho")}
         </Button>
       </div>
 
       {status === "ready" && !rows.length ? (
-        <div style={{ fontFamily: "Inter", fontSize: 12.5, color: "#64748B" }}>Sin fechas próximas en el calendario.</div>
+        <div style={{ fontFamily: "Inter", fontSize: 12.5, color: "#64748B" }}>{t("Sin fechas próximas en el calendario.")}</div>
       ) : null}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -143,7 +143,7 @@ function CalendarPanel({ onStartBrief, onNotice }) {
             }}>
               <div style={{ width: 52, flexShrink: 0, textAlign: "center" }}>
                 <div style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 17, color: days <= 7 ? "#DC2626" : inWindow ? "#0891B2" : "#475569", lineHeight: 1 }}>{days <= 0 ? "HOY" : days}</div>
-                {days > 0 ? <div style={{ fontFamily: "Inter", fontSize: 9.5, color: "#94A3B8" }}>día{days === 1 ? "" : "s"}</div> : null}
+                {days > 0 ? <div style={{ fontFamily: "Inter", fontSize: 9.5, color: "#94A3B8" }}>{days === 1 ? t("día") : t("días")}</div> : null}
               </div>
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -155,13 +155,13 @@ function CalendarPanel({ onStartBrief, onNotice }) {
                 </div>
               </div>
               {accepted ? (
-                <Badge tone="green" icon="check">Campaña creada</Badge>
+                <Badge tone="green" icon="check">{t("Campaña creada")}</Badge>
               ) : inWindow && scanRow ? (
                 <Button variant="primary" icon={busy === event.slug ? "loader" : "wand-sparkles"} onClick={() => startCampaign(event.slug)} disabled={!!busy}>
                   Preparar campaña
                 </Button>
               ) : (
-                <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#CBD5E1", whiteSpace: "nowrap" }}>fuera de ventana</span>
+                <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#CBD5E1", whiteSpace: "nowrap" }}>{t("fuera de ventana")}</span>
               )}
             </div>
           );

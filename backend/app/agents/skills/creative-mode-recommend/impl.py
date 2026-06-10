@@ -65,8 +65,10 @@ def _hits(text: str, tokens: tuple[str, ...]) -> bool:
     return any(re.search(rf"(?<![\w]){re.escape(t)}", text) for t in tokens)
 
 
-def fallback_recommendation(campaign: Any, brand_context: Any, *, placement: str = "", settings: Any = None) -> CreativeModeRecommendation:
-    """Deterministic vertical-keyword rules (demo-safe, no LLM)."""
+def fallback_recommendation(campaign: Any, brand_context: Any, *, placement: str = "", settings: Any = None, lang: str = "es") -> CreativeModeRecommendation:
+    """Deterministic vertical-keyword rules (demo-safe, no LLM). Localized."""
+    from app.core.i18n import t
+
     text = _campaign_text(campaign, brand_context)
     placement_text = (placement or str(_get(campaign, "placement", ""))).lower()
     video_enabled = bool(getattr(settings, "video_generation_enabled", False))
@@ -74,29 +76,25 @@ def fallback_recommendation(campaign: Any, brand_context: Any, *, placement: str
     if video_enabled and _hits(text, _VIDEO_HINTS) and _hits(placement_text, _HERO_PLACEMENTS):
         return CreativeModeRecommendation(
             creative_mode="video", include_humans=_hits(text, _HUMANS_HINTS),
-            rationale="El brief pide motion/lanzamiento en un hero principal y la generación de video está habilitada.",
-            source="deterministic",
+            rationale=t(lang, "mode.video"), source="deterministic",
         )
     if _hits(text, _COMPOSITE_HINTS):
         return CreativeModeRecommendation(
             creative_mode="composite", include_humans=False,
-            rationale="Vertical orientado a producto/técnico: el recorte de producto sobre fondo de marca comunica mejor.",
-            source="deterministic",
+            rationale=t(lang, "mode.composite"), source="deterministic",
         )
     if _hits(text, _FULL_PICTURE_HINTS):
         return CreativeModeRecommendation(
             creative_mode="full_picture", include_humans=_hits(text, _HUMANS_HINTS),
-            rationale="Vertical lifestyle/moda: una escena completa generada vende el mood mejor que un recorte.",
-            source="deterministic",
+            rationale=t(lang, "mode.full_picture"), source="deterministic",
         )
     return CreativeModeRecommendation(
         creative_mode="composite", include_humans=False,
-        rationale="Sin señales de lifestyle en el brief: recorte de producto (modo seguro por defecto).",
-        source="deterministic",
+        rationale=t(lang, "mode.default"), source="deterministic",
     )
 
 
-def _build_prompt(campaign: Any, brand_context: Any, placement: str, video_enabled: bool) -> str:
+def _build_prompt(campaign: Any, brand_context: Any, placement: str, video_enabled: bool, lang_label: str = "Spanish (Mexico)") -> str:
     return (
         "You are an ecommerce creative director choosing the production mode for ONE Shopify banner.\n"
         f"Campaign goal: {_get(campaign, 'goal', '')}\nAudience: {_get(campaign, 'audience', '')}\n"
@@ -111,7 +109,7 @@ def _build_prompt(campaign: Any, brand_context: Any, placement: str, video_enabl
            "for a main hero placement (it is expensive).\n" if video_enabled else "")
         + "\nAlso decide include_humans: true only when people genuinely sell this vertical (fashion/beauty/"
         "fitness/jewelry); false for tools, electronics, packaged goods.\n"
-        "Return JSON {creative_mode, include_humans, rationale} — rationale: ONE sentence in Spanish."
+        f"Return JSON {{creative_mode, include_humans, rationale}} — rationale: ONE sentence in {lang_label}."
     )
 
 
@@ -122,8 +120,11 @@ async def recommend(
     placement: str = "",
     settings: Any = None,
     cost_guard: Any = None,
+    lang: str = "es",
 ) -> CreativeModeRecommendation:
-    fallback = fallback_recommendation(campaign, brand_context, placement=placement, settings=settings)
+    from app.core.i18n import lang_name
+
+    fallback = fallback_recommendation(campaign, brand_context, placement=placement, settings=settings, lang=lang)
     if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
         return fallback
     try:
@@ -133,7 +134,7 @@ async def recommend(
         if not guard.check_and_reserve(EST_RECOMMEND_USD).allowed:
             return fallback
         result = await gemini_text.generate(
-            _build_prompt(campaign, brand_context, placement, bool(getattr(settings, "video_generation_enabled", False))),
+            _build_prompt(campaign, brand_context, placement, bool(getattr(settings, "video_generation_enabled", False)), lang_label=lang_name(lang)),
             model=gemini_text.FLASH_MODEL,
             structured=CreativeModeRecommendation,
         )

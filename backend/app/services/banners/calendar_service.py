@@ -90,7 +90,7 @@ class InMemoryCalendarRepository:
 
     def upsert_settings(self, *, team_id: str, data: dict[str, Any]) -> dict[str, Any]:
         row = self.settings.get(team_id) or {"team_id": team_id, "lead_time_days": DEFAULT_LEAD_TIME_DAYS,
-                                             "auto_concept": False, "enabled": True}
+                                             "auto_concept": False, "enabled": True, "lang": "es"}
         row.update(data)
         self.settings[team_id] = row
         return dict(row)
@@ -125,7 +125,7 @@ class SupabaseCalendarRepository:
         from app.db.repositories._supabase import execute_data
 
         out = execute_data(
-            self.client.table("team_calendar_settings").select("team_id,lead_time_days,auto_concept,enabled")
+            self.client.table("team_calendar_settings").select("team_id,lead_time_days,auto_concept,enabled,lang")
             .eq("team_id", team_id).limit(1)
         )
         rows = out if isinstance(out, list) else ([out] if out else [])
@@ -134,7 +134,7 @@ class SupabaseCalendarRepository:
     def upsert_settings(self, *, team_id: str, data: dict[str, Any]) -> dict[str, Any]:
         from app.db.repositories._supabase import execute_data
 
-        payload = {"team_id": team_id, **{k: v for k, v in data.items() if k in ("lead_time_days", "auto_concept", "enabled")}}
+        payload = {"team_id": team_id, **{k: v for k, v in data.items() if k in ("lead_time_days", "auto_concept", "enabled", "lang")}}
         out = execute_data(self.client.table("team_calendar_settings").upsert(payload, on_conflict="team_id").select("*"))
         if isinstance(out, list):
             return dict(out[0]) if out else {}
@@ -182,9 +182,17 @@ class CalendarService:
     # --- settings -------------------------------------------------------------
 
     def get_settings(self) -> dict[str, Any]:
-        return self.repo.get_settings(team_id=self.team_id) or {
+        row = self.repo.get_settings(team_id=self.team_id) or {
             "team_id": self.team_id, "lead_time_days": DEFAULT_LEAD_TIME_DAYS, "auto_concept": False, "enabled": True,
         }
+        row.setdefault("lang", "es")
+        return row
+
+    @property
+    def lang(self) -> str:
+        from app.core.i18n import resolve_lang
+
+        return resolve_lang(self.get_settings().get("lang"))
 
     def update_settings(self, data: dict[str, Any]) -> dict[str, Any]:
         clean: dict[str, Any] = {}
@@ -196,6 +204,10 @@ class CalendarService:
         for key in ("auto_concept", "enabled"):
             if key in data:
                 clean[key] = bool(data[key])
+        if "lang" in data:
+            from app.core.i18n import resolve_lang
+
+            clean["lang"] = resolve_lang(data["lang"])
         return self.repo.upsert_settings(team_id=self.team_id, data=clean)
 
     # --- events ---------------------------------------------------------------
@@ -275,28 +287,33 @@ class CalendarService:
             urgency = "high" if days_left <= 7 else "medium"
             name = str(event.get("name") or event.get("slug"))
             note = str(event.get("relevance_note") or "")
+            from app.core.i18n import t
+
+            lang = self.lang
             row = self.suggestions.upsert_by_dedupe_key(
                 kind="calendar_event",
                 dedupe_key=f"calendar:{event.get('slug')}:{start.year}",
-                title=f"Prepara tu campaña de {name}",
+                title=t(lang, "cal.title", name=name),
                 rationale=(
-                    (f"Empieza en {days_left} días ({start.isoformat()})." if days_left > 0 else f"¡Es hoy! ({start.isoformat()}).")
+                    (t(lang, "cal.starts_in", days=days_left, date=start.isoformat()) if days_left > 0
+                     else t(lang, "cal.today", date=start.isoformat()))
                     + (f" {note}" if note else "")
                 ),
                 payload={
-                    "title": f"Campaña {name} {start.year}",
-                    "raw_brief": f"Brief propuesto por el agente para {name} ({start.isoformat()}). "
-                                 f"{note} Ajusta cualquier campo antes de planear.",
+                    "title": t(lang, "cal.campaign_title", name=name, year=start.year),
+                    "raw_brief": t(lang, "cal.raw_brief", name=name, date=start.isoformat(), note=note),
                     # Brief COMPLETO (todos los campos requeridos) para que el
                     # usuario pueda aceptarlo y encadenar directo al plan; cada
-                    # campo es una propuesta editable, no un hecho.
+                    # campo es una propuesta editable, no un hecho. El language
+                    # viaja con la campaña y gobierna TODO el pipeline.
                     "structured_brief": {
-                        "goal": f"Campaña de {name}",
-                        "audience": "Clientes de la tienda",
-                        "cta": "Compra ahora",
-                        "tone": "festivo" if urgency == "high" else "cercano",
+                        "language": lang,
+                        "goal": t(lang, "cal.goal", name=name),
+                        "audience": t(lang, "cal.audience"),
+                        "cta": t(lang, "cal.cta"),
+                        "tone": t(lang, "cal.tone_festive") if urgency == "high" else t(lang, "cal.tone_warm"),
                         "urgency": urgency,
-                        "placement": "Hero de la home",
+                        "placement": t(lang, "cal.placement"),
                         "deadline": start.isoformat(),
                     },
                 },

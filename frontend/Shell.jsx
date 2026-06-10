@@ -47,13 +47,14 @@ function Topbar({ crumb, onHome }) {
   return (
     <header style={{ height: 64, flexShrink: 0, display: "flex", alignItems: "center", gap: 14, padding: "0 28px", borderBottom: "1px solid rgba(226,232,240,0.7)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#68737D", fontFamily: "Inter", fontSize: 13 }}>
-        <button onClick={onHome} style={{ border: "none", background: "transparent", cursor: "pointer", color: crumb ? "#68737D" : "#002B57", fontFamily: "Inter", fontSize: 13, fontWeight: crumb ? 400 : 600, padding: 0 }}>Estudio de Banners</button>
+        <button onClick={onHome} style={{ border: "none", background: "transparent", cursor: "pointer", color: crumb ? "#68737D" : "#002B57", fontFamily: "Inter", fontSize: 13, fontWeight: crumb ? 400 : 600, padding: 0 }}>{t("Estudio de Banners")}</button>
         {crumb && <><Icon name="chevron-right" size={14} color="#CBD5E1" /><span style={{ color: "#002B57", fontWeight: 600 }}>{crumb}</span></>}
       </div>
       <div style={{ flex: 1 }} />
+      {typeof LangSwitcher === "function" ? <LangSwitcher /> : null}
       <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 11px", borderRadius: 9999, background: "rgba(34,211,238,0.1)", border: "1px solid rgba(34,211,238,0.3)" }}>
         <span style={{ width: 7, height: 7, borderRadius: 9999, background: "#22D3EE", animation: "pulseSoft 2s ease-in-out infinite" }} />
-        <span style={{ fontFamily: "Inter", fontSize: 11.5, fontWeight: 600, color: "#0891B2" }}>Agente CEOD activo</span>
+        <span style={{ fontFamily: "Inter", fontSize: 11.5, fontWeight: 600, color: "#0891B2" }}>{t("Agente CEOD activo")}</span>
       </div>
       <button style={{ position: "relative", border: "none", background: "transparent", cursor: "pointer", color: "#68737D" }}>
         <Icon name="bell" size={19} />
@@ -122,18 +123,18 @@ function CampaignsView({ onNew, onResume, onPerf, onStartBrief }) {
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <Kicker>Agente CEOD · Content E-commerce Optimizer</Kicker>
-          <h1 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 40, letterSpacing: "-0.02em", color: "#002B57", margin: 0, lineHeight: 1.04 }}>Estudio de Banners</h1>
-          <p style={{ fontFamily: "Inter", fontSize: 14.5, color: "#68737D", margin: 0, maxWidth: 560 }}>Del brief al código nativo de Shopify en segundos. Banners responsivos, optimizados para SEO y de carga ultrarrápida — sin salir de marca.</p>
+          <h1 style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 40, letterSpacing: "-0.02em", color: "#002B57", margin: 0, lineHeight: 1.04 }}>{t("Estudio de Banners")}</h1>
+          <p style={{ fontFamily: "Inter", fontSize: 14.5, color: "#68737D", margin: 0, maxWidth: 560 }}>{t("Del brief al código nativo de Shopify en segundos. Banners responsivos, optimizados para SEO y de carga ultrarrápida — sin salir de marca.")}</p>
         </div>
-        <Button variant="shine" icon="wand-sparkles" onClick={onNew} style={{ padding: "12px 20px", fontSize: 14.5 }}>Nueva campaña</Button>
+        <Button variant="shine" icon="wand-sparkles" onClick={onNew} style={{ padding: "12px 20px", fontSize: 14.5 }}>{t("Nueva campaña")}</Button>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
         {[
-          { icon: "rocket", label: "Campañas activas", value: loading ? "…" : String(backendCards.filter((c) => c.status === "live").length || backendCards.length) },
-          { icon: "image", label: "Banners publicados", value: loading ? "…" : String(backendCards.filter((c) => c.status === "live").length) },
-          { icon: "mouse-pointer-click", label: "CTR promedio", value: "—" },
-          { icon: "feather", label: "Peso ahorrado", value: "—" },
+          { icon: "rocket", label: t("Campañas activas"), value: loading ? "…" : String(backendCards.filter((c) => c.status === "live").length || backendCards.length) },
+          { icon: "image", label: t("Banners publicados"), value: loading ? "…" : String(backendCards.filter((c) => c.status === "live").length) },
+          { icon: "mouse-pointer-click", label: t("CTR promedio"), value: "—" },
+          { icon: "feather", label: t("Peso ahorrado"), value: "—" },
         ].map((k) => (
           <GlassCard key={k.label} style={{ padding: 18 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#68737D", fontFamily: "Inter", fontSize: 13 }}>
@@ -164,8 +165,8 @@ function CampaignsView({ onNew, onResume, onPerf, onStartBrief }) {
 
       <GlassCard style={{ padding: 22 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-          <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 18, color: "#002B57" }}>Campañas recientes</div>
-          <span style={{ fontFamily: "Inter", fontSize: 12.5, color: backendCards.length ? "#0891B2" : "#94A3B8" }}>{backendCards.length ? "Datos de backend /api/v1" : "Esperando campañas backend"}</span>
+          <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 18, color: "#002B57" }}>{t("Campañas recientes")}</div>
+          <span style={{ fontFamily: "Inter", fontSize: 12.5, color: backendCards.length ? "#0891B2" : "#94A3B8" }}>{backendCards.length ? "Datos de backend /api/v1" : t("Esperando campañas backend")}</span>
         </div>
         {loading ? (
           <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 0", fontFamily: "Inter", fontSize: 13, color: "#68737D" }}><Spinner size={14} /> Cargando campañas del backend…</div>
@@ -179,8 +180,8 @@ function CampaignsView({ onNew, onResume, onPerf, onStartBrief }) {
           {backendCards.map((r, i) => <CampaignRow key={r.id} r={r} index={i} onResume={onResume} onPerf={onPerf} />)}
           {!loading && !backendCards.length && !apiError ? (
             <div style={{ padding: "18px 0 12px", fontFamily: "Inter", color: "#475569" }}>
-              <div style={{ fontWeight: 600, color: "#002B57", marginBottom: 4 }}>No hay campañas creadas aún</div>
-              <div style={{ fontSize: 13 }}>Crea tu primera campaña con «Nueva campaña»; aparecerá aquí.</div>
+              <div style={{ fontWeight: 600, color: "#002B57", marginBottom: 4 }}>{t("No hay campañas creadas aún")}</div>
+              <div style={{ fontSize: 13 }}>{t("Crea tu primera campaña con «Nueva campaña»; aparecerá aquí.")}</div>
             </div>
           ) : null}
         </div>

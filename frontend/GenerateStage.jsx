@@ -468,7 +468,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun 
 
       <GlassCard style={{ padding: 14, display: "flex", flexDirection: "column", gap: 9, border: generationStatus === "failed" ? "1px solid rgba(239,68,68,.25)" : "1px solid rgba(34,211,238,.25)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {generationStatus === "failed" || generationStatus === "prototype" ? <Badge tone="red" icon="circle-alert">Backend error</Badge> : <Badge tone="green" icon="wifi">Backend conectado</Badge>}
+          {generationStatus === "failed" || generationStatus === "prototype" ? <Badge tone="red" icon="circle-alert">{t("Backend error")}</Badge> : <Badge tone="green" icon="wifi">{t("Backend conectado")}</Badge>}
           {backendRun ? <Badge tone="cyan" icon="git-branch">Run {backendRun.id.slice(0, 8)} · {backendRun.status}</Badge> : null}
           {backendEvents.length ? <Badge tone="purple" icon="activity">{backendEvents.length} eventos</Badge> : null}
           {artifactStatus ? <Badge tone="slate" icon="file-check">Preview {artifactStatus.preview ? "OK" : "—"} · Audit {artifactStatus.audit ? "OK" : "—"} · Revs {artifactStatus.revisions == null ? "—" : artifactStatus.revisions}</Badge> : null}

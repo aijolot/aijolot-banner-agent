@@ -11,14 +11,14 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
 }/*EDITMODE-END*/;
 
 const STEPS = [
-  { id: "placement", label: "Ubicación", icon: "store" },
-  { id: "brief", label: "Brief", icon: "message-square" },
-  { id: "plan", label: "Plan", icon: "clipboard-list" },
-  { id: "generate", label: "Generación", icon: "wand-sparkles" },
-  { id: "canvas", label: "Lienzo", icon: "layout-template" },
-  { id: "performance", label: "Performance", icon: "bar-chart-3" },
+  { id: "placement", label: t("Ubicación"), icon: "store" },
+  { id: "brief", label: t("Brief"), icon: "message-square" },
+  { id: "plan", label: t("Plan"), icon: "clipboard-list" },
+  { id: "generate", label: t("Generación"), icon: "wand-sparkles" },
+  { id: "canvas", label: t("Lienzo"), icon: "layout-template" },
+  { id: "performance", label: t("Performance"), icon: "bar-chart-3" },
 ];
-const STAGE_CRUMB = { campaigns: "", placement: "Ubicación", brief: "Brief comercial", plan: "Plan de campaña", generate: "Generación", canvas: "Lienzo colaborativo", performance: "Performance" };
+const STAGE_CRUMB = { campaigns: "", placement: t("Ubicación"), brief: t("Brief comercial"), plan: t("Plan de campaña"), generate: t("Generación"), canvas: t("Lienzo colaborativo"), performance: t("Performance") };
 
 function Stepper({ stage, goTo }) {
   const cur = STEPS.findIndex((s) => s.id === stage);

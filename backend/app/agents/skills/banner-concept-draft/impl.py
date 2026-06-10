@@ -266,6 +266,18 @@ def _product_lines(catalog_context: Any) -> str:
     return "; ".join(titles)
 
 
+def _campaign_lang_name(campaign: Any) -> str:
+    from app.core.i18n import campaign_lang, lang_name
+
+    brief = _brief(campaign)
+    explicit = brief.get("language") if isinstance(brief, dict) else getattr(brief, "language", None)
+    if explicit:
+        return lang_name(str(explicit))
+    # Fallback heurístico solo cuando la campaña no trae idioma explícito.
+    goal = str(_get(brief, "goal", "")); audience = str(_get(brief, "audience", ""))
+    return "Spanish (Mexico)" if re.search(r"[áéíóúñ¿¡]|\b(de|para|con|los|las|promo)\b", f"{goal} {audience}", re.I) else "English"
+
+
 def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, audience_override: str = "", refine_instruction: str = "") -> str:
     brief = _brief(campaign)
     goal = _get(brief, "goal", "")
@@ -277,7 +289,7 @@ def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_co
     practices = "; ".join([str(d.get("title", "")) for d in (best_practices or [])[:4] if d.get("title")])
     required = ", ".join(brand_context.voice.required_phrases or [])
     prohibited = ", ".join(brand_context.voice.prohibited_words or [])
-    lang = "Spanish" if re.search(r"[áéíóúñ¿¡]|\b(de|para|con|los|las|promo)\b", f"{goal} {audience}", re.I) else "the brief's language"
+    lang = _campaign_lang_name(campaign)
     return (
         "You are a senior ecommerce copywriter. Write ONE banner's hero copy.\n"
         f"Campaign goal: {goal}\nAudience: {audience}\nTone: {tone}\nUrgency: {urgency}\n"
@@ -346,6 +358,7 @@ async def copy_for_audience(
         "goal": _get(brief, "goal", ""), "audience": audience or _get(brief, "audience", ""),
         "cta": _get(brief, "cta", ""), "tone": _get(brief, "tone", ""),
         "urgency": _get(brief, "urgency", ""), "placement": _get(brief, "placement", ""),
+        "language": _get(brief, "language", ""),
     }
     base = draft_concept(campaign=overridden, brand_context=brand_context, best_practices=best_practices, catalog_context=catalog_context)
     copy = {k: base.copy.get(k, "") for k in ("eyebrow", "headline", "subheadline", "cta")}

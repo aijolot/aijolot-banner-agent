@@ -36,11 +36,14 @@ def _sse(payload: dict) -> str:
 @router.post("/intake")
 def intake(req: IntakeRequest, request: Request) -> StreamingResponse:
     try:
+        from app.core.i18n import request_lang
+
+        lang = req.language or request_lang(request)
         if request.url.path.startswith("/api/v1/"):
             context = require_user_context(request)
-            campaign, reply = campaign_store.intake_for_context(context, req.message, req.campaign_id)
+            campaign, reply = campaign_store.intake_for_context(context, req.message, req.campaign_id, lang=lang)
         else:
-            campaign, reply = campaign_store.intake(req.message, req.campaign_id)
+            campaign, reply = campaign_store.intake(req.message, req.campaign_id, lang=lang)
     except CampaignNotEditable as exc:
         raise HTTPException(status_code=409, detail=f"campaign '{exc.args[0]}' is not editable")
     except MissingSettingsError as exc:

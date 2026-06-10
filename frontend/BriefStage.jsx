@@ -28,10 +28,10 @@ function BriefStage({ campaign: initialCampaign, onGenerate, onCampaignReady, on
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        <Kicker>Paso 2 de 6 · Brief comercial</Kicker>
+        <Kicker>{t("Paso 2 de 6 · Brief comercial")}</Kicker>
         {placement && <Badge tone="slate" icon="map-pin">Ubicación: {placement.page} · {placement.name}</Badge>}
         {placement && placement.scope && <Badge tone="purple" icon="crosshair">Alcance: {placement.scope.label}</Badge>}
-        {ready && <Badge tone="green" icon="check-circle-2">Brief completo</Badge>}
+        {ready && <Badge tone="green" icon="check-circle-2">{t("Brief completo")}</Badge>}
       </div>
 
       {arrivedComplete ? (
@@ -40,7 +40,7 @@ function BriefStage({ campaign: initialCampaign, onGenerate, onCampaignReady, on
             <Icon name="sparkles" size={18} />
           </div>
           <div style={{ minWidth: 0, flex: 1 }}>
-            <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>El agente preparó este brief</div>
+            <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>{t("El agente preparó este brief")}</div>
             <div style={{ fontFamily: "Inter", fontSize: 12, color: "#64748B", marginTop: 2 }}>
               {(campaign && campaign.raw_brief) || "Revisa los campos propuestos — puedes aceptarlos tal cual o editarlos (chips a la derecha, o pídele cambios al agente en el chat)."}
             </div>

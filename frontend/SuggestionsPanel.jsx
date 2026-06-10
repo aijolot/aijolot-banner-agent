@@ -7,9 +7,9 @@
 const { useState: useStateSP, useEffect: useEffectSP } = React;
 
 const KIND_META = {
-  calendar_event: { icon: "calendar", label: "Fecha comercial", tone: "cyan" },
+  calendar_event: { icon: "calendar", label: t("Fecha comercial"), tone: "cyan" },
   performance_refresh: { icon: "trending-down", label: "Performance", tone: "amber" },
-  catalog_signal: { icon: "package", label: "Catálogo", tone: "green" },
+  catalog_signal: { icon: "package", label: t("Catálogo"), tone: "green" },
 };
 
 function SuggestionCard({ s, onAccept, onDismiss, busy }) {
@@ -31,13 +31,13 @@ function SuggestionCard({ s, onAccept, onDismiss, busy }) {
         </div>
         {s.rationale ? <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", lineHeight: 1.45 }}>{s.rationale}</div> : null}
         {s.expires_at ? (
-          <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>Vigente hasta {String(s.expires_at).slice(0, 10)}</div>
+          <div style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>{t("Vigente hasta")} {String(s.expires_at).slice(0, 10)}</div>
         ) : null}
       </div>
       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-        <Button variant="ghost" icon="x" onClick={() => onDismiss(s)} disabled={busy}>Descartar</Button>
+        <Button variant="ghost" icon="x" onClick={() => onDismiss(s)} disabled={busy}>{t("Descartar")}</Button>
         <Button variant="primary" icon={busy ? "loader" : (s.kind === "performance_refresh" ? "refresh-cw" : "sparkles")} onClick={() => onAccept(s)} disabled={busy}>
-          {s.kind === "performance_refresh" ? "Aplicar refresh" : "Crear campaña"}
+          {s.kind === "performance_refresh" ? t("Aplicar refresh") : t("Crear campaña")}
         </Button>
       </div>
     </div>
@@ -84,7 +84,7 @@ function SuggestionsPanel({ onCampaignCreated, onNotice }) {
     <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <Icon name="sparkles" size={15} color="#0891B2" />
-        <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 14, color: "#002B57" }}>El agente sugiere</span>
+        <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 14, color: "#002B57" }}>{t("El agente sugiere")}</span>
         {status === "loading" ? <Spinner size={13} /> : <Badge tone="cyan">{rows.length}</Badge>}
       </div>
       {rows.map((s) => (

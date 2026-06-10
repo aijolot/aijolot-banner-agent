@@ -17,37 +17,39 @@ from app.services.banners.fatigue_detector import FatigueSignal
 
 EST_ADVICE_USD = 0.002
 
-_DETERMINISTIC_CHANGES = [
-    "Renueva el headline con un ángulo de beneficio distinto (mismo tono de marca).",
-    "Cambia el fondo a una variante fresca de la paleta para romper la ceguera del banner.",
-    "Prueba un CTA de acción distinta (p. ej. de 'Compra ahora' a 'Descubre la colección').",
-]
+def _deterministic_changes(lang: str) -> list[str]:
+    from app.core.i18n import t
+
+    return [t(lang, "perf.change_headline"), t(lang, "perf.change_background"), t(lang, "perf.change_cta")]
 
 
 class _ProposedChanges(BaseModel):
     changes: list[str] = Field(default_factory=list)
 
 
-async def _proposed_changes(signal: FatigueSignal, *, settings: Any = None, cost_guard: Any = None) -> tuple[list[str], str]:
+async def _proposed_changes(signal: FatigueSignal, *, settings: Any = None, cost_guard: Any = None, lang: str = "es") -> tuple[list[str], str]:
+    from app.core.i18n import lang_name
+
+    fallback = _deterministic_changes(lang)
     if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
-        return list(_DETERMINISTIC_CHANGES), "deterministic"
+        return fallback, "deterministic"
     try:
         from app.services.gemini.cost_guard import get_default_cost_guard
 
         guard = cost_guard or get_default_cost_guard(settings)
         if not guard.check_and_reserve(EST_ADVICE_USD).allowed:
-            return list(_DETERMINISTIC_CHANGES), "deterministic"
+            return fallback, "deterministic"
         result = await gemini_text.generate(
             "An ecommerce banner is fatiguing: " + signal.reason + " Propose exactly 3 concrete refresh changes "
-            "(copy / background / CTA) a banner agent can apply, each ONE sentence in Spanish. "
+            f"(copy / background / CTA) a banner agent can apply, each ONE sentence in {lang_name(lang)}. "
             "Return JSON {changes:[...]}.",
             model=gemini_text.FLASH_MODEL,
             structured=_ProposedChanges,
         )
         changes = [c.strip()[:200] for c in (result.changes if isinstance(result, _ProposedChanges) else []) if c.strip()]
-        return (changes[:3], "gemini") if changes else (list(_DETERMINISTIC_CHANGES), "deterministic")
+        return (changes[:3], "gemini") if changes else (fallback, "deterministic")
     except Exception:  # noqa: BLE001 — advice is best-effort
-        return list(_DETERMINISTIC_CHANGES), "deterministic"
+        return fallback, "deterministic"
 
 
 async def propose_refresh(
@@ -57,20 +59,23 @@ async def propose_refresh(
     campaign_title: str = "",
     settings: Any = None,
     cost_guard: Any = None,
+    lang: str = "es",
 ) -> dict[str, Any]:
     """Upsert the performance_refresh suggestion for this campaign+signal."""
-    changes, source = await _proposed_changes(signal, settings=settings, cost_guard=cost_guard)
+    from app.core.i18n import t
+
+    changes, source = await _proposed_changes(signal, settings=settings, cost_guard=cost_guard, lang=lang)
     label = campaign_title or signal.campaign_id[:8]
     return suggestions.upsert_by_dedupe_key(
         kind="performance_refresh",
         dedupe_key=f"perf:{signal.campaign_id}:{signal.kind}",
-        title=f"Refresca el banner de «{label}»",
-        rationale=signal.reason + " Propongo un refresh dirigido para recuperar el CTR.",
+        title=t(lang, "perf.title", label=label),
+        rationale=signal.reason + t(lang, "perf.rationale_suffix"),
         payload={
             "trigger": {"kind": signal.kind, **signal.metrics},
             "proposed_changes": changes,
             "changes_source": source,
-            "refresh_prompt": "Refresca el banner sin salir de marca: " + " ".join(changes),
+            "refresh_prompt": t(lang, "perf.refresh_prompt", changes=" ".join(changes)),
         },
         campaign_id=signal.campaign_id,
         source_refs=[{"type": "performance", "id": signal.campaign_id, "title": "Snapshots de performance"}],
@@ -83,4 +88,7 @@ def refresh_prompt_from_suggestion(suggestion_row: dict[str, Any]) -> str:
     if prompt:
         return prompt
     changes = [str(c) for c in (payload.get("proposed_changes") or [])]
-    return "Refresca el banner sin salir de marca: " + " ".join(changes or _DETERMINISTIC_CHANGES)
+    from app.core.i18n import t
+
+    lang = str((payload.get("trigger") or {}).get("lang") or "es")
+    return t(lang, "perf.refresh_prompt", changes=" ".join(changes or _deterministic_changes(lang)))

@@ -150,7 +150,7 @@ def _directed_edit_block(instruction: str, base_background: Any) -> str:
     return block
 
 
-def _build_prompt(concept: Any, brand_context: Any, count: int, *, instruction: str = "", base_background: Any = None) -> str:
+def _build_prompt(concept: Any, brand_context: Any, count: int, *, instruction: str = "", base_background: Any = None, lang_label: str = "Spanish (Mexico)") -> str:
     copy = _get(concept, "copy", {}) or {}
     headline = _get(copy, "headline", "") if isinstance(copy, dict) else ""
     subheadline = _get(copy, "subheadline", "") if isinstance(copy, dict) else ""
@@ -189,6 +189,7 @@ def _build_prompt(concept: Any, brand_context: Any, count: int, *, instruction: 
         "- Ensure accessible contrast for overlaid HTML copy by choosing a legible `color` against the BRIGHT "
         "background (dark ink on light/warm fields), not by dimming the art.\n"
         "- Provide a short name, a one-line description, the css, a minimal html wrapper, and a rationale.\n"
+        f"Name, description and rationale MUST be written in {lang_label}.\n"
         "Return JSON matching the provided schema."
     )
 
@@ -202,6 +203,7 @@ async def run(
     settings: Any = None,
     instruction: str = "",
     base_background: Any = None,
+    lang: str = "es",
 ) -> tuple[list[BackgroundOption], str]:
     """Return (options, source) where source is 'gemini' or 'deterministic'.
 
@@ -226,8 +228,10 @@ async def run(
         return _fallback_options(brand_context, count), "deterministic"
 
     try:
+        from app.core.i18n import lang_name
+
         result = await gemini_text.generate(
-            _build_prompt(concept, brand_context, count, instruction=instruction, base_background=base_background),
+            _build_prompt(concept, brand_context, count, instruction=instruction, base_background=base_background, lang_label=lang_name(lang)),
             model=gemini_text.FLASH_MODEL,
             structured=BackgroundOptionsOutput,
         )

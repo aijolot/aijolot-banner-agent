@@ -28,6 +28,7 @@ async def run_performance_loop(
     provider: Any = None,
     settings: Any = None,
     now: datetime | None = None,
+    lang: str = "es",
 ) -> dict[str, Any]:
     """One pass over the given campaigns. Returns a job summary."""
     now = now or datetime.now(timezone.utc)
@@ -49,13 +50,15 @@ async def run_performance_loop(
         except Exception:  # noqa: BLE001 — one campaign's sync never blocks the rest
             continue
         rows = performance_service.snapshots.list_by_campaign_id(campaign_id=campaign_id, limit=30)
-        signal = fatigue_detector.evaluate(campaign_id, list(rows), published_at=published_at, now=now)
+        campaign_language = str(((campaign.get("structured_brief") or {}) if isinstance(campaign.get("structured_brief"), dict) else {}).get("language") or lang)
+        signal = fatigue_detector.evaluate(campaign_id, list(rows), published_at=published_at, now=now, lang=campaign_language)
         if signal is not None:
             await propose_refresh(
                 signal,
                 suggestions=suggestions,
                 campaign_title=str(campaign.get("title") or ""),
                 settings=settings,
+                lang=campaign_language,
             )
             proposed.append(campaign_id)
     return {"campaigns_synced": synced, "refresh_proposals": proposed}
@@ -79,11 +82,14 @@ def handle_performance_sync_job(job: dict[str, Any]) -> dict[str, Any]:
             campaigns = [dict(row) for row in lister(team_id=team_id, limit=100)]
         except Exception:  # noqa: BLE001 — no listable campaigns → empty pass
             campaigns = []
+    from app.services.banners.calendar_service import configured_calendar_service_for_team
+
     return run_coro(
         run_performance_loop(
             campaigns=campaigns,
             performance_service=performance,
             suggestions=suggestions,
             settings=settings,
+            lang=configured_calendar_service_for_team(team_id).lang,
         )
     )

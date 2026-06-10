@@ -7,7 +7,7 @@ function Sparkline({ data, w = 320, h = 70, color = "#22D3EE" }) {
   if (!Array.isArray(data) || data.length < 2) {
     return (
       <div style={{ height: h, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter", fontSize: 12, color: "#94A3B8" }}>
-        Sin serie de CTR todavía — sincroniza snapshots de performance.
+        {t("Sin serie de CTR todavía — sincroniza snapshots de performance.")}
       </div>
     );
   }
@@ -97,7 +97,7 @@ function proposalLiftLabel(lift) {
 function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   const [v2, setV2] = useStateP("idle"); // idle | building | ready
   const [backendPerf, setBackendPerf] = useStateP(null);
-  const [perfNotice, setPerfNotice] = useStateP("Cargando métricas del backend…");
+  const [perfNotice, setPerfNotice] = useStateP(t("Cargando métricas del backend…"));
   const [revisionId, setRevisionId] = useStateP(null);
   const [revision, setRevision] = useStateP(null);  // full latest revision (concept + variants) for the final-banner preview
   const [perfDevice, setPerfDevice] = useStateP("desktop");
@@ -295,7 +295,7 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
       {!kpis.length ? (
         <GlassCard style={{ padding: 20, display: "flex", alignItems: "center", gap: 10, fontFamily: "Inter", fontSize: 13, color: "#475569" }}>
           <Icon name="database-zap" size={16} color="#94A3B8" />
-          Sin métricas registradas para esta campaña. Usa «Registrar snapshot» o espera el sync automático del agente.
+          {t("Sin métricas registradas para esta campaña. Usa «Registrar snapshot» o espera el sync automático del agente.")}
         </GlassCard>
       ) : null}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
