@@ -23,6 +23,8 @@ class BrandContextRepository:
         "palette",
         "color_system",
         "typography",
+        "typography_system",
+        "discovery_snapshot",
         "voice",
         "allowed_rules",
         "forbidden_rules",
@@ -86,6 +88,27 @@ class BrandContextRepository:
         if isinstance(data_out, list):
             return dict(data_out[0]) if data_out else {}
         return dict(data_out or {})
+
+    def update_fields(self, *, team_id: str, slug: str, data: dict[str, Any]) -> dict[str, Any] | None:
+        """Update a subset of writable columns on an existing, non-archived row.
+
+        Returns the updated row, or None when no matching row exists. Unlike
+        upsert, this never tries to create a row (partial payloads would violate
+        not-null columns such as name).
+        """
+        payload = {key: value for key, value in data.items() if key in self.writable_columns}
+        if not payload:
+            return self.get_by_slug(team_id=team_id, slug=slug)
+        out = execute_data(
+            self.client.table(self.table_name)
+            .update(payload)
+            .eq("team_id", team_id)
+            .eq("slug", slug)
+            .is_("archived_at", "null")
+        )
+        if isinstance(out, list):
+            return dict(out[0]) if out else None
+        return dict(out) if out else None
 
     def archive(self, *, team_id: str, slug: str) -> None:
         execute_data(

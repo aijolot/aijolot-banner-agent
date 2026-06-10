@@ -39,6 +39,39 @@ def _color_system(primary_hex: str = "#111111", primary_label: str = "Hero Ink")
     }
 
 
+def _extended_typography() -> dict:
+    return {
+        "display": "Archivo Black",
+        "body": "Inter",
+        "headline": "Archivo Black",
+        "accent": "Caveat",
+        "approved_fonts": [
+            {
+                "family": "Archivo Black",
+                "css_stack": "'Archivo Black', 'Arial Black', sans-serif",
+                "category": "display",
+                "source": "shopify_theme",
+                "status": "approved",
+                "recommended_roles": ["display", "headline"],
+                "rationale": "Storefront hero already uses it.",
+                "evidence_refs": ["theme:config/settings_data.json"],
+            }
+        ],
+        "discarded_fonts": [
+            {
+                "family": "Papyrus",
+                "css_stack": "Papyrus, fantasy",
+                "category": "handwritten",
+                "source": "gemini_suggested",
+                "status": "discarded",
+                "recommended_roles": [],
+                "rationale": "Off-brand.",
+                "evidence_refs": [],
+            }
+        ],
+    }
+
+
 def _brand_payload_without_color_system() -> dict:
     return {
         "id": "roles_brand",
@@ -264,6 +297,123 @@ def test_brand_service_normalizes_old_records_without_color_system_from_palette(
     assert brand.color_system.primary.hex == "#111111"
     assert brand.color_system.secondary.hex == "#F5E8D0"
     assert brand.color_system.tertiary.hex == "#FF6655"
+
+
+def test_brand_service_record_payload_keeps_legacy_typography_and_full_typography_system() -> None:
+    payload = _brand_payload_without_color_system()
+    payload["typography"] = _extended_typography()
+    brand = BrandContext(**payload)
+
+    record = BrandService._record_payload_from_brand(brand)
+
+    # Old readers of the typography column keep seeing the two-key shape only.
+    assert record["typography"] == {"display": "Archivo Black", "body": "Inter"}
+    # The full extended dump goes to the dedicated typography_system column.
+    assert record["typography_system"]["headline"] == "Archivo Black"
+    assert record["typography_system"]["accent"] == "Caveat"
+    assert record["typography_system"]["approved_fonts"][0]["family"] == "Archivo Black"
+    assert record["typography_system"]["discarded_fonts"][0]["status"] == "discarded"
+    # Discovery evidence never rides along with brand saves.
+    assert "discovery_snapshot" not in record
+
+
+def test_brand_service_restores_typography_system_before_legacy_typography() -> None:
+    row = {
+        "id": "uuid-fonts",
+        "slug": "fonts_brand",
+        "name": "Fonts Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "typography": {"display": "Legacy Display", "body": "Legacy Body"},
+        "typography_system": _extended_typography(),
+        "source_metadata": {"shopify": {"store_domain": "fonts.myshopify.com"}},
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.typography.display == "Archivo Black"
+    assert brand.typography.headline == "Archivo Black"
+    assert [font.family for font in brand.typography.approved_fonts] == ["Archivo Black"]
+    assert [font.family for font in brand.typography.discarded_fonts] == ["Papyrus"]
+
+
+def test_brand_service_legacy_rows_without_typography_system_load_with_defaults() -> None:
+    row = {
+        "id": "uuid-legacy-fonts",
+        "slug": "legacy_fonts_brand",
+        "name": "Legacy Fonts Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "typography": {"display": "Space Grotesk", "body": "Inter"},
+        "typography_system": None,
+        "discovery_snapshot": None,
+        "source_metadata": {"shopify": {"store_domain": "legacy.myshopify.com"}},
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.typography.display == "Space Grotesk"
+    assert brand.typography.body == "Inter"
+    assert brand.typography.headline is None
+    assert brand.typography.accent is None
+    assert brand.typography.approved_fonts == []
+    assert brand.typography.discarded_fonts == []
+
+
+def test_put_and_get_brand_round_trips_extended_typography_root_and_v1(monkeypatch):
+    import app.services.brand_store as store
+
+    repository = FakeBrandRepository()
+    service = BrandService(repository=repository, team_id="team-1")
+    monkeypatch.setattr(store, "_default_service", lambda: service)
+    monkeypatch.setattr(store, "service_for_team", lambda team_id: service)
+
+    payload = _brand_payload_without_color_system()
+    payload["id"] = "fonts_brand"
+    payload["typography"] = _extended_typography()
+
+    saved = client.put("/brands/fonts_brand", json=payload)
+    assert saved.status_code == 200
+    assert saved.json()["typography"]["approved_fonts"][0]["family"] == "Archivo Black"
+
+    # Stored row keeps the legacy column stable and the full dump separate.
+    stored = repository.rows["fonts_brand"]
+    assert stored["typography"] == {"display": "Archivo Black", "body": "Inter"}
+    assert stored["typography_system"]["discarded_fonts"][0]["family"] == "Papyrus"
+
+    for response in (
+        client.get("/brands/fonts_brand"),
+        client.get("/api/v1/brands/fonts_brand", headers=AUTH_HEADERS),
+    ):
+        assert response.status_code == 200
+        typography = response.json()["typography"]
+        assert typography["display"] == "Archivo Black"
+        assert typography["headline"] == "Archivo Black"
+        assert typography["accent"] == "Caveat"
+        assert [font["family"] for font in typography["approved_fonts"]] == ["Archivo Black"]
+        assert [font["status"] for font in typography["discarded_fonts"]] == ["discarded"]
+
+    v1_saved = client.put("/api/v1/brands/fonts_brand", headers=AUTH_HEADERS, json=payload)
+    assert v1_saved.status_code == 200
+    assert v1_saved.json()["typography"]["discarded_fonts"][0]["family"] == "Papyrus"
+
+
+def test_put_brand_with_extended_typography_round_trips_markdown_fallback(tmp_path, monkeypatch):
+    import app.services.brand_store as store
+
+    _clear_supabase_env(monkeypatch)
+    seed = store.get_brand("maison").model_dump()
+    monkeypatch.setattr(store, "BRANDS_DIR", tmp_path)
+    seed["typography"] = _extended_typography()
+
+    saved = client.put("/brands/maison", json=seed)
+    assert saved.status_code == 200
+    assert (tmp_path / "maison.md").exists()
+
+    loaded = client.get("/brands/maison")
+    assert loaded.status_code == 200
+    typography = loaded.json()["typography"]
+    assert typography["headline"] == "Archivo Black"
+    assert [font["family"] for font in typography["approved_fonts"]] == ["Archivo Black"]
+    assert [font["family"] for font in typography["discarded_fonts"]] == ["Papyrus"]
 
 
 def test_import_markdown_endpoint_upserts_into_supabase_service(tmp_path, monkeypatch):
