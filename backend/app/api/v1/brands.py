@@ -7,8 +7,10 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.core.auth import require_user_context
 from app.schemas.brand import BrandContext, BrandSummary
+from app.schemas.palette_suggestions import PaletteSuggestionResponse, PaletteSuggestionRouteRequest
 from app.services import brand_store
 from app.services.brands.markdown_importer import BrandMarkdownImportError
+from app.services.brands.palette_suggestions import PaletteSuggestionService, PaletteSuggestionUnavailable
 
 router = APIRouter(prefix="/brands", tags=["brands"])
 
@@ -55,3 +57,17 @@ def put_brand(request: Request, brand_id: BrandIdPath, brand: BrandContext) -> B
         return _service(request).save_brand(brand_id, brand)
     except (BrandMarkdownImportError, ValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/{brand_id}/palette-suggestions", response_model=PaletteSuggestionResponse)
+async def suggest_palette(
+    request: Request,
+    brand_id: BrandIdPath,
+    payload: PaletteSuggestionRouteRequest,
+) -> PaletteSuggestionResponse:
+    try:
+        return await PaletteSuggestionService(_service(request)).suggest(brand_id, payload)
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except PaletteSuggestionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))

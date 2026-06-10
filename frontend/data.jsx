@@ -244,6 +244,38 @@ const BRAND_SEEDS = [
       { name: "Cream", hex: "#F4F1E8" }, { name: "Charcoal", hex: "#22281F" },
       { name: "Coral pop", hex: "#FF6B5C" },
     ],
+    color_system: {
+      primary: {
+        key: "primary", label: "Forest", hex: "#1F4D2E",
+        usage_hint: "Main brand green for identity, hero anchors, and dark natural backgrounds.",
+        agent_hint: "Prefer for dominant brand moments, headline contrast, and organic visual weight.",
+        variants: [
+          { name: "Forest", hex: "#1F4D2E", usage_hint: "Dark hero background", source: "seed_migration" },
+          { name: "Charcoal", hex: "#22281F", usage_hint: "Dark text", source: "seed_migration" },
+          { name: "Cream", hex: "#F4F1E8", usage_hint: "Light text on forest", source: "seed_migration" },
+        ],
+      },
+      secondary: {
+        key: "secondary", label: "Avocado", hex: "#7CB342",
+        usage_hint: "Fresh support green for secondary surfaces, product accents, and natural balance.",
+        agent_hint: "Use to soften forest-heavy layouts and add fresh grocery energy without overpowering CTAs.",
+        variants: [
+          { name: "Avocado", hex: "#7CB342", usage_hint: "Fresh accent fill", source: "seed_migration" },
+          { name: "Cream", hex: "#F4F1E8", usage_hint: "Soft background", source: "seed_migration" },
+          { name: "Forest", hex: "#1F4D2E", usage_hint: "Text on light surfaces", source: "seed_migration" },
+        ],
+      },
+      tertiary: {
+        key: "tertiary", label: "Coral pop", hex: "#FF6B5C",
+        usage_hint: "Warm accent reserved for CTAs, promotional badges, and high-attention details.",
+        agent_hint: "Use sparingly for CTA and badge emphasis; avoid full coral backgrounds.",
+        variants: [
+          { name: "Coral pop", hex: "#FF6B5C", usage_hint: "CTA fill", source: "seed_migration" },
+          { name: "Avocado", hex: "#7CB342", usage_hint: "CTA hover", source: "seed_migration" },
+          { name: "Cream", hex: "#F4F1E8", usage_hint: "CTA text", source: "seed_migration" },
+        ],
+      },
+    },
     typography: { display: "Space Grotesk", body: "Inter" },
     voice: { tone: ["Fresh", "Friendly", "Confident"], prohibited_words: ["cheap", "guys", "crazy deal"], required_phrases: ["free shipping over $50"] },
     logo_url: "https://cdn.avocadostore.example/logo.svg",
@@ -258,6 +290,38 @@ const BRAND_SEEDS = [
       { name: "Electric", hex: "#3D5AFE" }, { name: "Slate", hex: "#2B2F36" },
       { name: "Acid", hex: "#D4FF3F" },
     ],
+    color_system: {
+      primary: {
+        key: "primary", label: "Ink", hex: "#0E0E10",
+        usage_hint: "Core black for bold identity, high-contrast type, and dominant streetwear framing.",
+        agent_hint: "Prefer for primary text, stark backgrounds, and minimal premium-street layouts.",
+        variants: [
+          { name: "Ink", hex: "#0E0E10", usage_hint: "Dark hero background", source: "seed_migration" },
+          { name: "Slate", hex: "#2B2F36", usage_hint: "Muted dark panel", source: "seed_migration" },
+          { name: "Bone", hex: "#EDE8E0", usage_hint: "Reverse text", source: "seed_migration" },
+        ],
+      },
+      secondary: {
+        key: "secondary", label: "Bone", hex: "#EDE8E0",
+        usage_hint: "Warm neutral for editorial backgrounds, cards, and breathing room around bold graphics.",
+        agent_hint: "Use as the clean support surface for minimal compositions and strong ink typography.",
+        variants: [
+          { name: "Bone", hex: "#EDE8E0", usage_hint: "Soft background", source: "seed_migration" },
+          { name: "Slate", hex: "#2B2F36", usage_hint: "Secondary text", source: "seed_migration" },
+          { name: "Ink", hex: "#0E0E10", usage_hint: "Text on bone", source: "seed_migration" },
+        ],
+      },
+      tertiary: {
+        key: "tertiary", label: "Electric", hex: "#3D5AFE",
+        usage_hint: "High-energy accent for CTAs, active states, drops, and small high-attention elements.",
+        agent_hint: "Use sparingly for CTA emphasis, badges, and campaign highlights; pair with ink or bone.",
+        variants: [
+          { name: "Electric", hex: "#3D5AFE", usage_hint: "CTA fill", source: "seed_migration" },
+          { name: "Acid", hex: "#D4FF3F", usage_hint: "Badge accent", source: "seed_migration" },
+          { name: "Ink", hex: "#0E0E10", usage_hint: "CTA text", source: "seed_migration" },
+        ],
+      },
+    },
     typography: { display: "Space Grotesk", body: "Inter" },
     voice: { tone: ["Bold", "Minimal", "Street"], prohibited_words: ["elegant", "luxurious", "timeless"], required_phrases: [] },
     logo_url: "https://cdn.demoapparel.example/wordmark.svg",
@@ -272,6 +336,38 @@ const BRAND_SEEDS = [
       { name: "Boss gold", hex: "#C9A24B" }, { name: "Ivory", hex: "#F5F2EC" },
       { name: "Rosé accent", hex: "#B23A6B" },
     ],
+    color_system: {
+      primary: {
+        key: "primary", label: "Noir base", hex: "#0B1622",
+        usage_hint: "Premium dark foundation for hero backgrounds, headline contrast, and luxury depth.",
+        agent_hint: "Prefer for dominant brand surfaces, product framing, and high-contrast premium layouts.",
+        variants: [
+          { name: "Noir base", hex: "#0B1622", usage_hint: "Dark hero background", source: "seed_migration" },
+          { name: "Steel navy", hex: "#1E3A52", usage_hint: "Layered dark panel", source: "seed_migration" },
+          { name: "Ivory", hex: "#F5F2EC", usage_hint: "Light text on noir", source: "seed_migration" },
+        ],
+      },
+      secondary: {
+        key: "secondary", label: "Steel navy", hex: "#1E3A52",
+        usage_hint: "Cool support color for secondary surfaces, glassmorphism depth, and refined balance.",
+        agent_hint: "Use for gradient depth, panels, and supporting fields around the noir base.",
+        variants: [
+          { name: "Steel navy", hex: "#1E3A52", usage_hint: "Secondary background", source: "seed_migration" },
+          { name: "Ivory", hex: "#F5F2EC", usage_hint: "Soft background", source: "seed_migration" },
+          { name: "Noir base", hex: "#0B1622", usage_hint: "Dark text", source: "seed_migration" },
+        ],
+      },
+      tertiary: {
+        key: "tertiary", label: "Boss gold", hex: "#C9A24B",
+        usage_hint: "Luxury accent for CTAs, premium badges, highlights, and small conversion moments.",
+        agent_hint: "Use sparingly for CTA, badge, and promo emphasis while preserving premium restraint.",
+        variants: [
+          { name: "Boss gold", hex: "#C9A24B", usage_hint: "CTA fill", source: "seed_migration" },
+          { name: "Rosé accent", hex: "#B23A6B", usage_hint: "Badge accent", source: "seed_migration" },
+          { name: "Ivory", hex: "#F5F2EC", usage_hint: "CTA text", source: "seed_migration" },
+        ],
+      },
+    },
     typography: { display: "Space Grotesk", body: "Inter" },
     voice: { tone: ["Premium", "Confident", "Direct"], prohibited_words: ["cheap", "discount blowout"], required_phrases: ["logo always uppercase"] },
     logo_url: "https://cdn.maison.example/maison-mark.svg",
@@ -307,6 +403,18 @@ const BrandAPI = {
       const i = _mem.findIndex((x) => x.id === id);
       if (i >= 0) _mem[i] = _clone(brand); else _mem.push(_clone(brand));
       return _clone(brand);
+    }
+  },
+  async paletteSuggestions(id, payload) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/palette-suggestions`), payload || {});
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e; // backend validation/Gemini errors should be shown as-is
+      this.online = false;
+      const err = new Error("AI Palette Suggestions unavailable: backend/Gemini service is not reachable.");
+      err.body = err.message;
+      throw err;
     }
   },
 };

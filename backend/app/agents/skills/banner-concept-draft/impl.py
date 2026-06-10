@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from app.agents.state import BannerSessionState, Campaign, Concept, Variant
 from app.agents.tools import gemini_text
 from app.schemas.brand import BrandContext
+from app.services.brands.color_roles import choose_role_color
 
 EST_CONCEPT_COPY_USD = 0.002
 
@@ -194,9 +195,10 @@ def draft_concept(
     subcopy_parts.append(f"with a {_remove_prohibited(tone.lower(), prohibited_words) or 'clear'} tone")
     subcopy = _truncate(_remove_prohibited(" — ".join(subcopy_parts), prohibited_words), 110)
 
-    primary = brand_context.palette[0]
-    secondary = brand_context.palette[1] if len(brand_context.palette) > 1 else brand_context.palette[0]
-    accent = brand_context.palette[2] if len(brand_context.palette) > 2 else primary
+    primary = choose_role_color(brand_context, "primary", "main identity text visual anchor")
+    secondary = choose_role_color(brand_context, "secondary", "support background surface")
+    accent = choose_role_color(brand_context, "tertiary", "cta accent button highlight")
+    cta_text = choose_role_color(brand_context, "secondary", "text foreground on cta")
 
     variant_notes = []
     for variant in variants or []:
@@ -228,7 +230,7 @@ def draft_concept(
         part for part in [
             _sanitize_image_fragment(f"{background_mode} ecommerce banner background"),
             safe_catalog_line or "featured product scene",
-            f"brand palette tokens {_sanitize_image_fragment(primary.name)} and {_sanitize_image_fragment(secondary.name)}",
+            f"brand color roles {_sanitize_image_fragment(primary['label'])} primary anchor and {_sanitize_image_fragment(secondary['label'])} secondary support",
 
             "clean negative space for later HTML copy and product focus",
             "mark-free, interface-free, people-free commercial composition",
@@ -245,10 +247,10 @@ def draft_concept(
             "rationale": _remove_prohibited(f"Connects {goal} to {audience} with {urgency} urgency.", prohibited_words),
         },
         palette_usage={
-            "background": secondary.name,
-            "text": primary.name,
-            "cta_background": accent.name,
-            "cta_text": secondary.name,
+            "background": secondary["token"],
+            "text": primary["token"],
+            "cta_background": accent["token"],
+            "cta_text": cta_text["token"],
         },
         image_prompt=image_prompt,
         hierarchy_notes=hierarchy_notes,

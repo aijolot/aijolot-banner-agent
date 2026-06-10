@@ -125,10 +125,14 @@ class BrandService:
         if isinstance(directives, str):
             directives = [line.strip(" -") for line in directives.splitlines() if line.strip(" -")]
         shopify = metadata.get("shopify") or {"store_domain": metadata.get("store_domain") or "unknown.myshopify.com"}
+        color_system = row.get("color_system")
+        if color_system is None:
+            color_system = metadata.get("color_system")
         return BrandContext(
             id=str(row.get("slug") or row.get("id")),
             name=row["name"],
             palette=row.get("palette") or [],
+            color_system=color_system,
             typography=row.get("typography") or {},
             voice=voice,
             logo_url=row.get("logo_url"),
@@ -146,6 +150,7 @@ class BrandService:
             "name": data["name"],
             "description": data.get("notes") or None,
             "palette": data.get("palette") or [],
+            "color_system": data.get("color_system"),
             "typography": data.get("typography") or {},
             "voice": voice,
             "required_phrases": voice.get("required_phrases") or [],

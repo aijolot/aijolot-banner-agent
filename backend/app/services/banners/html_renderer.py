@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.agents.state import BannerAssets, Concept
+from app.services.brands.color_roles import resolve_color_token
 
 _DEFAULT_BG = "#F4F1EA"
 _DEFAULT_TEXT = "#111827"
@@ -39,23 +40,9 @@ def _brand_name(brand: Any) -> str:
     return str(data.get("name") or getattr(brand, "name", "Brand") or "Brand")
 
 
-def _palette_lookup(brand: Any) -> dict[str, str]:
-    data = _dump_model(brand)
-    palette = data.get("palette") or getattr(brand, "palette", []) or []
-    out: dict[str, str] = {}
-    for color in palette:
-        item = _dump_model(color)
-        name = str(item.get("name") or "").strip()
-        hex_value = str(item.get("hex") or "").strip()
-        if name and _HEX_RE.match(hex_value):
-            out[name] = hex_value.upper()
-    return out
-
-
 def _color(concept: Concept, brand: Any, key: str, fallback: str) -> str:
-    palette = _palette_lookup(brand)
     token = (concept.palette_usage or {}).get(key, "")
-    value = palette.get(token, token)
+    value = resolve_color_token(brand, token) or token
     return value.upper() if isinstance(value, str) and _HEX_RE.match(value) else fallback
 
 

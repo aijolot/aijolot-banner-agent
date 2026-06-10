@@ -21,8 +21,69 @@ function hexSat(hex) {
 }
 function hexRgba(hex, a) { return `rgba(${_hx(hex, 0)},${_hx(hex, 2)},${_hx(hex, 4)},${a})`; }
 
-// Map an arbitrary brand palette → the Banner's palette variables.
-function paletteToVars(palette) {
+const ROLE_KEYS = ["primary", "secondary", "tertiary"];
+const ROLE_COPY = {
+  primary: { title: "Primario", fallbackLabel: "Primary", usage_hint: "Main brand color for dominant identity moments, headline emphasis, and major visual anchors.", agent_hint: "Prefer for main brand identity, key text/visual anchors, and high-recognition surfaces." },
+  secondary: { title: "Secundario", fallbackLabel: "Secondary", usage_hint: "Support color for backgrounds, secondary surfaces, and balance around the primary color.", agent_hint: "Use for background fields, supporting surfaces, and composition balance." },
+  tertiary: { title: "Terciario / Acento", fallbackLabel: "Tertiary / Accent", usage_hint: "Accent color for CTA, highlights, badges, and small high-attention elements.", agent_hint: "Use sparingly for CTA, promotional badges, urgency marks, and highlights." },
+};
+
+function paletteColorAt(palette, idx, fallback) {
+  const c = (palette || [])[idx] || (palette || [])[0] || {};
+  return { name: c.name || fallback.name, hex: HEX_RE.test(c.hex || "") ? c.hex : fallback.hex };
+}
+function ensureColorSystem(brand) {
+  const palette = brand.palette || [];
+  const fallbacks = [
+    paletteColorAt(palette, 0, { name: "Primary", hex: "#0B1622" }),
+    paletteColorAt(palette, 1, { name: "Secondary", hex: "#1E3A52" }),
+    paletteColorAt(palette, 2, { name: "Accent", hex: "#C9A24B" }),
+  ];
+  const current = brand.color_system || {};
+  const out = {};
+  ROLE_KEYS.forEach((key, i) => {
+    const r = current[key] || {};
+    out[key] = {
+      key,
+      label: r.label || fallbacks[i].name || ROLE_COPY[key].fallbackLabel,
+      hex: r.hex || fallbacks[i].hex,
+      usage_hint: r.usage_hint || ROLE_COPY[key].usage_hint,
+      agent_hint: r.agent_hint || ROLE_COPY[key].agent_hint,
+      variants: Array.isArray(r.variants) ? r.variants : [],
+    };
+  });
+  return out;
+}
+function syncPaletteFromColorSystem(brand, colorSystem) {
+  const old = brand.palette || [];
+  const roleColors = ROLE_KEYS.map((key, i) => {
+    const r = colorSystem[key];
+    return { name: r.label || ROLE_COPY[key].fallbackLabel || `Color ${i + 1}`, hex: r.hex };
+  });
+  const extra = old.slice(3);
+  return roleColors.concat(extra);
+}
+
+function apiErrorMessage(e, fallback) {
+  if (!e) return fallback;
+  if (typeof e.body === "string") return e.body;
+  if (e.body && e.body.detail) return typeof e.body.detail === "string" ? e.body.detail : JSON.stringify(e.body.detail);
+  if (e.message) return e.message;
+  if (e.status) return `HTTP ${e.status}`;
+  return fallback;
+}
+
+// Map brand color roles (preferred) or arbitrary legacy palette → the Banner's palette variables.
+function paletteToVars(palette, colorSystem) {
+  if (colorSystem && colorSystem.primary && colorSystem.secondary && colorSystem.tertiary) {
+    const p = colorSystem.primary.hex, s = colorSystem.secondary.hex, t = colorSystem.tertiary.hex;
+    if (HEX_RE.test(p) && HEX_RE.test(s) && HEX_RE.test(t)) {
+      const bgA = hexLum(p) <= hexLum(s) ? p : s;
+      const bgB = hexLum(p) <= hexLum(s) ? s : p;
+      const ink = hexLum(bgA) < 0.45 ? "#FFFFFF" : p;
+      return { bgA, bgB, ink, sub: hexRgba(ink, 0.72), accent: t, chip: t, glow: hexRgba(t, 0.32), bottle: `linear-gradient(160deg,${bgB},${bgA})`, cap: t };
+    }
+  }
   const valid = (palette || []).filter((c) => HEX_RE.test(c.hex));
   if (!valid.length) return SEGMENTS.masculino.palette;
   const byLum = [...valid].sort((a, b) => hexLum(a.hex) - hexLum(b.hex));
@@ -40,7 +101,7 @@ function brandToSeg(brand) {
     sub: phrases[0] || "Descubre la nueva colección esta semana.",
     cta: "Comprar ahora",
     product: { name: brand.name || "Producto" },
-    palette: paletteToVars(brand.palette),
+    palette: paletteToVars(brand.palette, brand.color_system),
   };
 }
 
@@ -81,27 +142,132 @@ function ChipList({ items, onChange, placeholder, tone = "cyan", emptyHint }) {
   );
 }
 
-function PaletteEditor({ palette, onChange }) {
-  const set = (i, patch) => onChange(palette.map((c, j) => j === i ? { ...c, ...patch } : c));
-  const remove = (i) => onChange(palette.filter((_, j) => j !== i));
-  const add = () => onChange([...palette, { name: "Nuevo", hex: "#22D3EE" }]);
+function TextAreaField({ label, value, onChange, placeholder, rows = 2 }) {
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-      {palette.map((c, i) => {
-        const bad = !HEX_RE.test(c.hex);
-        return (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 9 }}>
-            <label style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0, border: "1px solid rgba(0,0,0,.08)", background: bad ? "#F1F5F9" : c.hex, position: "relative", cursor: "pointer", boxShadow: "0 4px 12px rgba(15,23,42,.1)" }}>
-              <input type="color" value={bad ? "#000000" : c.hex} onChange={(e) => set(i, { hex: e.target.value.toUpperCase() })} style={{ opacity: 0, width: "100%", height: "100%", cursor: "pointer" }} />
-            </label>
-            <input value={c.name} onChange={(e) => set(i, { name: e.target.value })} placeholder="Nombre" style={{ flex: 1, minWidth: 0, border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 10px", fontFamily: "Inter", fontSize: 12.5, color: "#002B57", outline: "none" }} />
-            <input value={c.hex} onChange={(e) => set(i, { hex: e.target.value })} placeholder="#RRGGBB" style={{ width: 104, border: `1px solid ${bad ? "#F87171" : "#E2E8F0"}`, borderRadius: 8, padding: "7px 10px", fontFamily: "Space Grotesk", fontSize: 12.5, color: bad ? "#EF4444" : "#002B57", outline: "none" }} />
-            <button onClick={() => remove(i)} disabled={palette.length <= 1} title="Quitar color" style={{ width: 30, height: 30, borderRadius: 8, border: "none", background: "transparent", cursor: palette.length <= 1 ? "default" : "pointer", color: palette.length <= 1 ? "#CBD5E1" : "#94A3B8", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Icon name="trash-2" size={15} /></button>
-          </div>
-        );
-      })}
-      <button onClick={add} style={{ alignSelf: "flex-start", display: "inline-flex", alignItems: "center", gap: 6, padding: "7px 13px", borderRadius: 9, cursor: "pointer", border: "1.5px dashed #CBD5E1", background: "transparent", color: "#0891B2", fontFamily: "Inter", fontSize: 12, fontWeight: 600 }}><Icon name="plus" size={13} /> Añadir color</button>
+    <div style={{ display: "flex", flexDirection: "column", gap: 5, flex: 1, minWidth: 0 }}>
+      <span style={{ fontFamily: "Inter", fontSize: 11, fontWeight: 600, color: "#68737D" }}>{label}</span>
+      <textarea value={value || ""} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} rows={rows} style={{
+        border: "1px solid #E2E8F0", borderRadius: 9, padding: "8px 11px", outline: "none", resize: "vertical",
+        fontFamily: "Inter", fontSize: 12.5, color: "#002B57", background: "#fff", lineHeight: 1.35,
+      }} />
     </div>
+  );
+}
+
+function ColorRoleEditor({ roleKey, role, draft, online, onRoleChange, onOnlineChange }) {
+  const [suggestState, setSuggestState] = useStateBC({ loading: false, error: "", suggestions: [] });
+  const copy = ROLE_COPY[roleKey];
+  const baseBad = !HEX_RE.test(role.hex || "");
+  const variants = role.variants || [];
+  const setRole = (patch) => onRoleChange(roleKey, { ...role, ...patch });
+  const setVariant = (i, patch) => setRole({ variants: variants.map((v, j) => j === i ? { ...v, ...patch } : v) });
+  const addVariant = () => setRole({ variants: variants.concat([{ name: "Nueva variante", hex: role.hex || "#22D3EE", usage_hint: "", source: "manual" }]) });
+  const removeVariant = (i) => setRole({ variants: variants.filter((_, j) => j !== i) });
+  const acceptedHexes = new Set(variants.map((v) => (v.hex || "").toUpperCase()));
+  const acceptSuggestion = (s) => {
+    const hex = (s.hex || "").toUpperCase();
+    if (!HEX_RE.test(hex) || acceptedHexes.has(hex)) return;
+    setRole({ variants: variants.concat([{ name: s.name || "AI suggestion", hex, usage_hint: s.usage_hint || "", source: "ai_suggested" }]) });
+  };
+  const acceptAll = () => {
+    const next = variants.slice();
+    const seen = new Set(next.map((v) => (v.hex || "").toUpperCase()));
+    (suggestState.suggestions || []).forEach((s) => {
+      const hex = (s.hex || "").toUpperCase();
+      if (HEX_RE.test(hex) && !seen.has(hex)) {
+        next.push({ name: s.name || "AI suggestion", hex, usage_hint: s.usage_hint || "", source: "ai_suggested" });
+        seen.add(hex);
+      }
+    });
+    setRole({ variants: next });
+  };
+  const requestSuggestions = async () => {
+    setSuggestState({ loading: true, error: "", suggestions: [] });
+    try {
+      const res = await BrandAPI.paletteSuggestions(draft.id, {
+        role_key: roleKey,
+        base_hex: role.hex,
+        count: 8,
+        intent: role.usage_hint || "",
+        draft_brand_context: draft,
+      });
+      setSuggestState({ loading: false, error: "", suggestions: (res && res.suggestions) || [] });
+      onOnlineChange(BrandAPI.online);
+    } catch (e) {
+      onOnlineChange(BrandAPI.online);
+      setSuggestState({ loading: false, error: apiErrorMessage(e, "AI Palette Suggestions unavailable"), suggestions: [] });
+    }
+  };
+  return (
+    <GlassCard style={{ padding: 17, display: "flex", flexDirection: "column", gap: 13, border: "1px solid rgba(34,211,238,.18)", background: "rgba(255,255,255,.72)" }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <label style={{ width: 42, height: 42, borderRadius: 12, flexShrink: 0, border: "1px solid rgba(0,0,0,.08)", background: baseBad ? "#F1F5F9" : role.hex, cursor: "pointer", boxShadow: "0 8px 18px rgba(15,23,42,.12)" }}>
+            <input type="color" value={baseBad ? "#000000" : role.hex} onChange={(e) => setRole({ hex: e.target.value.toUpperCase() })} style={{ opacity: 0, width: "100%", height: "100%", cursor: "pointer" }} />
+          </label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={{ fontFamily: "Space Grotesk", fontWeight: 700, fontSize: 15, color: "#002B57" }}>{copy.title}</span>
+            <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8" }}>{role.label || copy.fallbackLabel}</span>
+          </div>
+        </div>
+        <Button variant="secondary" icon="sparkles" disabled={suggestState.loading || !HEX_RE.test(role.hex || "")} onClick={requestSuggestions}>AI Palette Suggestions</Button>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 130px", gap: 10 }}>
+        <Field label="Nombre visible" value={role.label} onChange={(v) => setRole({ label: v })} placeholder={copy.fallbackLabel} />
+        <Field label="Base hex" value={role.hex} onChange={(v) => setRole({ hex: v })} placeholder="#RRGGBB" mono error={baseBad ? "Hex inválido" : ""} />
+      </div>
+      <TextAreaField label="Uso / helper copy" value={role.usage_hint} onChange={(v) => setRole({ usage_hint: v })} placeholder={copy.usage_hint} />
+      <TextAreaField label="Agent guidance · avanzado" value={role.agent_hint} onChange={(v) => setRole({ agent_hint: v })} placeholder={copy.agent_hint} rows={2} />
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span style={{ fontFamily: "Inter", fontSize: 11, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#0891B2" }}>Variantes permitidas</span>
+          <button onClick={addVariant} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 10px", borderRadius: 8, cursor: "pointer", border: "1.5px dashed #CBD5E1", background: "transparent", color: "#0891B2", fontFamily: "Inter", fontSize: 11.5, fontWeight: 700 }}><Icon name="plus" size={12} /> Variante manual</button>
+        </div>
+        {variants.length === 0 ? <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#94A3B8" }}>Sin variantes aún. Añade manualmente o acepta sugerencias de IA.</span> : null}
+        {variants.map((v, i) => {
+          const bad = !HEX_RE.test(v.hex || "");
+          return (
+            <div key={i} style={{ display: "grid", gridTemplateColumns: "34px 1fr 112px 1.4fr 30px", gap: 8, alignItems: "center" }}>
+              <label style={{ width: 32, height: 32, borderRadius: 9, border: "1px solid rgba(0,0,0,.08)", background: bad ? "#F1F5F9" : v.hex, cursor: "pointer" }}>
+                <input type="color" value={bad ? "#000000" : v.hex} onChange={(e) => setVariant(i, { hex: e.target.value.toUpperCase() })} style={{ opacity: 0, width: "100%", height: "100%", cursor: "pointer" }} />
+              </label>
+              <input value={v.name || ""} onChange={(e) => setVariant(i, { name: e.target.value })} placeholder="Nombre" style={{ minWidth: 0, border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 9px", fontFamily: "Inter", fontSize: 12, color: "#002B57", outline: "none" }} />
+              <input value={v.hex || ""} onChange={(e) => setVariant(i, { hex: e.target.value })} placeholder="#RRGGBB" style={{ border: `1px solid ${bad ? "#F87171" : "#E2E8F0"}`, borderRadius: 8, padding: "7px 9px", fontFamily: "Space Grotesk", fontSize: 12, color: bad ? "#EF4444" : "#002B57", outline: "none" }} />
+              <input value={v.usage_hint || ""} onChange={(e) => setVariant(i, { usage_hint: e.target.value })} placeholder="Uso sugerido" style={{ minWidth: 0, border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 9px", fontFamily: "Inter", fontSize: 12, color: "#002B57", outline: "none" }} />
+              <button onClick={() => removeVariant(i)} title="Eliminar variante" style={{ width: 30, height: 30, borderRadius: 8, border: "none", background: "transparent", cursor: "pointer", color: "#94A3B8", display: "flex", alignItems: "center", justifyContent: "center" }}><Icon name="trash-2" size={14} /></button>
+            </div>
+          );
+        })}
+      </div>
+
+      {suggestState.loading || suggestState.error || suggestState.suggestions.length ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 9, padding: 12, borderRadius: 12, background: "rgba(34,211,238,.06)", border: "1px solid rgba(34,211,238,.18)" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <span style={{ fontFamily: "Inter", fontSize: 11, fontWeight: 800, letterSpacing: ".06em", textTransform: "uppercase", color: "#0891B2" }}>Gemini suggestions</span>
+            {suggestState.suggestions.length ? <Button variant="secondary" icon="check" onClick={acceptAll}>Aceptar todo</Button> : null}
+          </div>
+          {suggestState.loading ? <span style={{ display: "inline-flex", alignItems: "center", gap: 8, fontFamily: "Inter", fontSize: 12.5, color: "#0891B2" }}><Spinner size={14} /> Consultando Gemini…</span> : null}
+          {suggestState.error ? <span style={{ display: "inline-flex", alignItems: "center", gap: 7, fontFamily: "Inter", fontSize: 12, color: "#EF4444", fontWeight: 600 }}><Icon name="triangle-alert" size={14} /> {suggestState.error}</span> : null}
+          {suggestState.suggestions.map((s, i) => {
+            const hex = (s.hex || "").toUpperCase();
+            const bad = !HEX_RE.test(hex);
+            const accepted = acceptedHexes.has(hex);
+            return (
+              <div key={`${hex}-${i}`} style={{ display: "grid", gridTemplateColumns: "32px 1fr auto", gap: 9, alignItems: "center", padding: 9, borderRadius: 10, background: "rgba(255,255,255,.78)", border: "1px solid rgba(226,232,240,.9)" }}>
+                <span style={{ width: 30, height: 30, borderRadius: 9, background: bad ? "#F1F5F9" : hex, border: "1px solid rgba(0,0,0,.08)" }} />
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: "flex", gap: 7, alignItems: "baseline", flexWrap: "wrap" }}><span style={{ fontFamily: "Inter", fontSize: 12.5, fontWeight: 800, color: "#002B57" }}>{s.name || "Suggestion"}</span><span style={{ fontFamily: "Space Grotesk", fontSize: 12, color: bad ? "#EF4444" : "#68737D" }}>{hex}</span></div>
+                  <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#68737D" }}>{s.usage_hint || ""}{s.rationale ? ` · ${s.rationale}` : ""}</div>
+                </div>
+                <Button variant={accepted ? "secondary" : "shine"} icon={accepted ? "check" : "plus"} disabled={bad || accepted} onClick={() => acceptSuggestion(s)}>{accepted ? "Aceptada" : "Aceptar"}</Button>
+              </div>
+            );
+          })}
+        </div>
+      ) : online === false ? <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#B45309" }}>Modo offline: las sugerencias de Gemini requieren backend conectado.</span> : null}
+    </GlassCard>
   );
 }
 
@@ -138,7 +304,7 @@ function BrandContextView() {
         setBrands(list); setOnline(BrandAPI.online);
         if (list.length) await select(list[0].id);
       } catch (e) {
-        if (alive) setLoadErr(e.body || e.message || "No se pudo cargar la lista de marcas");
+        if (alive) setLoadErr(apiErrorMessage(e, "No se pudo cargar la lista de marcas"));
       } finally {
         if (alive) setLoading(false);
       }
@@ -150,22 +316,31 @@ function BrandContextView() {
     setSelId(id); setSaveState("idle"); setSaveErr("");
     try {
       const b = await BrandAPI.get(id);
-      original.current = JSON.stringify(b);
-      setDraft(b); setOnline(BrandAPI.online);
+      const normalized = { ...b, palette: b.palette || [], color_system: ensureColorSystem(b) };
+      original.current = JSON.stringify(normalized);
+      setDraft(normalized); setOnline(BrandAPI.online);
     } catch (e) {
-      setLoadErr(e.body || e.message || "No se pudo cargar la marca");
+      setLoadErr(apiErrorMessage(e, "No se pudo cargar la marca"));
     }
   }
 
   const patch = (p) => { setDraft((d) => ({ ...d, ...p })); setSaveState("idle"); };
   const patchVoice = (p) => patch({ voice: { ...draft.voice, ...p } });
   const patchShopify = (p) => patch({ shopify: { ...draft.shopify, ...p } });
+  const patchColorRole = (roleKey, role) => {
+    const colorSystem = { ...draft.color_system, [roleKey]: role };
+    patch({ color_system: colorSystem, palette: syncPaletteFromColorSystem(draft, colorSystem) });
+  };
 
   const seg = useMemoBC(() => (draft ? brandToSeg(draft) : null), [draft]);
 
+  const roleValid = draft && draft.color_system && ROLE_KEYS.every((key) => {
+    const r = draft.color_system[key];
+    return r && HEX_RE.test(r.hex || "") && (r.variants || []).every((v) => HEX_RE.test(v.hex || ""));
+  });
   const paletteValid = draft && draft.palette.length > 0 && draft.palette.every((c) => HEX_RE.test(c.hex));
   const domainValid = draft && (draft.shopify.store_domain || "").trim().length > 0;
-  const valid = paletteValid && domainValid;
+  const valid = paletteValid && roleValid && domainValid;
   const dirty = draft && original.current !== JSON.stringify(draft);
 
   async function save() {
@@ -173,12 +348,13 @@ function BrandContextView() {
     setSaveState("saving"); setSaveErr("");
     try {
       const saved = await BrandAPI.put(draft.id, draft);
-      original.current = JSON.stringify(saved);
-      setDraft(saved); setOnline(BrandAPI.online); setSaveState("saved");
-      setBrands((bs) => bs.map((b) => b.id === saved.id ? { id: saved.id, name: saved.name, palette: saved.palette } : b));
+      const normalized = { ...saved, palette: saved.palette || [], color_system: ensureColorSystem(saved) };
+      original.current = JSON.stringify(normalized);
+      setDraft(normalized); setOnline(BrandAPI.online); setSaveState("saved");
+      setBrands((bs) => bs.map((b) => b.id === normalized.id ? { id: normalized.id, name: normalized.name, palette: normalized.palette } : b));
     } catch (e) {
       setSaveState("error");
-      setSaveErr(e.status === 422 ? "El backend rechazó los datos (validación). Revisa los campos." : (e.body || e.message || "Error al guardar"));
+      setSaveErr(e.status === 422 ? "El backend rechazó los datos (validación). Revisa los campos." : apiErrorMessage(e, "Error al guardar"));
     }
   }
 
@@ -248,9 +424,16 @@ function BrandContextView() {
             <Field label="Logo URL" value={draft.logo_url} onChange={(v) => patch({ logo_url: v })} placeholder="https://…/logo.svg" />
           </div>
 
-          <BCard icon="palette" title="Paleta autorizada">
-            <PaletteEditor palette={draft.palette} onChange={(p) => patch({ palette: p })} />
-            {!paletteValid ? <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#EF4444", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="triangle-alert" size={13} /> Cada color debe ser un hex válido (#RRGGBB) y debe haber al menos uno.</span> : null}
+          <BCard icon="palette" title="Sistema de color por roles">
+            <div style={{ fontFamily: "Inter", fontSize: 12.5, color: "#68737D", lineHeight: 1.45 }}>
+              Edita los colores base que usa el agente para identidad, soporte y acentos. Las variantes aceptadas amplían la paleta permitida, pero no se guardan hasta pulsar “Guardar cambios”.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 13 }}>
+              {ROLE_KEYS.map((key) => (
+                <ColorRoleEditor key={key} roleKey={key} role={draft.color_system[key]} draft={draft} online={online} onRoleChange={patchColorRole} onOnlineChange={setOnline} />
+              ))}
+            </div>
+            {!roleValid || !paletteValid ? <span style={{ fontFamily: "Inter", fontSize: 11.5, color: "#EF4444", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="triangle-alert" size={13} /> Cada color base y variante debe ser un hex válido (#RRGGBB).</span> : null}
           </BCard>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(2,1fr)", gap: 16 }}>

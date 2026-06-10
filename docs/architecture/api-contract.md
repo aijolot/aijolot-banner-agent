@@ -44,6 +44,7 @@ No `/api/v1/health` route is part of the current contract.
 | POST | `/brands/import` | Import supported Markdown-backed brand context. |
 | GET | `/brands/{brand_id}` | Get a brand context. |
 | PUT | `/brands/{brand_id}` | Save a brand context. |
+| POST | `/brands/{brand_id}/palette-suggestions` | Gemini-backed AI suggestions for accepted color variants for a selected color role. Returns 503 when Gemini is unavailable; no fake fallback suggestions. |
 | POST | `/campaigns` | Create a campaign. |
 | GET | `/campaigns` | List campaigns. |
 | POST | `/campaigns/intake` | SSE campaign intake stream. |
@@ -64,8 +65,122 @@ Most routes below require demo/auth context unless otherwise noted. Approval/com
 | POST | `/api/v1/brands/import` | Import Markdown-supported brand context. PDF/Figma extraction is partial/mock only and not in the deterministic smoke path. |
 | GET | `/api/v1/brands/{brand_id}` | Return full brand context. |
 | PUT | `/api/v1/brands/{brand_id}` | Validate and persist brand context. |
+| POST | `/api/v1/brands/{brand_id}/palette-suggestions` | Return Gemini-backed draft palette suggestions for a selected brand color role. Requires auth and returns 503 when Gemini is unavailable. |
 
 Seeded/fallback brand ids include `avocado_store`, `demo_apparel`, and `maison`.
+
+#### Brand color system
+
+`BrandContext` keeps the legacy flat `palette` and now also supports explicit `color_system` roles. The role contract is documented in detail in `docs/architecture/brand-context-color-system.md`.
+
+Shape:
+
+```json
+{
+  "palette": [
+    { "name": "Forest", "hex": "#1F4D2E" },
+    { "name": "Avocado", "hex": "#7CB342" },
+    { "name": "Coral pop", "hex": "#FF6B5C" }
+  ],
+  "color_system": {
+    "primary": {
+      "key": "primary",
+      "label": "Primary",
+      "hex": "#1F4D2E",
+      "usage_hint": "Main brand color for dominant identity moments, headline emphasis, and major visual anchors.",
+      "agent_hint": "Prefer for main brand identity, key text/visual anchors, and high-recognition surfaces.",
+      "variants": [
+        { "name": "Forest", "hex": "#1F4D2E", "usage_hint": "Dark text and identity anchor", "source": "seed_migration" }
+      ]
+    },
+    "secondary": {
+      "key": "secondary",
+      "label": "Secondary",
+      "hex": "#7CB342",
+      "usage_hint": "Support color for backgrounds, secondary surfaces, and balance around the primary color.",
+      "agent_hint": "Use for background fields, supporting surfaces, and composition balance.",
+      "variants": []
+    },
+    "tertiary": {
+      "key": "tertiary",
+      "label": "Tertiary / Accent",
+      "hex": "#FF6B5C",
+      "usage_hint": "Accent color for CTA, highlights, badges, and small high-attention elements.",
+      "agent_hint": "Use sparingly for CTA, promotional badges, urgency marks, and highlights.",
+      "variants": []
+    }
+  }
+}
+```
+
+Role semantics:
+
+- `primary`: main brand identity, key text/visual anchors, headline emphasis, and high-recognition surfaces.
+- `secondary`: support color for backgrounds, secondary surfaces, and balance around primary.
+- `tertiary`: accent color for CTA, highlights, badges, urgency marks, and small high-attention elements. UI copy should label this as `Tertiary / Accent` in English and `Terciario / Acento` in Spanish/localized copy; the persisted key remains `tertiary`.
+
+`usage_hint` is user-facing guidance. `agent_hint` is generation guidance. Role `variants` are accepted colors for that role and include `name`, `hex`, optional `usage_hint`, and optional `source` such as `manual`, `ai_suggested`, or `seed_migration`. Generation should treat accepted variants as active approved choices for concept, image prompts, HTML, and Liquid rather than passive notes.
+
+Legacy compatibility and persistence:
+
+- Existing palette-only payloads remain valid.
+- When `color_system` is missing, the backend normalizes from legacy palette order: primary = `palette[0]`, secondary = `palette[1]` when present otherwise primary, tertiary = `palette[2]` when present otherwise secondary.
+- Hex values normalize to uppercase `#RRGGBB`.
+- Supabase stores the canonical color system in the first-class `brand_contexts.color_system jsonb` column with a GIN index. The service reads that top-level column first and can read legacy `source_metadata.color_system`; new writes use the top-level column.
+- Markdown/frontmatter seeds can contain `color_system` and round-trip through import/export.
+
+#### Palette suggestions
+
+Routes:
+
+```text
+POST /brands/{brand_id}/palette-suggestions
+POST /api/v1/brands/{brand_id}/palette-suggestions
+```
+
+Root route is prototype compatibility. `/api/v1` is canonical and requires the same demo auth/team context as other v1 brand routes.
+
+Request:
+
+```json
+{
+  "role_key": "primary",
+  "base_hex": "#1F4D2E",
+  "count": 8,
+  "intent": "More CTA-safe dark green variants",
+  "draft_brand_context": { "...": "optional full BrandContext for unsaved UI edits" }
+}
+```
+
+Fields:
+
+- `role_key`: required, one of `primary`, `secondary`, `tertiary`.
+- `base_hex`: optional; defaults to the selected role's current base hex.
+- `count`: optional; default 8, min 3, max 12.
+- `intent`: optional free text to guide Gemini.
+- `draft_brand_context`: optional full `BrandContext`; used for suggestions without saving unsaved frontend changes.
+
+Response:
+
+```json
+{
+  "role_key": "primary",
+  "base_hex": "#1F4D2E",
+  "source": "gemini",
+  "suggestions": [
+    {
+      "name": "Deep Grove",
+      "hex": "#163B24",
+      "usage_hint": "Darker primary for text or high-contrast hero overlays",
+      "rationale": "Keeps the avocado identity while improving contrast."
+    }
+  ]
+}
+```
+
+Gemini is required for user-facing/demo suggestions. The backend must not return deterministic or fake AI suggestions. If Gemini/config/budget/provider quality is unavailable, the route returns `503` with a clear detail. Other expected errors: `404` for missing brand, `422` for invalid input, and `401` for missing/malformed auth on `/api/v1`.
+
+Frontend rules: suggestions are draft-only. Accepting a suggestion appends it to the selected role's variants with `source: "ai_suggested"`; nothing is persisted until the user uses the normal Save/Guardar flow. Offline fallback may show/edit seeded brands, but AI suggestions should be disabled or surface backend/Gemini unavailable rather than locally faking suggestions.
 
 ### Campaigns and intake
 
@@ -145,7 +260,7 @@ Performance metrics in the MVP are manual/mock/seed/agent unless `live_analytics
 
 ## Provider and demo limitations
 
-- Gemini/image providers are opt-in; deterministic/fake providers are safe defaults for tests and smoke.
+- Gemini/image providers are opt-in for most generation paths; brand palette suggestions are Gemini-only for the user-facing/demo path and return 503 when Gemini is unavailable instead of fake suggestions.
 - Live Shopify resource sync/analytics ingestion is outside MVP/manual only.
-- PDF/Figma extraction, custom persona/model support, full Lighthouse automation, and generated A/B/C model exploration are constrained/labeled in `docs/demo-script.md`.
+- PDF/Figma extraction, custom persona/model support, full Lighthouse automation, generated A/B/C model exploration, full brand compliance auditing, richer contrast-aware color selection, and logo-usage integration are constrained/labeled in `docs/demo-script.md` or documented as carry-over gaps.
 - Real Shopify publishing requires configured credentials and a safe target store/theme; never document or print real tokens.

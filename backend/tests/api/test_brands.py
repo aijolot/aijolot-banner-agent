@@ -6,10 +6,53 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas.brand import BrandContext
 from app.services.brands.brand_service import BrandService
 
 client = TestClient(app)
 AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "team-1"}
+
+
+def _color_system(primary_hex: str = "#111111", primary_label: str = "Hero Ink") -> dict:
+    return {
+        "primary": {
+            "key": "primary",
+            "label": primary_label,
+            "hex": primary_hex,
+            "usage_hint": "Use for hero headlines.",
+            "agent_hint": "Dominant brand anchor.",
+        },
+        "secondary": {
+            "key": "secondary",
+            "label": "Warm Paper",
+            "hex": "#F5E8D0",
+            "usage_hint": "Use for backgrounds.",
+            "agent_hint": "Support primary.",
+        },
+        "tertiary": {
+            "key": "tertiary",
+            "label": "Coral CTA",
+            "hex": "#FF6655",
+            "usage_hint": "Use for CTAs.",
+            "agent_hint": "Apply sparingly.",
+        },
+    }
+
+
+def _brand_payload_without_color_system() -> dict:
+    return {
+        "id": "roles_brand",
+        "name": "Roles Brand",
+        "palette": [
+            {"name": "Ink", "hex": "#111111"},
+            {"name": "Paper", "hex": "#F5E8D0"},
+            {"name": "Coral", "hex": "#FF6655"},
+        ],
+        "typography": {"display": "Inter", "body": "Inter"},
+        "voice": {"tone": ["Clear"], "required_phrases": [], "prohibited_words": []},
+        "shopify": {"store_domain": "roles.myshopify.com"},
+        "notes": "Role notes.",
+    }
 
 
 def _clear_supabase_env(monkeypatch):
@@ -152,6 +195,77 @@ def test_list_and_get_can_use_supabase_backed_service(monkeypatch):
     assert loaded.json()["shopify"]["store_domain"] == "runtime.myshopify.com"
 
 
+def test_brand_service_record_payload_writes_top_level_color_system() -> None:
+    payload = _brand_payload_without_color_system()
+    payload["color_system"] = _color_system(primary_label="Canonical Hero Ink")
+    brand = BrandContext(**payload)
+
+    record = BrandService._record_payload_from_brand(brand)
+
+    assert record["color_system"]["primary"]["label"] == "Canonical Hero Ink"
+    assert "color_system" not in record["source_metadata"]
+
+
+def test_brand_service_restores_top_level_color_system_before_legacy_metadata() -> None:
+    row = {
+        "id": "uuid-roles",
+        "slug": "roles_brand",
+        "name": "Roles Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "color_system": _color_system(primary_hex="#222222", primary_label="Top Level Hero"),
+        "source_metadata": {
+            "shopify": {"store_domain": "roles.myshopify.com"},
+            "color_system": _color_system(primary_hex="#333333", primary_label="Legacy Hero"),
+        },
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.color_system is not None
+    assert brand.color_system.primary.label == "Top Level Hero"
+    assert brand.color_system.primary.hex == "#222222"
+
+
+def test_brand_service_restores_legacy_metadata_color_system_when_top_level_missing() -> None:
+    row = {
+        "id": "uuid-roles",
+        "slug": "roles_brand",
+        "name": "Roles Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "source_metadata": {
+            "shopify": {"store_domain": "roles.myshopify.com"},
+            "color_system": _color_system(primary_hex="#333333", primary_label="Legacy Hero"),
+        },
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.color_system is not None
+    assert brand.color_system.primary.label == "Legacy Hero"
+    assert brand.color_system.primary.hex == "#333333"
+
+
+def test_brand_service_normalizes_old_records_without_color_system_from_palette() -> None:
+    row = {
+        "id": "uuid-legacy",
+        "slug": "legacy_brand",
+        "name": "Legacy Brand",
+        "palette": [
+            {"name": "Ink", "hex": "#111111"},
+            {"name": "Paper", "hex": "#F5E8D0"},
+            {"name": "Coral", "hex": "#FF6655"},
+        ],
+        "source_metadata": {"shopify": {"store_domain": "legacy.myshopify.com"}},
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.color_system is not None
+    assert brand.color_system.primary.hex == "#111111"
+    assert brand.color_system.secondary.hex == "#F5E8D0"
+    assert brand.color_system.tertiary.hex == "#FF6655"
+
+
 def test_import_markdown_endpoint_upserts_into_supabase_service(tmp_path, monkeypatch):
     import app.services.brand_store as store
     from app.services.brands.markdown_importer import BrandMarkdownImporter
@@ -184,3 +298,114 @@ Imported notes.
     body = response.json()
     assert body["id"] == "seed_brand"
     assert service.get_brand("seed_brand").notes == "Imported notes.\n"
+
+
+def test_root_palette_suggestions_returns_gemini_suggestions(monkeypatch):
+    import app.services.brand_store as store
+    from app.services.brands import palette_suggestions as palette_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        return {
+            "suggestions": [
+                {"name": "Avocado Glow", "hex": "#7AC943", "usage_hint": "Use behind hero product cards", "rationale": "Fresh and branded."}
+            ]
+        }
+
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/palette-suggestions", json={"role_key": "primary", "count": 3})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "gemini"
+    assert body["role_key"] == "primary"
+    assert body["suggestions"] == [
+        {"name": "Avocado Glow", "hex": "#7AC943", "usage_hint": "Use behind hero product cards", "rationale": "Fresh and branded."}
+    ]
+
+
+def test_palette_suggestions_missing_brand_returns_404(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    response = client.post("/brands/nope/palette-suggestions", json={"role_key": "primary", "count": 3})
+    assert response.status_code == 404
+
+
+def test_palette_suggestions_gemini_unavailable_maps_to_503(monkeypatch):
+    from app.agents.tools import gemini_text
+    from app.services.brands import palette_suggestions as palette_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        raise gemini_text.GeminiUnavailable("Gemini is unavailable: set GOOGLE_API_KEY")
+
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/palette-suggestions", json={"role_key": "primary", "count": 3})
+
+    assert response.status_code == 503
+    assert "Gemini is unavailable" in response.json()["detail"]
+    assert "suggestions" not in response.json()
+
+
+def test_palette_suggestions_invalid_role_key_returns_validation_error(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    response = client.post("/brands/avocado_store/palette-suggestions", json={"role_key": "accent", "count": 3})
+    assert response.status_code == 422
+
+
+def test_palette_suggestions_draft_context_overrides_persisted_brand(monkeypatch):
+    from app.services.brands import palette_suggestions as palette_module
+
+    _clear_supabase_env(monkeypatch)
+    captured: dict[str, str] = {}
+    persisted = client.get("/brands/avocado_store").json()
+    draft = {**persisted, "name": "Unsaved Palette Draft"}
+    draft["color_system"]["primary"]["hex"] = "#123ABC"
+    draft["palette"][0]["hex"] = "#123ABC"
+
+    async def fake_generate(prompt, *, model, structured=None):
+        captured["prompt"] = prompt
+        return {"suggestions": [{"name": "Draft Violet", "hex": "#7654D8", "usage_hint": "Draft accent", "rationale": "Matches unsaved colors."}]}
+
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+    response = client.post(
+        "/brands/avocado_store/palette-suggestions",
+        json={"role_key": "primary", "count": 3, "draft_brand_context": draft},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["base_hex"] == "#123ABC"
+    assert "Unsaved Palette Draft" in captured["prompt"]
+    assert "#123ABC" in captured["prompt"]
+
+
+def test_api_v1_palette_suggestions_uses_auth_scoped_service(monkeypatch):
+    import app.services.brand_store as store
+    from app.services.brands import palette_suggestions as palette_module
+
+    service = BrandService(repository=FakeBrandRepository(), team_id="team-1")
+    called: dict[str, str] = {}
+
+    def fake_service_for_team(team_id: str):
+        called["team_id"] = team_id
+        return service
+
+    async def fake_generate(prompt, *, model, structured=None):
+        return {"suggestions": [{"name": "Runtime Blue", "hex": "#3366FF", "usage_hint": "Use on banners", "rationale": "Runtime fit."}]}
+
+    monkeypatch.setattr(store, "service_for_team", fake_service_for_team)
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+
+    unauthenticated = client.post("/api/v1/brands/supabase_brand/palette-suggestions", json={"role_key": "primary", "count": 3})
+    assert unauthenticated.status_code in {401, 403}
+
+    response = client.post(
+        "/api/v1/brands/supabase_brand/palette-suggestions",
+        headers=AUTH_HEADERS,
+        json={"role_key": "primary", "count": 3},
+    )
+
+    assert response.status_code == 200
+    assert called["team_id"] == "team-1"
+    assert response.json()["suggestions"][0]["hex"] == "#3366FF"

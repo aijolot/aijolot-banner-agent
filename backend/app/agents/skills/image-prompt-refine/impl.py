@@ -6,6 +6,7 @@ import re
 from typing import Any
 
 from app.agents.state import Concept
+from app.services.brands.color_roles import color_system_prompt_lines
 
 _FORBIDDEN_REPLACEMENTS = {
     "no text": "blank copy space",
@@ -79,6 +80,11 @@ def _word_count(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text))
 
 
+def _truncate_words(text: str, limit: int) -> str:
+    words = str(text or "").split()
+    return " ".join(words[:limit]) if len(words) > limit else " ".join(words)
+
+
 def _single_paragraph(parts: list[str]) -> str:
     return " ".join(" ".join(part.split()) for part in parts if str(part).strip())
 
@@ -104,8 +110,10 @@ async def run(
         layout = str(_get(concept_or_prompt, "layout", ""))
 
     brand_styles = _sanitize_list(_as_list(image_style_directives))
+    color_role_lines: list[str] = []
     if brand_context is not None:
         brand_styles.extend(_sanitize_list(_as_list(_get(brand_context, "image_style_directives", []))))
+        color_role_lines = color_system_prompt_lines(brand_context)
         palette = _get(brand_context, "palette", []) or []
         colors = [getattr(color, "hex", None) or (color.get("hex") if isinstance(color, dict) else None) for color in palette]
         colors = [color for color in colors if color]
@@ -117,13 +125,23 @@ async def run(
     background_mode = _get(art_direction, "background_mode", "")
     fold = _get(art_direction, "fold_percentage", None)
 
+    base_fragment = _sanitize(base or product or "a product lifestyle scene")
+    if color_role_lines:
+        base_fragment = _truncate_words(base_fragment, 12)
+
+    layout_fragment = _sanitize(layout)
+    if color_role_lines:
+        layout_fragment = _truncate_words(layout_fragment, 12)
+
     prompt_parts = [
-        "Create a 16:9 ecommerce banner background featuring " + _sanitize(base or product or "a product lifestyle scene") + ".",
-        "Use a responsive composition with generous blank copy space for later HTML-rendered messaging" + (f", informed by {_sanitize(layout)}" if layout else "") + ".",
-        "Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "clean commercial ecommerce photography") + ".",
+        "Create a 16:9 ecommerce banner background featuring " + base_fragment + ".",
+        "Use a responsive composition with generous blank copy space for later HTML-rendered messaging" + (f", informed by {layout_fragment}" if layout_fragment else "") + ".",
     ]
-    if colors:
+    if color_role_lines:
+        prompt_parts.append("Respect approved color roles: " + " | ".join(_sanitize(line) for line in color_role_lines) + ".")
+    elif colors:
         prompt_parts.append("Use palette accents: " + ", ".join(colors[:4]) + ".")
+    prompt_parts.append("Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "clean commercial ecommerce photography") + ".")
     if product:
         prompt_parts.append("Keep the catalog focus on " + _sanitize(product) + ".")
     if background_mode:

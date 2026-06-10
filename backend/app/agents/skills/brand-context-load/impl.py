@@ -68,6 +68,7 @@ def normalize_brand_context(value: BrandContext | dict[str, Any]) -> BrandContex
         "id": brand_id,
         "name": name,
         "palette": palette,
+        "color_system": data.get("color_system"),
         "typography": typography or {},
         "voice": voice,
         "logo_url": data.get("logo_url"),

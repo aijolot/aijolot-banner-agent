@@ -21,6 +21,7 @@ class BrandContextRepository:
         "slug",
         "description",
         "palette",
+        "color_system",
         "typography",
         "voice",
         "allowed_rules",

@@ -133,15 +133,38 @@ Params:
 - `brand_id: string` path param.
 - Body: `BrandContext`.
 
-Functionality: validates and saves brand context.
+Functionality: validates and saves brand context. `color_system` roles are persisted with the brand; keep legacy `palette` populated for compatibility. See `docs/architecture/brand-context-color-system.md` for role semantics and generation rules.
 
 Body fields:
 
 ```ts
+type PaletteColor = { name: string; hex: string };
+
+type BrandColorVariant = {
+  name: string;
+  hex: string;
+  usage_hint?: string;
+  source?: "manual" | "ai_suggested" | "seed_migration" | string;
+};
+
+type BrandColorRole = {
+  key: "primary" | "secondary" | "tertiary";
+  label: string;
+  hex: string;
+  usage_hint?: string;
+  agent_hint?: string;
+  variants?: BrandColorVariant[];
+};
+
 type BrandContext = {
   id: string;
   name: string;
-  palette: string[];
+  palette: PaletteColor[]; // legacy compatibility remains required
+  color_system?: {
+    primary: BrandColorRole;
+    secondary: BrandColorRole;
+    tertiary: BrandColorRole;
+  } | null;
   typography?: object;
   voice?: object;
   logo_url?: string | null;
@@ -150,6 +173,49 @@ type BrandContext = {
   notes?: string;
 };
 ```
+
+### `suggestBrandPalette(brandId, input)`
+
+```ts
+POST /api/v1/brands/{brand_id}/palette-suggestions
+```
+
+Params:
+
+- `brand_id: string` path param.
+- Body: `PaletteSuggestionRouteRequest`.
+
+Functionality: asks Gemini for draft accepted-variant suggestions for one brand color role. Use this for the `AI Palette Suggestions` button. Send the current unsaved brand draft as `draft_brand_context` so suggestions reflect local role/color edits. The route does not save suggestions.
+
+Body:
+
+```ts
+type PaletteSuggestionRouteRequest = {
+  role_key: "primary" | "secondary" | "tertiary";
+  base_hex?: string | null;
+  count?: number; // default 8, min 3, max 12
+  intent?: string;
+  draft_brand_context?: BrandContext | null;
+};
+```
+
+Response:
+
+```ts
+type PaletteSuggestionResponse = {
+  role_key: "primary" | "secondary" | "tertiary" | string;
+  base_hex: string;
+  source: "gemini";
+  suggestions: Array<{
+    name: string;
+    hex: string;
+    usage_hint: string;
+    rationale?: string;
+  }>;
+};
+```
+
+Frontend rules: show suggestions as draft choices; accepting one appends it to `draft.color_system[role].variants` with `source: "ai_suggested"`; persist only through the normal `saveBrand()` flow. If the backend/network/Gemini is unavailable, surface the error and do not create local deterministic "AI" suggestions. Expected errors include `401` without auth, `404` for missing brand, `422` for invalid input, and `503` when Gemini is unavailable or returns no usable suggestions.
 
 ### `importBrand(input)`
 
@@ -1035,6 +1101,7 @@ GET  /brands
 POST /brands/import
 GET  /brands/{brand_id}
 PUT  /brands/{brand_id}
+POST /brands/{brand_id}/palette-suggestions
 POST /campaigns
 GET  /campaigns
 POST /campaigns/intake
@@ -1047,7 +1114,7 @@ Frontend agents should prefer `/api/v1` functions above.
 ## 12. Recommended frontend implementation order
 
 1. Add shared API client with base URL and demo auth headers.
-2. Wire `listBrands`, `getBrand`, `saveBrand`.
+2. Wire `listBrands`, `getBrand`, `saveBrand`, and `suggestBrandPalette` for role-based color editing.
 3. Wire `createCampaign` or `streamIntake`; store returned backend campaign id.
 4. Wire `patchCampaign` for editable brief chips.
 5. Wire placement selectors: stores/resources/placement-types/targets/validate/save.

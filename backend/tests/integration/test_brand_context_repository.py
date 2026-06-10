@@ -51,6 +51,7 @@ def test_repository_upsert_filters_payload_to_brand_context_columns(monkeypatch:
             "id": "api-id-must-not-reach-db",
             "name": "Maison Hugo Boss Demo",
             "palette": [],
+            "color_system": {"primary": {"key": "primary", "hex": "#111111"}},
             "shopify": {"store_domain": "invalid-column.myshopify.com"},
             "notes": "invalid column",
             "source_metadata": {"notes": "valid metadata"},
@@ -59,6 +60,7 @@ def test_repository_upsert_filters_payload_to_brand_context_columns(monkeypatch:
 
     assert row["slug"] == "maison-hugo-boss-demo"
     assert row["name"] == "Maison Hugo Boss Demo"
+    assert row["color_system"] == {"primary": {"key": "primary", "hex": "#111111"}}
     assert row["source_metadata"] == {"notes": "valid metadata"}
     assert "id" not in row
     assert "shopify" not in row

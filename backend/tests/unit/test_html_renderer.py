@@ -61,3 +61,28 @@ def test_html_renderer_is_deterministic_and_reports_avif_skip() -> None:
     assert first.metadata["avif_skipped"] is True
     assert first.metadata["breakpoints"] == [320, 1280]
     assert "application/ld+json" in first.html
+
+
+def test_html_renderer_resolves_color_system_variants_before_palette() -> None:
+    concept = _concept().model_copy(update={"palette_usage": {"background": "Soft Cream", "text": "primary", "cta_background": "Action Amber", "cta_text": "White"}})
+    brand = {
+        **_brand(),
+        "color_system": {
+            "primary": {"key": "primary", "label": "Trust Blue", "hex": "#123456", "variants": []},
+            "secondary": {"key": "secondary", "label": "Warm Cream", "hex": "#F4F1EA", "variants": [{"name": "Soft Cream", "hex": "#FFF6E6"}]},
+            "tertiary": {"key": "tertiary", "label": "Sun Accent", "hex": "#FFAA00", "variants": [{"name": "Action Amber", "hex": "#FF8800"}]},
+        },
+    }
+
+    rendered = render_banner_preview(concept, _assets(), brand=brand)
+
+    assert "--aij-bg:#FFF6E6" in rendered.html
+    assert "--aij-text:#123456" in rendered.html
+    assert "--aij-cta-bg:#FF8800" in rendered.html
+
+
+def test_html_renderer_keeps_legacy_palette_only_lookup() -> None:
+    rendered = render_banner_preview(_concept(), _assets(), brand=_brand())
+
+    assert "--aij-bg:#F4F1EA" in rendered.html
+    assert "--aij-text:#111111" in rendered.html

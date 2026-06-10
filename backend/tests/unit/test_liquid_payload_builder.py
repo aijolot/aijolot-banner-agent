@@ -43,6 +43,31 @@ def test_liquid_payload_builder_returns_stable_controlled_payload() -> None:
     assert "{{ headline }}" in payload.block_snippet
     assert payload.config["image"]["url"] == "https://cdn.example/banner.webp"
     assert payload.config["optimization_report"]["avif_skipped"] is True
+    assert payload.config["color_system"] == {}
+
+
+def test_liquid_payload_includes_color_system_and_role_css() -> None:
+    concept = _concept().model_copy(update={"palette_usage": {"background": "Soft Cream", "text": "primary", "cta_background": "Action Amber", "cta_text": "#FFFFFF"}})
+    brand = {
+        "name": "Demo Brand",
+        "shopify": {"default_placement": "home_hero"},
+        "color_system": {
+            "primary": {"key": "primary", "label": "Trust Blue", "hex": "#123456", "usage_hint": "anchor", "agent_hint": "identity", "variants": []},
+            "secondary": {"key": "secondary", "label": "Warm Cream", "hex": "#F4F1EA", "usage_hint": "background", "agent_hint": "surface", "variants": [{"name": "Soft Cream", "hex": "#FFF6E6", "usage_hint": "background"}]},
+            "tertiary": {"key": "tertiary", "label": "Sun Accent", "hex": "#FFAA00", "usage_hint": "cta", "agent_hint": "button", "variants": [{"name": "Action Amber", "hex": "#FF8800", "usage_hint": "cta"}]},
+        },
+    }
+
+    payload = build_liquid_payload(concept, [], brand=brand)
+
+    assert payload.config["color_system"]["secondary"]["variants"][0]["name"] == "Soft Cream"
+    assert payload.config["role_css"] == {
+        "background": "#FFF6E6",
+        "text": "#123456",
+        "cta_background": "#FF8800",
+        "cta_text": "#FFFFFF",
+    }
+    assert "--aijolot-background:#FFF6E6;" in payload.section
 
 
 def test_cta_url_default_falls_back_to_catalog() -> None:

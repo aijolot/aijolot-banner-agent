@@ -124,6 +124,8 @@ def test_v1_routes_are_present_in_openapi_contract():
     paths = client.get("/openapi.json").json()["paths"]
     assert "/api/v1/brands" in paths
     assert "/api/v1/brands/{brand_id}" in paths
+    assert "/api/v1/brands/{brand_id}/palette-suggestions" in paths
+    assert "/brands/{brand_id}/palette-suggestions" in paths
     assert "/api/v1/campaigns/intake" in paths
     assert "/api/v1/campaigns/{campaign_id}" in paths
     assert "/campaigns/intake" in paths
