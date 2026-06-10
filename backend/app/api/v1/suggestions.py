@@ -41,11 +41,13 @@ SuggestionIdPath = Annotated[UUID, Path(description="Suggestion UUID")]
 
 from app.services.banners.calendar_service import handle_calendar_scan_job
 from app.services.banners.catalog_signal_service import handle_catalog_scan_job
+from app.services.banners.performance_loop import handle_performance_sync_job
 
 # Scan handlers, registered by their owning features (F1/F2/F3) at import time.
 JOB_HANDLERS: dict[str, Any] = {
     "calendar_scan": handle_calendar_scan_job,
     "catalog_scan": handle_catalog_scan_job,
+    "performance_sync": handle_performance_sync_job,
 }
 
 
@@ -66,13 +68,32 @@ def _create_campaign_callback(context: UserContext):
     return _create
 
 
+def _start_refinement_callback(context: UserContext):
+    """performance_refresh accept → agentic refinement run with the proposed changes."""
+
+    def _start(suggestion_row: dict[str, Any]) -> str:
+        from app.schemas.generation import RegenerateRequest
+        from app.services.banners.optimization_advisor import refresh_prompt_from_suggestion
+        from app.services.banners.revision_service import (
+            configured_service_for_team as revision_service_for_team,
+        )
+
+        campaign_id = str(suggestion_row.get("campaign_id") or "")
+        if not campaign_id:
+            raise MissingSettingsError(("campaign_id",))
+        service = revision_service_for_team(context.team_id)
+        result = service.regenerate(campaign_id, RegenerateRequest(prompt=refresh_prompt_from_suggestion(suggestion_row)))
+        return str(result.generation_run.id)
+
+    return _start
+
+
 def _service_for_request(request: Request) -> SuggestionService:
     context = require_user_context(request)
     return configured_service_for_team(
         context.team_id,
         create_campaign=_create_campaign_callback(context),
-        # start_refinement is wired by F2 (performance loop) — accepting a
-        # performance_refresh before that lands returns 503 honestly.
+        start_refinement=_start_refinement_callback(context),
     )
 
 

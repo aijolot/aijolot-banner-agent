@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-PerformanceSource = Literal["manual", "mock", "seed", "agent"]
+PerformanceSource = Literal["manual", "mock", "seed", "agent", "shopify", "analytics", "lighthouse"]
 ProposalStatus = Literal["draft", "sent_to_approval", "accepted", "rejected"]
 NON_LIVE_LABEL = "Manual/mock metrics — not live analytics"
 NON_LIVE_NOTE = "Performance data is manually entered, mock, seed, or agent-proposed; not live analytics."
