@@ -218,10 +218,11 @@ class RunOrchestrator:
             )
             revision_id = str(revision["id"])
             layout_rows = self._create_layout_variants(revision_id, concept)
+            compose_report: dict[str, Any] = {}
             variant_rows = await self._create_variant_banners(
                 revision_id=revision_id, concept=concept, campaign_state=campaign_state,
                 campaign_row=campaign_row, brand=brand, catalog_context=catalog_context, best_practices=best_practices,
-                text_ink=_bg_text_ink(background),
+                text_ink=_bg_text_ink(background), compose_report=compose_report,
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
@@ -244,6 +245,7 @@ class RunOrchestrator:
                 total_cost=total_cost,
                 is_refine=is_refine,
                 target_set=target_set,
+                metadata_extra=({"hero_compose": compose_report} if compose_report else None),
                 cta_url=self._destination_url(campaign_row),
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -695,6 +697,7 @@ class RunOrchestrator:
 
             revision_id = str(plan_revision["id"])
             self._create_layout_variants(revision_id, concept)
+            compose_report: dict[str, Any] = {}
             variant_rows = await self._create_variant_banners(
                 revision_id=revision_id,
                 concept=concept,
@@ -704,6 +707,7 @@ class RunOrchestrator:
                 catalog_context=catalog_context,
                 best_practices=best_practices,
                 text_ink=_bg_text_ink(background),
+                compose_report=compose_report,
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
@@ -724,7 +728,7 @@ class RunOrchestrator:
                 total_cost=0.0,
                 is_refine=False,
                 target_set=set(),
-                metadata_extra={"phase": "build"},
+                metadata_extra={"phase": "build", **({"hero_compose": compose_report} if compose_report else {})},
                 cta_url=self._destination_url(campaign_row),
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -1051,18 +1055,21 @@ class RunOrchestrator:
         revision_id: str,
         campaign_state: StateCampaign | None = None,
         brand: Any = None,
-    ) -> str | None:
+    ) -> tuple[str | None, str]:
         """Generate a campaign-styled, background-removed product hero for a variant.
 
         Feeds the variant's REAL product photo to Nano Banana Pro as a reference and
         asks for a composition (bottle + campaign props) on a flat chroma-green field,
         then keys the green out to a transparent PNG so the creative background shows
-        through. Returns the hero's public URL, or None (caller falls back to the raw
-        product photo) when there is no product image, no storage, or generation fails.
+        through. Returns ``(public_url | None, status)``; a ``chroma_failed`` first
+        attempt is retried ONCE with a reinforced chroma instruction (W0.2), and the
+        status is surfaced so failures are never silent.
         """
         product_url = str(spec.get("product_image_url") or "").strip()
-        if not product_url or self.asset_service is None:
-            return None
+        if not product_url:
+            return None, "no_image"
+        if self.asset_service is None:
+            return None, "no_storage"
 
         import httpx
 
@@ -1072,11 +1079,11 @@ class RunOrchestrator:
             with httpx.Client(timeout=20.0) as http:
                 resp = http.get(product_url)
             if resp.status_code >= 400 or not resp.content:
-                return None
+                return None, "ref_fetch_failed"
             ref_bytes = resp.content
             ref_mime = resp.headers.get("content-type", "image/jpeg").split(";")[0] or "image/jpeg"
         except Exception:  # noqa: BLE001
-            return None
+            return None, "ref_fetch_failed"
 
         scene = await self._propose_art_scene(
             concept=concept, brand=brand, product_title=str(spec.get("product_title") or "the featured product"),
@@ -1085,31 +1092,42 @@ class RunOrchestrator:
         prompt = self._hero_compose_prompt(spec=spec, concept=concept, scene=scene)
         from app.services.banners.image_gen import generate_image as _gen
 
-        try:
-            raw_bytes, meta, _cost = await _gen(
-                prompt,
-                settings=self.settings,
-                cost_guard=self.cost_guard,
-                campaign_id=campaign_id,
-                aspect_ratio="3:4",
-                concept=concept,
-                reference_images=((ref_bytes, ref_mime),),
-            )
-        except Exception:  # noqa: BLE001 — generation failed; fall back to product photo
-            return None
-        if not meta.get("is_real_provider"):
-            # Fake provider has no chroma field to key — not a usable transparent hero.
-            return None
-        try:
-            png = chroma_key_to_png(raw_bytes)
-        except ValueError:
-            return None
-        # Sanity: a clean cut-out keys out a large green margin. If little was removed,
-        # the model rendered a full scene instead of flat green (un-keyable) — reject it
-        # so the Canvas falls back to the plain product photo rather than show a messy
-        # rectangle with baked-in scenery/text.
-        if transparent_fraction(png) < 0.25:
-            return None
+        async def _attempt(attempt_prompt: str) -> tuple[bytes | None, str]:
+            try:
+                raw_bytes, meta, _cost = await _gen(
+                    attempt_prompt,
+                    settings=self.settings,
+                    cost_guard=self.cost_guard,
+                    campaign_id=campaign_id,
+                    aspect_ratio="3:4",
+                    concept=concept,
+                    reference_images=((ref_bytes, ref_mime),),
+                )
+            except Exception:  # noqa: BLE001 — generation failed; fall back to product photo
+                return None, "error"
+            if not meta.get("is_real_provider"):
+                # Fake provider has no chroma field to key — not a usable transparent hero.
+                return None, "fake_provider"
+            try:
+                keyed = chroma_key_to_png(raw_bytes)
+            except ValueError:
+                return None, "chroma_failed"
+            # Sanity: a clean cut-out keys out a large green margin. If little was removed,
+            # the model rendered a full scene instead of flat green (un-keyable).
+            if transparent_fraction(keyed) < 0.25:
+                return None, "chroma_failed"
+            return keyed, "ok"
+
+        png, status = await _attempt(prompt)
+        if png is None and status == "chroma_failed":
+            # W0.2 — ONE reinforced retry: product shots must come back on chroma
+            # green so the background can be keyed out; never silently accept a
+            # baked-in scene.
+            png, status = await _attempt(_CHROMA_RETRY_PREFIX + prompt)
+            if png is not None:
+                status = "ok_retry"
+        if png is None:
+            return None, status
         try:
             row = self.asset_service.upload_png(
                 png_bytes=png,
@@ -1120,9 +1138,9 @@ class RunOrchestrator:
                 alt_text=str(spec.get("product_title") or "Producto"),
                 image_prompt=_short(prompt, 300),
             )
-            return row.get("public_url")
+            return row.get("public_url"), status
         except Exception:  # noqa: BLE001
-            return None
+            return None, "upload_failed"
 
     async def _propose_art_scene(self, *, concept: Any, brand: Any, product_title: str, campaign_state: StateCampaign) -> str:
         """Creative-concept step for the IMAGE: an agent reads the brief and proposes a
@@ -1324,6 +1342,11 @@ class RunOrchestrator:
             "cta": row.get("cta_text") or copy.get("cta") or "",
             "promo": row.get("cta_text") or copy.get("cta") or "",
             "imageUrl": fp.get("product_hero_url") or fp.get("product_image_url") or image_url,
+            "imageUrls": [
+                str(r.get("product_hero_url") or r.get("product_image_url"))
+                for r in ((row.get("audience_rule") or {}).get("featured_products") or [])
+                if (r.get("product_hero_url") or r.get("product_image_url"))
+            ] or None,
             "bgCss": bg_css,
             "displayFont": fonts.get("display") or "Space Grotesk",
             "bodyFont": fonts.get("body") or "Inter",
@@ -1612,27 +1635,72 @@ class RunOrchestrator:
         catalog_context: dict[str, Any] | None,
         best_practices: list[dict[str, Any]],
         text_ink: str | None = None,
+        compose_report: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """One banner_variant per personalization variant, each with its own copy."""
+        """One banner_variant per personalization variant, each with its own copy.
+
+        W0.2: the base variant features ALL brief products (up to 3) — each gets its
+        own chroma-keyed hero cut-out — instead of collapsing to a single product.
+        Compose failures are collected into ``compose_report`` (never silent).
+        """
+
+        def _warn(product_title: Any, status: str) -> None:
+            if compose_report is None:
+                return
+            if status in ("chroma_failed", "error", "upload_failed", "ref_fetch_failed"):
+                compose_report.setdefault("hero_compose_warnings", []).append(
+                    {"product": _short(str(product_title or "?"), 60), "status": status}
+                )
+
         specs = self._variant_specs(campaign_row, campaign_state)
         concept_skill = _load_runtime_skill("banner-concept-draft")
         base_copy = concept.copy or {}
         cta_url = self._destination_url(campaign_row)
+        brief_products = [p for p in _brief_product_items(campaign_row) if p.get("image_url")][:3]
         rows: list[dict[str, Any]] = []
         for index, spec in enumerate(specs):
             # Each variant features its own product (when chosen): ground the copy on a
             # catalog context filtered to that product, so men→Mandarin Sky, women→My Way.
             variant_catalog = _variant_catalog_context(catalog_context, spec)
             has_own_product = bool(spec.get("product_gid") or spec.get("product_title"))
+            featured_products: list[dict[str, Any]] = []
             # Compose a campaign-styled, background-removed hero from the variant's
             # real product photo (transparent PNG). None → Canvas uses the raw photo.
             if has_own_product and spec.get("product_image_url"):
-                hero_url = await self._compose_variant_hero(
+                hero_url, hero_status = await self._compose_variant_hero(
                     spec=spec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id,
                     campaign_state=campaign_state, brand=brand,
                 )
                 if hero_url:
                     spec = {**spec, "product_hero_url": hero_url}
+                _warn(spec.get("product_title"), hero_status)
+            elif index == 0 and brief_products:
+                # Base variant + multi-product brief: one cut-out PER brief product.
+                for p_index, product in enumerate(brief_products):
+                    pspec = {
+                        "key": f"{spec['key']}-p{p_index + 1}",
+                        "product_title": product.get("title"),
+                        "product_image_url": product.get("image_url"),
+                        "product_gid": product.get("shopify_product_gid"),
+                    }
+                    hero_url, hero_status = await self._compose_variant_hero(
+                        spec=pspec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id,
+                        campaign_state=campaign_state, brand=brand,
+                    )
+                    if hero_url:
+                        pspec["product_hero_url"] = hero_url
+                    _warn(pspec.get("product_title"), hero_status)
+                    ref = _variant_product_ref(pspec)
+                    ref["hero_status"] = hero_status
+                    featured_products.append(ref)
+                if featured_products:
+                    spec = {
+                        **spec,
+                        "product_title": featured_products[0].get("product_title"),
+                        "product_image_url": featured_products[0].get("product_image_url"),
+                        **({"product_hero_url": featured_products[0]["product_hero_url"]}
+                           if featured_products[0].get("product_hero_url") else {}),
+                    }
             if index == 0 and spec["audience"] == campaign_state.audience and not has_own_product:
                 # Reuse the already-generated primary concept copy for the base variant.
                 copy = {k: base_copy.get(k) for k in ("eyebrow", "headline", "subheadline", "cta")}
@@ -1658,7 +1726,8 @@ class RunOrchestrator:
                     "audience_rule": {
                         "audience": spec["audience"],
                         "tag": spec.get("customer_tag"),
-                        **({"featured_product": _variant_product_ref(spec)} if has_own_product else {}),
+                        **({"featured_product": _variant_product_ref(spec)} if (has_own_product or featured_products) else {}),
+                        **({"featured_products": featured_products} if featured_products else {}),
                         **({"headline_runs": headline_runs} if headline_runs else {}),
                     },
                     "eyebrow": copy.get("eyebrow") or spec["label"],
@@ -1931,6 +2000,14 @@ def _coerce_price(value: Any) -> float | None:
         return None
 
 
+_CHROMA_RETRY_PREFIX = (
+    "STRICT RETRY — your previous output violated the background rule. The background MUST be "
+    "100% flat, solid, pure chroma green #00FF00 covering the ENTIRE frame edge-to-edge with "
+    "NOTHING else: no scene, no gradient, no floor, no environment, no shadows cast on surfaces. "
+    "Render ONLY the cut-out subject and floating props over flat #00FF00. "
+)
+
+
 def _brief_product_items(campaign_row: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Catalog-shaped items from the campaign-level ``products`` picked in the brief."""
     if not campaign_row:
@@ -1950,6 +2027,7 @@ def _brief_product_items(campaign_row: dict[str, Any] | None) -> list[dict[str, 
             "title": title or "Featured product",
             "shopify_product_gid": gid,
             "image_url": product.get("product_image_url"),
+            "from_brief": True,
         }
         price = _coerce_price(product.get("price"))
         if price is not None:

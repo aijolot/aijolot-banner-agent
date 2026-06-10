@@ -127,10 +127,30 @@
       var align = (L.textAlign === "center" || L.textAlign === "right") ? L.textAlign : "left";
       var items = align === "center" ? "center" : align === "right" ? "flex-end" : "flex-start";
       var hX = num(L.heroX, 74), hY = num(L.heroY, 50), hW = num(L.heroW, 46), hH = num(L.heroH, 80);
-      var hero = img
-        ? '<img class="hb-genimg" style="position:absolute;left:' + hX + "%;top:" + hY + "%;width:" + hW +
-          "%;height:" + hH + "%;transform:translate(-50%,-50%);object-fit:contain;z-index:" + heroZ + '" src="' + esc(img) + '">'
-        : "";
+      // W0.2 — multi-product: up to 3 cut-outs arranged in the hero zone
+      // (solo / staggered duo / fanned trio). Primary product paints on top.
+      var imgs = [];
+      if (Array.isArray(live.imageUrls)) {
+        for (var ii = 0; ii < live.imageUrls.length && imgs.length < 3; ii++) {
+          if (live.imageUrls[ii]) imgs.push(String(live.imageUrls[ii]));
+        }
+      }
+      if (!imgs.length && img) imgs.push(img);
+      var HERO_SLOTS = {
+        1: [{ dx: 0, dy: 0, s: 1 }],
+        2: [{ dx: -11, dy: 3, s: 0.95 }, { dx: 13, dy: -4, s: 0.78 }],
+        3: [{ dx: 0, dy: -1, s: 0.9 }, { dx: -20, dy: 8, s: 0.68 }, { dx: 20, dy: 8, s: 0.68 }],
+      };
+      var slots = HERO_SLOTS[imgs.length] || HERO_SLOTS[1];
+      var heroItems = [];
+      for (var hi = 0; hi < imgs.length; hi++) {
+        var o = slots[hi];
+        heroItems.push('<img class="hb-genimg" style="position:absolute;left:' + (hX + o.dx) + "%;top:" + (hY + o.dy) +
+          "%;width:" + (hW * o.s) + "%;height:" + (hH * o.s) + "%;transform:translate(-50%,-50%);object-fit:contain;z-index:" +
+          heroZ + '" src="' + esc(imgs[hi]) + '">');
+      }
+      // DOM order controls stacking at equal z-index — render the primary LAST so it wins.
+      var hero = heroItems.slice(1).reverse().concat(heroItems.slice(0, 1)).join("");
       var copy = '<div class="hb-live-copy" style="left:' + tX + "%;top:" + tY + "%;width:" + tW +
         "%;transform:translateY(-50%);text-align:" + align + ";align-items:" + items + ";z-index:3\">" + copyInner + "</div>";
       inner = '<div class="hb-bg"></div>' + hero + copy + badge;

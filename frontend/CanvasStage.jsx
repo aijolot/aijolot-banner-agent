@@ -236,6 +236,13 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     ].find((s) => s && /\d{1,3}\s*%/.test(s)) || null,
     brandName: "",
     imageUrl: variantProduct.product_hero_url || variantProduct.product_image_url || (liveLastArt && liveLastArt.public_url) || null,
+    // W0.2 — multi-product brief: every featured product's cut-out (up to 3).
+    imageUrls: (() => {
+      const refs = (selectedVariant && selectedVariant.audience_rule && selectedVariant.audience_rule.featured_products) || null;
+      if (!Array.isArray(refs) || !refs.length) return null;
+      const urls = refs.map((r) => (r && (r.product_hero_url || r.product_image_url)) || null).filter(Boolean).slice(0, 3);
+      return urls.length ? urls : null;
+    })(),
     bgCss: (liveBgObj && liveBgObj.css) || null,
     displayFont, bodyFont,
     layout: (liveConcept.art_direction && liveConcept.art_direction.layout) || null,

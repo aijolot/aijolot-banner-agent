@@ -394,3 +394,166 @@ def test_orchestrator_failure_is_recorded_honestly() -> None:
 
     assert run.status == "failed"
     assert "pipeline blew up" in (run.error_message or "")
+
+
+# --- W0.2: multi-product brief + guaranteed chroma -------------------------
+
+
+def test_multi_product_brief_features_all_products_on_base_variant() -> None:
+    """3 products in the brief → the base variant features ALL 3 (not just one)."""
+    service, campaigns, revisions, variants, _layouts, _audits = _build_service()
+    campaigns.rows[CAMPAIGN_ID]["structured_brief"]["products"] = [
+        {"product_title": "Perfume Uno", "product_gid": "gid://shopify/Product/1", "product_image_url": "https://cdn/p1.jpg"},
+        {"product_title": "Perfume Dos", "product_gid": "gid://shopify/Product/2", "product_image_url": "https://cdn/p2.jpg"},
+        {"product_title": "Perfume Tres", "product_gid": "gid://shopify/Product/3", "product_image_url": "https://cdn/p3.jpg"},
+    ]
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+
+    assert run.status == "succeeded"
+    revision = next(iter(revisions.rows.values()))
+    rows = variants.list_by_revision_id(revision_id=revision["id"])
+    rule = rows[0]["audience_rule"]
+    featured = rule.get("featured_products") or []
+    assert [r["product_title"] for r in featured] == ["Perfume Uno", "Perfume Dos", "Perfume Tres"]
+    # Every ref carries its image and an explicit (non-silent) compose status.
+    assert all(r.get("product_image_url") for r in featured)
+    assert all(r.get("hero_status") for r in featured)
+    # Backward-compat single ref points at the primary product.
+    assert rule["featured_product"]["product_title"] == "Perfume Uno"
+
+
+def test_compose_variant_hero_retries_chroma_once_and_reports(monkeypatch) -> None:
+    """First gen ignores chroma → ONE reinforced retry; success on retry → ok_retry."""
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    from app.services.banners import image_gen as image_gen_module
+    from app.services.banners.run_orchestrator import _CHROMA_RETRY_PREFIX
+
+    def _png(color) -> bytes:
+        img = Image.new("RGB", (64, 64), color)
+        # subject: small red square so the keyed PNG keeps some opaque pixels
+        for x in range(24, 40):
+            for y in range(24, 40):
+                img.putpixel((x, y), (200, 30, 30))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    calls: list[str] = []
+
+    async def fake_gen(prompt, **_kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return _png((250, 250, 250)), {"is_real_provider": True}, 0.01  # no chroma field
+        return _png((0, 255, 0)), {"is_real_provider": True}, 0.01  # proper chroma green
+
+    monkeypatch.setattr(image_gen_module, "generate_image", fake_gen)
+
+    class _FakeResp:
+        status_code = 200
+        content = b"jpegbytes"
+        headers = {"content-type": "image/jpeg"}
+
+    class _FakeHttp:
+        def __init__(self, *a, **k): ...
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def get(self, _url):
+            return _FakeResp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _FakeHttp)
+
+    class _Assets:
+        def upload_png(self, **kwargs):
+            return {"public_url": "https://cdn/hero.png"}
+
+    service, campaigns, revisions, variants, layouts, audits = _build_service()
+    orchestrator = service.orchestrator
+    orchestrator.asset_service = _Assets()
+
+    class _Concept:
+        copy = {"headline": "Promo"}
+        layout = "Hero split layout"
+
+    url, status = asyncio.run(
+        orchestrator._compose_variant_hero(
+            spec={"key": "v1", "product_title": "Perfume", "product_image_url": "https://cdn/p.jpg"},
+            concept=_Concept(),
+            campaign_id=CAMPAIGN_ID,
+            revision_id="rev-1",
+        )
+    )
+
+    assert url == "https://cdn/hero.png"
+    assert status == "ok_retry"
+    assert len(calls) == 2
+    assert calls[1].startswith(_CHROMA_RETRY_PREFIX)
+
+
+def test_compose_variant_hero_double_chroma_failure_is_not_silent(monkeypatch) -> None:
+    """Both attempts un-keyable → (None, 'chroma_failed'), surfaced in run metadata."""
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    from app.services.banners import image_gen as image_gen_module
+
+    def _white_png() -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (250, 250, 250)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    async def fake_gen(prompt, **_kwargs):
+        return _white_png(), {"is_real_provider": True}, 0.01
+
+    monkeypatch.setattr(image_gen_module, "generate_image", fake_gen)
+
+    class _FakeResp:
+        status_code = 200
+        content = b"jpegbytes"
+        headers = {"content-type": "image/jpeg"}
+
+    class _FakeHttp:
+        def __init__(self, *a, **k): ...
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def get(self, _url):
+            return _FakeResp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _FakeHttp)
+
+    class _Assets:
+        def upload_png(self, **kwargs):
+            return {"public_url": "https://cdn/hero.png"}
+
+    service, *_rest = _build_service()
+    orchestrator = service.orchestrator
+    orchestrator.asset_service = _Assets()
+
+    class _Concept:
+        copy = {"headline": "Promo"}
+        layout = "Hero split layout"
+
+    url, status = asyncio.run(
+        orchestrator._compose_variant_hero(
+            spec={"key": "v1", "product_title": "Perfume", "product_image_url": "https://cdn/p.jpg"},
+            concept=_Concept(),
+            campaign_id=CAMPAIGN_ID,
+            revision_id="rev-1",
+        )
+    )
+    assert url is None
+    assert status == "chroma_failed"

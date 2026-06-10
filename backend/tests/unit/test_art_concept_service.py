@@ -93,3 +93,30 @@ def test_feedback_iteration_alters_copy_input():
     resp = _service(brief).propose_concepts(CID, ArtConceptsRequest(feedback="más urgente y veraniego", focus="copy", focus_variant="male"))
     assert resp.metadata["iterated"] is True
     assert resp.concepts[0].copy.get("headline")
+
+
+# --- W0.2: brief products outrank the stock heuristic -----------------------
+
+
+def test_pick_product_prefers_brief_products_over_stock() -> None:
+    catalog = {
+        "items": [
+            {"title": "Snapshot top-stock", "stock": 999, "price": 10.0},
+            {"title": "Elegido en brief", "stock": 0, "from_brief": True, "image_url": "https://cdn/b.jpg"},
+        ]
+    }
+    ref, _rationale, tag = ArtConceptService._pick_product(catalog)
+    assert ref is not None
+    assert ref.title == "Elegido en brief"
+    assert tag == "[PROVIDER]"
+
+
+def test_pick_product_stock_still_ranks_within_brief_group() -> None:
+    catalog = {
+        "items": [
+            {"title": "Brief bajo stock", "stock": 1, "from_brief": True},
+            {"title": "Brief alto stock", "stock": 50, "from_brief": True},
+        ]
+    }
+    ref, _r, _t = ArtConceptService._pick_product(catalog)
+    assert ref.title == "Brief alto stock"

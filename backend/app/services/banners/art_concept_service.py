@@ -218,7 +218,9 @@ class ArtConceptService:
             except (TypeError, ValueError):
                 return 0
 
-        ranked = sorted(items, key=_stock, reverse=True)
+        # W0.2 — products the user picked in the brief outrank the stock heuristic;
+        # stock only breaks ties within each group.
+        ranked = sorted(items, key=lambda i: (0 if i.get("from_brief") else 1, -_stock(i)))
         top = ranked[0]
         stock = _stock(top)
         price = top.get("price") if isinstance(top.get("price"), (int, float)) else top.get("sale_price")
