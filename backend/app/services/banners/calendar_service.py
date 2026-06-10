@@ -285,9 +285,18 @@ class CalendarService:
                 ),
                 payload={
                     "title": f"Campaña {name} {start.year}",
+                    "raw_brief": f"Brief propuesto por el agente para {name} ({start.isoformat()}). "
+                                 f"{note} Ajusta cualquier campo antes de planear.",
+                    # Brief COMPLETO (todos los campos requeridos) para que el
+                    # usuario pueda aceptarlo y encadenar directo al plan; cada
+                    # campo es una propuesta editable, no un hecho.
                     "structured_brief": {
                         "goal": f"Campaña de {name}",
+                        "audience": "Clientes de la tienda",
+                        "cta": "Compra ahora",
+                        "tone": "festivo" if urgency == "high" else "cercano",
                         "urgency": urgency,
+                        "placement": "Hero de la home",
                         "deadline": start.isoformat(),
                     },
                 },

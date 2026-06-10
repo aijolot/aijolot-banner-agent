@@ -80,3 +80,17 @@ def test_job_handler_runs_without_supabase(monkeypatch) -> None:
         monkeypatch.delenv(var, raising=False)
     summary = handle_calendar_scan_job({"id": "j1", "team_id": "team-demo-cal", "kind": "calendar_scan"})
     assert summary["enabled"] is True
+
+
+def test_calendar_brief_is_complete_so_user_can_accept_and_plan() -> None:
+    """Encadenado F1: el brief propuesto trae TODOS los campos requeridos por el
+    BriefStage (goal/audience/cta/urgency/placement) — aceptar tal cual habilita
+    'Avanzar al plan' sin llenar nada a mano."""
+    svc, suggestions = _service()
+    svc.scan_upcoming(today=date(2026, 6, 9))
+    padre = next(s for s in suggestions.list() if "Padre" in s.title)
+    brief = padre.payload["structured_brief"]
+    for field in ("goal", "audience", "cta", "urgency", "placement"):
+        assert str(brief.get(field) or "").strip(), f"campo requerido vacío: {field}"
+    assert brief["deadline"] == "2026-06-21"
+    assert "propuesto por el agente" in padre.payload["raw_brief"]
