@@ -667,9 +667,85 @@ GenerationApi.agenticRefine = async function (campaign, prompt, targetNodes) {
   } catch (e) { return fallbackResult("Refinamiento agéntico no disponible (" + errorText(e) + ").", null); }
 };
 
+// --- Direct, instant banner edit (no LLM) — Phase 3 mechanism A ---
+GenerationApi.applyEdits = async function (campaign, structuredChanges, sourceRevisionId) {
+  if (!isApiCampaign(campaign)) return fallbackResult("La edición directa requiere una campaña UUID.", null);
+  const input = { structured_changes: structuredChanges || {} };
+  if (sourceRevisionId) input.source_revision_id = sourceRevisionId;
+  try {
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/apply-edits`), input);
+    return { ok: true, fallback: false, data };
+  } catch (e) { return fallbackResult("Edición directa no disponible (" + errorText(e) + ").", null); }
+};
+
+// --- Pinned comments → agent (Phase 3 mechanism B) ---
+// Creates a refinement request (server weaves in the pins' coordinates), to be run
+// via GenerationApi.regenerate({ refinement_request_id }).
+ReviewApi.createRefinementRequest = async function (campaign, input) {
+  if (!isApiCampaign(campaign)) return fallbackResult("El refinamiento requiere una campaña UUID.", null);
+  try {
+    const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/refinement-requests`), input || {});
+    return { ok: true, fallback: false, data };
+  } catch (e) { return fallbackResult("No se pudo crear la solicitud de cambios (" + errorText(e) + ").", null); }
+};
+
+// --- Geometry helpers for the drag/resize editor (client-side parity with clamp_layout) ---
+function pxDeltaToPct(rect, dx, dy) {
+  return { dx: rect && rect.width ? (dx / rect.width) * 100 : 0, dy: rect && rect.height ? (dy / rect.height) * 100 : 0 };
+}
+function clampLayoutClient(layout) {
+  const L = layout || {};
+  const c = (v, lo, hi, d) => { const n = parseFloat(v); return Number.isFinite(n) ? Math.max(lo, Math.min(hi, n)) : d; };
+  const align = ["left", "center", "right"].includes(L.textAlign) ? L.textAlign : "left";
+  return {
+    textX: c(L.textX, 2, 60, 6), textY: c(L.textY, 10, 90, 50), textW: c(L.textW, 24, 70, 48), textAlign: align,
+    heroX: c(L.heroX, 25, 92, 74), heroY: c(L.heroY, 12, 88, 50), heroW: c(L.heroW, 24, 80, 46), heroH: c(L.heroH, 55, 90, 80),
+    heroBehind: !!L.heroBehind, aspectRatio: 2.4,
+  };
+}
+
+// --- Iterative campaign plan (cheap gate BEFORE the costly build) ---
+const PlanApi = {
+  // Kick off the plan phase (concept + wireframe, no image). Returns a poll-able run.
+  async start(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("El plan de campaña requiere una campaña UUID.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/plan-runs`), {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo iniciar el plan (" + errorText(e) + ").", null); }
+  },
+  // Fetch the latest pending plan (readable summary + deterministic wireframe spec).
+  async get(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("El plan de campaña requiere una campaña UUID.", null);
+    try {
+      const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/plan`));
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Plan no disponible en backend (" + errorText(e) + ").", null); }
+  },
+  // Re-draft the plan with feedback (never re-runs image work). Returns a poll-able run.
+  async iterate(campaign, prompt, targetNodes) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Iterar el plan requiere una campaña UUID.", null);
+    const input = { prompt: prompt || "Refina el plan" };
+    if (Array.isArray(targetNodes) && targetNodes.length) input.target_nodes = targetNodes;
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/plan/iterate`), input);
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo iterar el plan (" + errorText(e) + ").", null); }
+  },
+  // Approve the plan → starts the costly BUILD run. Returns { generation_run, revision }.
+  async approve(campaign) {
+    if (!isApiCampaign(campaign)) return fallbackResult("Aprobar el plan requiere una campaña UUID.", null);
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/plan/approve`), {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo aprobar el plan (" + errorText(e) + ").", null); }
+  },
+};
+
 Object.assign(window, {
   Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar,
   AijolotApi, CampaignApi, StoreApi, PlacementApi, CatalogApi, ArtDirectionApi,
-  GenerationApi, ReviewApi, PerformanceApi, BackgroundApi, ArtApi, API_V1, UUID_RE, isApiCampaign,
+  GenerationApi, PlanApi, ReviewApi, PerformanceApi, BackgroundApi, ArtApi, API_V1, UUID_RE, isApiCampaign,
   AIJOLOT_DEMO_IDS, AIJOLOT_DEMO_AUTH_HEADERS, apiPath, apiV1Path, normalizeApiOrigin, errorText,
+  pxDeltaToPct, clampLayoutClient,
 });

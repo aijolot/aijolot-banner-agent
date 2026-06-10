@@ -256,7 +256,7 @@ function Viewport({ phase, typed, shieldOn, generationStatus, backendError }) {
   );
 }
 
-function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
+function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun }) {
   const [prototypePhase, setPrototypePhase] = useStateG(0);
   const [typed, setTyped] = useStateG(0);
   const [shieldOn, setShieldOn] = useStateG(false);
@@ -277,26 +277,36 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone }) {
       setArtifactStatus(null);
       setArtifactNotice(null);
       try {
-        // Ensure a catalog snapshot exists so the concept stays grounded in the store
-        // catalog + the products picked per variant in Brief. (Previously created in the
-        // removed "Arte" step; best-effort — never blocks generation.)
-        if (isApiCampaign(campaign)) {
-          try {
-            const storeId = (placement && placement.backend && placement.backend.store_id) || (AIJOLOT_DEMO_IDS && AIJOLOT_DEMO_IDS.store);
-            await CatalogApi.createSnapshot(campaign, { store_id: storeId, resource_types: ["product", "collection"], limit: 24 });
-          } catch (snapErr) { /* grounding is best-effort */ }
+        let run;
+        if (initialRun && initialRun.id) {
+          // BUILD run already started by approving the plan — poll it instead of
+          // starting a fresh generation run (the plan already grounded the catalog).
+          run = initialRun;
+          setBackendRun(run);
+          setGenerationStatus(run.status === "succeeded" ? "succeeded" : FAILED_STATUSES.includes(run.status) ? "failed" : "running");
+          onNotice && onNotice({ tone: "green", text: "Generando el banner aprobado · suele tardar 2-3 min (compone el hero, art-direction y auto-revisa en 3 breakpoints)" });
+        } else {
+          // Ensure a catalog snapshot exists so the concept stays grounded in the store
+          // catalog + the products picked per variant in Brief. (Previously created in the
+          // removed "Arte" step; best-effort — never blocks generation.)
+          if (isApiCampaign(campaign)) {
+            try {
+              const storeId = (placement && placement.backend && placement.backend.store_id) || (AIJOLOT_DEMO_IDS && AIJOLOT_DEMO_IDS.store);
+              await CatalogApi.createSnapshot(campaign, { store_id: storeId, resource_types: ["product", "collection"], limit: 24 });
+            } catch (snapErr) { /* grounding is best-effort */ }
+          }
+          const r = await GenerationApi.start(campaign, { placement, art, source: "frontend-generate-stage" });
+          if (!alive) return;
+          if (r.fallback) {
+            setGenerationStatus("prototype");
+            onNotice && onNotice({ tone: "amber", text: r.reason || "Generación en modo prototipo local." });
+            return;
+          }
+          run = r.data;
+          setBackendRun(run);
+          setGenerationStatus(run && run.status === "succeeded" ? "succeeded" : run && FAILED_STATUSES.includes(run.status) ? "failed" : "running");
+          onNotice && onNotice({ tone: "green", text: "Generación iniciada en backend · suele tardar 2-3 min (compone el hero, art-direction y auto-revisa en 3 breakpoints)" });
         }
-        const r = await GenerationApi.start(campaign, { placement, art, source: "frontend-generate-stage" });
-        if (!alive) return;
-        if (r.fallback) {
-          setGenerationStatus("prototype");
-          onNotice && onNotice({ tone: "amber", text: r.reason || "Generación en modo prototipo local." });
-          return;
-        }
-        let run = r.data;
-        setBackendRun(run);
-        setGenerationStatus(run && run.status === "succeeded" ? "succeeded" : run && FAILED_STATUSES.includes(run.status) ? "failed" : "running");
-        onNotice && onNotice({ tone: "green", text: "Generación iniciada en backend · suele tardar 2-3 min (compone el hero, art-direction y auto-revisa en 3 breakpoints)" });
 
         // Generation does heavy real work (per-variant Nano Banana hero composition,
         // art-direction, headline styling, and the screenshot self-review loop) — it

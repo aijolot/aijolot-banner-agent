@@ -5,7 +5,14 @@ from uuid import uuid4
 
 import pytest
 
-from app.schemas.generation import RegenerateRequest
+from app.schemas.generation import (
+    ApplyEditsRequest,
+    RegenerateRequest,
+    StructuredCopyEdit,
+    StructuredEdit,
+    StructuredFontsEdit,
+    StructuredLayoutEdit,
+)
 from app.services.banners.generation_run_service import GenerationRunService, InMemoryGenerationEventRepository, InMemoryGenerationRunRepository
 from app.services.banners.revision_service import RevisionService, VariantNotFound
 
@@ -249,6 +256,61 @@ def test_regenerate_escapes_prompt_in_html_and_does_not_reuse_preview_path(stack
     assert "--><script" not in html_preview
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html_preview
     assert revisions.rows[response.revision.id]["preview_storage_path"] is None
+
+
+# --- Phase 3: direct, agent-free edits (apply_edits) ---
+
+def test_apply_edits_creates_revision_without_agent_and_clamps_layout(stack) -> None:
+    service, campaigns, revisions, variants, layouts, _ref = stack
+    # Guard: apply_edits must NEVER invoke the agent/orchestrator.
+    def _boom(*_a, **_k):
+        raise AssertionError("apply_edits must not start an agent run")
+    service.generation_runs.start_refinement_run = _boom  # type: ignore[assignment]
+    service.generation_runs.start_banner_edit_run = _boom  # type: ignore[assignment]
+
+    req = ApplyEditsRequest(structured_changes=StructuredEdit(layout=StructuredLayoutEdit(textX=200, heroW=999)))
+    resp = service.apply_edits(CAMPAIGN_ID, req)
+
+    assert resp.revision.id == REVISION_2
+    assert resp.generation_run.metadata.get("no_agent") is True
+    assert revisions.rows[REVISION_1]["status"] == "superseded"
+    assert revisions.rows[REVISION_2]["status"] == "selected"
+    assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == REVISION_2
+    layout = revisions.rows[REVISION_2]["concept"]["art_direction"]["layout"]
+    assert layout["textX"] == 60  # clamped to safe max
+    assert layout["heroW"] == 80  # clamped to safe max
+    assert variants.list_by_revision_id(revision_id=REVISION_2)  # variants carried forward
+    assert layouts.list_by_revision_id(revision_id=REVISION_2)
+
+
+def test_apply_edits_coerces_fonts_to_allowlist(stack) -> None:
+    service, _campaigns, revisions, *_ = stack
+    req = ApplyEditsRequest(structured_changes=StructuredEdit(fonts=StructuredFontsEdit(display="Comic Sans", body="Papyrus")))
+    resp = service.apply_edits(CAMPAIGN_ID, req)
+    fonts = revisions.rows[resp.revision.id]["concept"]["art_direction"]["fonts"]
+    assert fonts["display"] == "Space Grotesk"
+    assert fonts["body"] == "Inter"
+
+
+def test_apply_edits_copy_change_clears_stale_runs(stack) -> None:
+    service, _campaigns, revisions, variants, *_ = stack
+    variants.rows[VARIANT_1]["headline"] = "Buy now today"
+    variants.rows[VARIANT_1]["audience_rule"] = {"headline_runs": [{"text": "Buy now today", "b": True}]}
+    req = ApplyEditsRequest(structured_changes=StructuredEdit(copy=StructuredCopyEdit(headline="Completely different headline")))
+    resp = service.apply_edits(CAMPAIGN_ID, req)
+    new_variant = variants.list_by_revision_id(revision_id=resp.revision.id)[0]
+    assert new_variant["headline"] == "Completely different headline"
+    assert "headline_runs" not in (new_variant["audience_rule"] or {})
+
+
+def test_apply_edits_drops_low_contrast_run_color(stack) -> None:
+    service, _campaigns, revisions, variants, *_ = stack
+    revisions.rows[REVISION_1]["concept"] = {"headline": "x", "art_direction": {"ink": "#111111"}}
+    variants.rows[VARIANT_1]["headline"] = "Hello world"
+    req = ApplyEditsRequest(structured_changes=StructuredEdit(headline_runs={VARIANT_1: [{"text": "Hello world", "color": "#ffffff", "b": True}]}))
+    resp = service.apply_edits(CAMPAIGN_ID, req)
+    runs = (variants.list_by_revision_id(revision_id=resp.revision.id)[0]["audience_rule"] or {}).get("headline_runs")
+    assert runs and runs[0]["color"] is None and runs[0]["b"] is True
 
 
 def test_regenerate_from_non_selected_source_supersedes_previous_selected_revision(stack) -> None:

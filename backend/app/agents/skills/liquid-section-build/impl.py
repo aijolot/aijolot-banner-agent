@@ -12,5 +12,6 @@ async def run(
     brand,
     assets: BannerAssets | None = None,
     placement: str | dict[str, Any] | None = None,
+    cta_url: str | None = None,
 ) -> dict[str, Any]:
-    return await liquid_render.render(concept, variants, brand=brand, assets=assets, placement=placement)
+    return await liquid_render.render(concept, variants, brand=brand, assets=assets, placement=placement, cta_url=cta_url)

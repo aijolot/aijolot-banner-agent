@@ -45,6 +45,16 @@ def test_liquid_payload_builder_returns_stable_controlled_payload() -> None:
     assert payload.config["optimization_report"]["avif_skipped"] is True
 
 
+def test_cta_url_default_falls_back_to_catalog() -> None:
+    payload = build_liquid_payload(_concept(), [], brand={"name": "Demo"})
+    assert '"id":"cta_url","label":"CTA URL","default":"/collections/all"' in payload.section
+
+
+def test_cta_url_uses_brief_destination_when_provided() -> None:
+    payload = build_liquid_payload(_concept(), [], brand={"name": "Demo"}, cta_url="https://shop.example/landing")
+    assert '"default":"https://shop.example/landing"' in payload.section
+
+
 def test_liquid_payload_builder_does_not_accept_arbitrary_liquid_templates() -> None:
     payload = build_liquid_payload(
         _concept(),

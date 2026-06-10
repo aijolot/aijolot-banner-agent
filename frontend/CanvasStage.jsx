@@ -75,7 +75,16 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const [device, setDevice] = useStateCV("desktop");
   const [comments, setComments] = useStateCV(() => COMMENTS_SEED.map((c) => ({ ...c })));
   const [approvers, setApprovers] = useStateCV(() => APPROVERS_SEED.map((a) => ({ ...a })));
-  const [commentMode, setCommentMode] = useStateCV(false);
+  // Canvas mode: view | edit (direct, no-LLM) | comment (pins → agent).
+  const [mode, setMode] = useStateCV("view");
+  const commentMode = mode === "comment";
+  const editMode = mode === "edit";
+  // Direct-edit working overlay (flushed via applyEdits on save).
+  const [draftLayout, setDraftLayout] = useStateCV(null);
+  const [draftFonts, setDraftFonts] = useStateCV({});
+  const [draftInk, setDraftInk] = useStateCV(null);
+  const [editBusy, setEditBusy] = useStateCV(false);
+  const dragRef = useRefCV(null);
   const [editingId, setEditingId] = useStateCV(null);
   const [applied, setApplied] = useStateCV({ brighter: false, ctaContrast: false });
   const [refining, setRefining] = useStateCV(false);
@@ -235,6 +244,94 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
       document.head.appendChild(link);
     });
   }, [liveConcept, displayFont, bodyFont]);
+  // --- Phase 3: direct edit overlay (no LLM) + drag/resize handles ---
+  function curLayout() {
+    return draftLayout || (live && live.layout) || { textX: 6, textY: 50, textW: 48, textAlign: "left", heroX: 74, heroY: 50, heroW: 46, heroH: 80, heroBehind: false };
+  }
+  const editedLive = live ? {
+    ...live,
+    layout: editMode ? curLayout() : live.layout,
+    displayFont: draftFonts.display || live.displayFont,
+    bodyFont: draftFonts.body || live.bodyFont,
+    textColor: draftInk || live.textColor,
+  } : null;
+
+  function _onDrag(e) {
+    const d = dragRef.current;
+    if (!d) return;
+    const { dx, dy } = pxDeltaToPct(d.rect, e.clientX - d.startX, e.clientY - d.startY);
+    const L = { ...d.start };
+    if (d.kind === "copy") { L.textX = d.start.textX + dx; L.textY = d.start.textY + dy; }
+    else if (d.kind === "hero") { L.heroX = d.start.heroX + dx; L.heroY = d.start.heroY + dy; }
+    else if (d.kind === "heroSize") { L.heroW = d.start.heroW + dx; L.heroH = d.start.heroH + dy * 1.4; }
+    setDraftLayout(clampLayoutClient(L));
+  }
+  function _endDrag() {
+    dragRef.current = null;
+    window.removeEventListener("pointermove", _onDrag);
+    window.removeEventListener("pointerup", _endDrag);
+  }
+  function beginDrag(kind, e) {
+    if (!editMode || !stageRef.current) return;
+    e.preventDefault(); e.stopPropagation();
+    dragRef.current = { kind, startX: e.clientX, startY: e.clientY, rect: stageRef.current.getBoundingClientRect(), start: { ...curLayout() } };
+    window.addEventListener("pointermove", _onDrag);
+    window.addEventListener("pointerup", _endDrag);
+  }
+  const hasEdits = !!(draftLayout || draftFonts.display || draftFonts.body || draftInk);
+  function discardEdits() { setDraftLayout(null); setDraftFonts({}); setDraftInk(null); }
+  async function saveEdits() {
+    if (!hasEdits || editBusy) return;
+    const changes = {};
+    if (draftLayout) changes.layout = draftLayout;
+    if (draftFonts.display || draftFonts.body) changes.fonts = { ...(draftFonts.display ? { display: draftFonts.display } : {}), ...(draftFonts.body ? { body: draftFonts.body } : {}) };
+    if (draftInk) changes.ink = draftInk;
+    setEditBusy(true);
+    const r = await GenerationApi.applyEdits(campaign, changes, revision && revision.id);
+    setEditBusy(false);
+    if (r.fallback || !r.data) { onNotice && onNotice({ tone: "amber", text: r.reason || "Edición no aplicada (sin backend)." }); return; }
+    if (r.data.revision) {
+      setRevision(r.data.revision);
+      setRevisionList((arr) => [...arr.filter((x) => x.id !== r.data.revision.id), r.data.revision]);
+    }
+    discardEdits();
+    onNotice && onNotice({ tone: "green", text: `Edición aplicada al instante · revisión #${r.data.revision ? r.data.revision.revision_number : "?"} (sin IA)` });
+  }
+
+  async function applyCommentsWithAgent() {
+    const pinned = comments.filter((c) => !c.resolved && UUID_RE.test(c.id || "") && c.x != null && c.y != null);
+    if (!pinned.length) { onNotice && onNotice({ tone: "amber", text: "No hay comentarios fijados (backend) sin resolver para enviar al agente." }); return; }
+    setRefining(true);
+    try {
+      const rr = await ReviewApi.createRefinementRequest(campaign, {
+        prompt: "Aplica los comentarios fijados respetando dónde se colocaron en el banner.",
+        addressed_comment_ids: pinned.map((c) => c.id),
+        requested_by: AIJOLOT_DEMO_IDS.user,
+        source_revision_id: (revision && revision.id) || null,
+      });
+      if (rr.fallback || !rr.data) { setRefining(false); onNotice && onNotice({ tone: "amber", text: rr.reason || "No se pudo crear la solicitud." }); return; }
+      const reg = await GenerationApi.regenerate(campaign, { refinement_request_id: rr.data.id });
+      if (reg.fallback || !reg.data) { setRefining(false); onNotice && onNotice({ tone: "amber", text: reg.reason || "El backend no aceptó el refinamiento." }); return; }
+      let run = reg.data.generation_run;
+      const TERMINAL = ["succeeded", "failed", "escalated"];
+      for (let i = 0; i < 60 && run && !TERMINAL.includes(run.status); i += 1) {
+        await new Promise((res) => setTimeout(res, 2000));
+        try { run = (await GenerationApi.get(run.id)) || run; } catch (_e) { break; }
+      }
+      if (run && run.status === "succeeded") {
+        const rev = await GenerationApi.latestRevision(campaign);
+        if (rev && !rev.fallback && rev.data) setRevision(rev.data);
+        setComments((arr) => arr.map((c) => pinned.some((p) => p.id === c.id) ? { ...c, resolved: true } : c));
+        setRefineMsg("Comentarios aplicados por el agente");
+        onNotice && onNotice({ tone: "green", text: "El agente aplicó los comentarios con su contexto espacial." });
+      } else {
+        onNotice && onNotice({ tone: "amber", text: (run && run.error_message) || "El agente no completó los cambios." });
+      }
+    } finally {
+      setRefining(false);
+    }
+  }
+
   const approvedCount = approvers.filter((a) => a.status === "approved").length;
   const allApproved = approvedCount === approvers.length;
   const missing = approvers.length - approvedCount;
@@ -326,7 +423,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     const id = "c" + (CID++);
     setComments((arr) => [...arr, { id, x, y, author: "Mara Voss", initials: "MV", grad: "linear-gradient(135deg,#F72585,#8B5CF6)", text: "", resolved: false, time: "ahora", _new: true }]);
     setEditingId(id);
-    setCommentMode(false);
+    setMode("view");
   }
   async function saveDraft(id, text) {
     const pin = comments.find((c) => c.id === id);
@@ -505,11 +602,42 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             </div>
             <div style={{ flex: 1 }} />
             <div style={{ display: "flex", gap: 2, background: "rgba(248,250,252,0.8)", borderRadius: 11, padding: 3 }}>
+              <TabBtn active={mode === "view"} onClick={() => { discardEdits(); setMode("view"); }} title="Solo ver"><Icon name="eye" size={14} /> Ver</TabBtn>
+              <TabBtn active={mode === "edit"} onClick={() => setMode("edit")} title="Editar directo (sin IA)"><Icon name="move" size={14} /> Editar</TabBtn>
+              <TabBtn active={mode === "comment"} onClick={() => { discardEdits(); setMode("comment"); }} title="Comentar (al agente)"><Icon name="message-square" size={14} /> Comentar</TabBtn>
+            </div>
+            <div style={{ display: "flex", gap: 2, background: "rgba(248,250,252,0.8)", borderRadius: 11, padding: 3 }}>
               {DEVICES.map((d) => (
                 <TabBtn key={d.id} active={device === d.id} onClick={() => setDevice(d.id)} title={d.label}><Icon name={d.icon} size={15} /></TabBtn>
               ))}
             </div>
           </GlassCard>
+
+          {/* direct-edit properties (no LLM) */}
+          {editMode ? (
+            <GlassCard style={{ padding: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+              <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12.5, color: "#002B57", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="sliders-horizontal" size={14} color="#0891B2" /> Edición directa</span>
+              <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                Display
+                <select value={draftFonts.display || (live && live.displayFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, display: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
+                  {["Space Grotesk", "Archivo Black", "Fraunces", "Playfair Display", "Bebas Neue", "Anton", "Syne", "Montserrat", "Poppins", "Oswald"].map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </label>
+              <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                Texto
+                <select value={draftFonts.body || (live && live.bodyFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, body: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
+                  {["Inter", "DM Sans", "Work Sans", "Manrope", "IBM Plex Sans", "Public Sans", "Nunito Sans", "Karla", "Figtree"].map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </label>
+              <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                Color texto
+                <input type="color" value={draftInk || (live && /^#[0-9a-fA-F]{6}$/.test(live.textColor || "") ? live.textColor : "#111111")} onChange={(e) => setDraftInk(e.target.value)} style={{ width: 28, height: 22, border: "1px solid #E2E8F0", borderRadius: 6, padding: 0, cursor: "pointer" }} />
+              </label>
+              <div style={{ flex: 1 }} />
+              <Button variant="ghost" icon="rotate-ccw" onClick={discardEdits} disabled={!hasEdits || editBusy}>Descartar</Button>
+              <Button variant="primary" icon={editBusy ? "loader" : "check"} onClick={saveEdits} disabled={!hasEdits || editBusy}>{editBusy ? "Aplicando…" : "Aplicar al instante"}</Button>
+            </GlassCard>
+          ) : null}
 
           {/* banner stage */}
           <GlassCard style={{ padding: 22, display: "flex", flexDirection: "column", alignItems: "center", gap: 10,
@@ -523,12 +651,32 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                 {cellCount > 1 ? (
                   <BannerLayout layout={gridLayout} gap={12} cell={(i) => (
                     <Banner key={i} seg={seg} variant={layoutVariant} slot={i === 0} font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
-                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} live={live} breakpoint={device} />
+                      brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv" + i} live={editMode ? editedLive : live} breakpoint={device} />
                   )} />
                 ) : (
-                  <Banner seg={seg} variant={layoutVariant} slot font={live ? live.displayFont : tweaks.bannerFont} bodyFont={live ? live.bodyFont : null} accent={bannerAccent}
-                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} live={live} breakpoint={device} />
+                  <Banner seg={seg} variant={layoutVariant} slot font={(editMode ? editedLive : live) ? (editMode ? editedLive : live).displayFont : tweaks.bannerFont} bodyFont={(editMode ? editedLive : live) ? (editMode ? editedLive : live).bodyFont : null} accent={bannerAccent}
+                    brighter={applied.brighter} ctaContrast={applied.ctaContrast} idSuffix={"-cv"} live={editMode ? editedLive : live} breakpoint={device} />
                 )}
+
+                {/* direct-edit drag/resize handles (single-cell, edit mode) */}
+                {editMode && editedLive && cellCount <= 1 ? (() => {
+                  const L = curLayout();
+                  const handle = (left, top, label, kind, icon) => (
+                    <div onPointerDown={(e) => beginDrag(kind, e)} title={label} style={{
+                      position: "absolute", left: `${left}%`, top: `${top}%`, transform: "translate(-50%,-50%)", zIndex: 18,
+                      display: "flex", alignItems: "center", gap: 4, padding: "4px 8px", borderRadius: 9999, cursor: "grab",
+                      background: "rgba(8,145,178,.92)", color: "#fff", fontFamily: "Inter", fontSize: 10.5, fontWeight: 600,
+                      boxShadow: "0 4px 12px rgba(15,23,42,.3)", userSelect: "none", whiteSpace: "nowrap",
+                    }}><Icon name={icon} size={11} /> {label}</div>
+                  );
+                  return (
+                    <React.Fragment>
+                      {handle(L.textX + Math.min(L.textW, 20) / 2, L.textY, "Texto", "copy", "move")}
+                      {handle(L.heroX, L.heroY, "Imagen", "hero", "move")}
+                      {handle(Math.min(L.heroX + L.heroW / 2, 96), Math.min(L.heroY + L.heroH / 2, 96), "Tamaño", "heroSize", "maximize-2")}
+                    </React.Fragment>
+                  );
+                })() : null}
 
                 {/* refine shimmer overlay */}
                 {refining && (
@@ -643,8 +791,13 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
             guardrailReason={backendPublishReady ? "" : (publishGuardReason || scheduleGuardReason)} scheduleGuardReason={scheduleGuardReason}
             publishGuardReason={publishGuardReason} approvalMode={approvalMode} backendStatus={backendCampaignStatus}
             onPublishNow={publish} onSchedule={schedule} onEditSchedule={() => setScheduled(false)} onView={() => onPublish && onPublish()} />
-          <CommentsPanel comments={comments} onResolve={resolveComment} commentMode={commentMode} setCommentMode={setCommentMode}
+          <CommentsPanel comments={comments} onResolve={resolveComment} commentMode={commentMode} setCommentMode={(v) => setMode(v ? "comment" : "view")}
             editingId={editingId} onSaveDraft={saveDraft} onCancelDraft={cancelDraft} />
+          {comments.some((c) => !c.resolved && UUID_RE.test(c.id || "")) ? (
+            <Button variant="secondary" icon={refining ? "loader" : "wand-sparkles"} onClick={applyCommentsWithAgent} disabled={refining} style={{ justifyContent: "center" }}>
+              {refining ? "El agente está aplicando…" : "Aplicar comentarios con el agente"}
+            </Button>
+          ) : null}
         </div>
       </div>
     </div>

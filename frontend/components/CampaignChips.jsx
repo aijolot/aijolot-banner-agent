@@ -4,7 +4,7 @@
 // client-side, persists edits via PATCH /api/v1/campaigns/{id}, and advances to Art.
 // Controlled component: the Campaign lives in BriefStage; this edits via onChange
 // so live chat updates and manual edits never clobber each other.
-const { useState: useStateCC } = React;
+const { useState: useStateCC, useRef: useRefCC } = React;
 
 const REQUIRED = ["goal", "audience", "cta", "urgency", "placement"];
 const URGENCIES = [["low", "Baja"], ["medium", "Media"], ["high", "Alta"]];
@@ -32,6 +32,10 @@ function validate(brief) {
   if (!(brief.cta || "").trim()) errs.cta = "El CTA no puede estar vacío.";
   if (brief.deadline && /^\d{4}-\d{2}-\d{2}$/.test(brief.deadline) && brief.deadline < todayISO()) {
     errs.deadline = "La fecha debe ser futura.";
+  }
+  const dest = (brief.destination_url || "").trim();
+  if (dest && !/^(https?:\/\/.+|\/.*)$/.test(dest)) {
+    errs.destination_url = "URL inválida (usa https://… o /ruta).";
   }
   return errs;
 }
@@ -109,8 +113,76 @@ function VariantProductPicker({ variant, onPick, onNotice }) {
   );
 }
 
+// Campaign-level multi-product picker. Same live Shopify search as the per-variant
+// picker, but appends to an array (dedup by GID/title) with removable chips.
+function CampaignProductsPicker({ products, onChange, onNotice }) {
+  const [q, setQ] = useStateCC("");
+  const [busy, setBusy] = useStateCC(false);
+  const [results, setResults] = useStateCC([]);
+  const [open, setOpen] = useStateCC(false);
+  const list = Array.isArray(products) ? products : [];
+  async function search() {
+    const term = q.trim();
+    if (!term) return;
+    setBusy(true);
+    const res = await StoreApi.searchProductsSafe(term);
+    setBusy(false);
+    if (!res.ok) { onNotice && onNotice({ tone: "amber", text: "Búsqueda de productos no disponible: " + res.reason }); return; }
+    setResults((res.data && res.data.items) || []);
+    setOpen(true);
+  }
+  function add(p) {
+    const gid = p.shopify_gid || null;
+    const title = p.title || "";
+    const dup = list.some((x) => (gid && x.product_gid === gid) || (title && (x.product_title || "").toLowerCase() === title.toLowerCase()));
+    if (!dup) {
+      onChange([...list, { product_gid: gid, product_title: title, product_image_url: p.image_url || null, price: (p.metadata && p.metadata.price) || null }]);
+    }
+    setOpen(false); setResults([]); setQ("");
+  }
+  function remove(i) { onChange(list.filter((_, idx) => idx !== i)); }
+  return (
+    <div style={{ position: "relative", display: "flex", flexDirection: "column", gap: 6 }}>
+      {list.length ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {list.map((p, i) => (
+            <span key={p.product_gid || p.product_title || i} style={{ display: "flex", alignItems: "center", gap: 6, background: "rgba(16,185,129,.08)", border: "1px solid rgba(16,185,129,.3)", borderRadius: 9999, padding: "4px 8px", maxWidth: 220 }}>
+              {p.product_image_url ? <img src={p.product_image_url} alt="" style={{ width: 20, height: 20, borderRadius: 5, objectFit: "cover", flexShrink: 0 }} /> : <Icon name="package" size={12} color="#10B981" />}
+              <span style={{ fontFamily: "Inter", fontSize: 11, color: "#047857", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.product_title || "Producto"}</span>
+              <button onClick={() => remove(i)} title="Quitar" style={{ border: "none", background: "transparent", color: "#94A3B8", cursor: "pointer", padding: 0, display: "flex" }}><Icon name="x" size={12} /></button>
+            </span>
+          ))}
+        </div>
+      ) : null}
+      <div style={{ display: "flex", gap: 6 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); search(); } }} placeholder="Buscar y agregar productos Shopify" style={{ ...inputStyle, fontSize: 11.5, padding: "5px 8px" }} />
+        <button onClick={search} disabled={busy || !q.trim()} style={{ fontFamily: "Inter", fontSize: 11, fontWeight: 600, padding: "5px 10px", borderRadius: 8, border: "1px solid #E2E8F0", background: "#fff", color: "#0891B2", cursor: busy ? "default" : "pointer", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
+          <Icon name={busy ? "loader" : "search"} size={12} />{busy ? "…" : "Buscar"}
+        </button>
+      </div>
+      {open ? (
+        <div style={{ background: "#fff", border: "1px solid #E2E8F0", borderRadius: 8, boxShadow: "0 8px 20px rgba(15,23,42,.12)", overflow: "hidden", maxHeight: 180, overflowY: "auto" }}>
+          {results.length ? results.map((p) => (
+            <button key={p.shopify_gid || p.id} onClick={() => add(p)} style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", textAlign: "left", border: "none", borderBottom: "1px solid #F1F5F9", background: "#fff", padding: "6px 8px", cursor: "pointer" }}>
+              {p.image_url ? <img src={p.image_url} alt="" style={{ width: 28, height: 28, borderRadius: 5, objectFit: "cover", flexShrink: 0 }} /> : <Icon name="package" size={14} color="#94A3B8" />}
+              <span style={{ minWidth: 0, flex: 1 }}>
+                <span style={{ display: "block", fontFamily: "Inter", fontSize: 11.5, color: "#002B57", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</span>
+                <span style={{ display: "block", fontFamily: "Inter", fontSize: 10, color: "#94A3B8" }}>{p.vendor || ""}{p.metadata && p.metadata.price ? ` · ${p.metadata.price} ${p.metadata.currency || ""}` : ""}</span>
+              </span>
+            </button>
+          )) : <div style={{ fontFamily: "Inter", fontSize: 11, color: "#94A3B8", padding: "8px 10px" }}>Sin resultados para “{q}”.</div>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
   const [saveState, setSaveState] = useStateCC("saved");
+  // Serialize brief PATCHes so concurrent chip edits (e.g. add product + set URL)
+  // never race — responses apply in order and the latest server brief always wins
+  // (previously an out-of-order response could drop a just-set field).
+  const saveChain = useRefCC(Promise.resolve());
 
   if (!campaign) {
     return (
@@ -132,23 +204,27 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
   const setField = (k, v) => onChange && onChange({ ...campaign, structured_brief: { ...brief, [k]: v } });
   const setFields = (patch) => onChange && onChange({ ...campaign, structured_brief: { ...brief, ...patch } });
 
-  async function persistFields(fields) {
+  function persistFields(fields) {
     if (!isBackendCampaign) {
       setSaveState("failed");
       onNotice && onNotice({ tone: "amber", text: "Modo prototipo: este brief local no tiene UUID backend y no puede persistirse ni avanzar." });
-      return;
+      return Promise.resolve();
     }
-    try {
-      setSaveState("saving");
-      const updated = await CampaignApi.patch(campaign.id, fields);
-      setSaveState("saved");
-      onChange && onChange({ ...updated, structured_brief: updated.structured_brief || {} });
-      onNotice && onNotice({ tone: "green", text: "Brief guardado en backend." });
-    } catch (e) {
-      const msg = e && (e.message || e.status) || "error";
-      setSaveState("failed");
-      onNotice && onNotice({ tone: "amber", text: "No se pudo guardar brief en backend: " + msg });
-    }
+    const run = saveChain.current.then(async () => {
+      try {
+        setSaveState("saving");
+        const updated = await CampaignApi.patch(campaign.id, fields);
+        setSaveState("saved");
+        onChange && onChange({ ...updated, structured_brief: updated.structured_brief || {} });
+        onNotice && onNotice({ tone: "green", text: "Brief guardado en backend." });
+      } catch (e) {
+        const msg = e && (e.message || e.status) || "error";
+        setSaveState("failed");
+        onNotice && onNotice({ tone: "amber", text: "No se pudo guardar brief en backend: " + msg });
+      }
+    });
+    saveChain.current = run.catch(() => {});
+    return run;
   }
   const persist = (k, value) => persistFields({ [k]: value });
 
@@ -170,6 +246,9 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
     persistFields({ personalization_variants: next });
   }
   function persistVariants() { persistFields({ personalization_variants: pVariants }); }
+
+  // --- campaign-level products + destination URL (Phase 2) ---
+  function setProducts(next) { setField("products", next); persistFields({ products: next }); }
 
   return (
     <GlassCard style={{ padding: 20, display: "flex", flexDirection: "column", gap: 13, height: "100%" }}>
@@ -220,6 +299,12 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
         <Row icon="calendar" label="Fecha límite (opcional)" error={errors.deadline}>
           <input type="date" value={/^\d{4}-\d{2}-\d{2}$/.test(brief.deadline || "") ? brief.deadline : ""} onChange={(e) => { setField("deadline", e.target.value || null); persist("deadline", e.target.value || null); }} style={inputStyle} />
         </Row>
+        <Row icon="shopping-bag" label="Productos de la campaña (opcional)">
+          <CampaignProductsPicker products={brief.products} onChange={setProducts} onNotice={onNotice} />
+        </Row>
+        <Row icon="link" label="URL de destino (opcional)" error={errors.destination_url}>
+          <input value={brief.destination_url || ""} onChange={(e) => setField("destination_url", e.target.value)} onBlur={(e) => persist("destination_url", e.target.value || null)} style={inputStyle} placeholder="https://… o /collections/perfumes" />
+        </Row>
         <Row icon="users" label="Personalización (1 campaña · N variantes por tag)">
           <div style={{ display: "flex", gap: 6, marginBottom: pVariants.length ? 9 : 0 }}>
             {DIMENSIONS.map(([id, lbl]) => {
@@ -253,7 +338,7 @@ function CampaignChips({ campaign, onChange, onAdvance, onNotice }) {
       </div>
 
       <Button variant={canAdvance ? "shine" : "secondary"} icon="arrow-right" disabled={!canAdvance} onClick={() => canAdvance && onAdvance && onAdvance(campaign)} style={{ justifyContent: "center", marginTop: 2 }}>
-        {prototypeOnly ? "Requiere campaña backend" : canAdvance ? "Avanzar a Generación" : `Completa ${missing.length} campo${missing.length === 1 ? "" : "s"}`}
+        {prototypeOnly ? "Requiere campaña backend" : canAdvance ? "Avanzar al plan" : `Completa ${missing.length} campo${missing.length === 1 ? "" : "s"}`}
       </Button>
     </GlassCard>
   );

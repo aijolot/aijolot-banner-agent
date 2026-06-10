@@ -13,14 +13,76 @@ from app.db.repositories.campaigns import CampaignRepository
 from app.db.repositories.generation_runs import GenerationRunRepository
 from app.db.repositories.refinement_requests import RefinementRequestRepository
 from app.schemas.generation import (
+    ApplyEditsRequest,
+    CampaignPlanResponse,
     CampaignRevisionResponse,
     GenerationRunResponse,
     RegenerateRequest,
     RegenerateResponse,
+    StructuredEdit,
     VariantSelectionResponse,
 )
+from app.schemas.typography import ArtDirection, clamp_layout, coerce_pairing, coerce_runs
 from app.services.banners.generation_run_service import GenerationRunService
 from app.services.supabase.client import SupabaseClientFactory
+
+import re as _re
+
+_HEX_RE = _re.compile(r"^#[0-9a-fA-F]{3,8}$")
+
+
+def _valid_hex(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if _HEX_RE.match(text) else None
+
+
+def _clamp_layout_dict(layout: dict[str, Any]) -> dict[str, Any]:
+    """Project a (possibly partial) camelCase layout patch onto safe ranges."""
+    ad = ArtDirection(
+        display="Space Grotesk",
+        body="Inter",
+        text_x=layout.get("textX", 6),
+        text_y=layout.get("textY", 50),
+        text_w=layout.get("textW", 48),
+        text_align=layout.get("textAlign", "left"),
+        hero_x=layout.get("heroX", 74),
+        hero_y=layout.get("heroY", 50),
+        hero_w=layout.get("heroW", 46),
+        hero_h=layout.get("heroH", 80),
+        hero_behind=bool(layout.get("heroBehind", False)),
+    )
+    return clamp_layout(ad)
+
+
+def _apply_structured_edits(concept: dict[str, Any], edit: StructuredEdit) -> dict[str, Any]:
+    """Pure, server-clamped patch of a revision concept — NO agent, NO Gemini.
+
+    Layout → clamp_layout; fonts → allow-list; ink → hex; copy → verbatim text.
+    Only present keys are patched (true structured patch, not a full replace).
+    """
+    out = dict(concept or {})
+    art = dict(out.get("art_direction") or {})
+    if edit.layout is not None:
+        merged = {**(art.get("layout") or {}), **edit.layout.model_dump(exclude_none=True)}
+        art["layout"] = _clamp_layout_dict(merged)
+    if edit.fonts is not None:
+        cur = dict(art.get("fonts") or {})
+        display, body = coerce_pairing(edit.fonts.display or cur.get("display") or "", edit.fonts.body or cur.get("body") or "")
+        art["fonts"] = {**cur, "display": display, "body": body, "source": "manual-edit"}
+    if edit.ink is not None:
+        ink = _valid_hex(edit.ink)
+        if ink:
+            art["ink"] = ink
+    if art:
+        out["art_direction"] = art
+    if edit.copy is not None:
+        cur_copy = dict(out.get("copy") or {})
+        for key in ("headline", "subheadline", "eyebrow", "cta"):
+            value = getattr(edit.copy, key)
+            if value is not None:
+                cur_copy[key] = value
+        out["copy"] = cur_copy
+    return out
 
 
 class RevisionServiceError(Exception):
@@ -146,6 +208,87 @@ class RevisionService:
             revision=self._revision_response(updated_revision),
         )
 
+    # --- Iterative campaign plan (gate before the costly build) ---------------
+
+    def start_plan_run(self, campaign_id: str, request: RegenerateRequest | None = None) -> GenerationRunResponse:
+        """Kick off the cheap PLAN phase (concept + wireframe, no image)."""
+        self._get_campaign(campaign_id)
+        request = request or RegenerateRequest()
+        if getattr(self.generation_runs, "orchestrator", None) is None:
+            raise MissingSettingsError(("orchestrator",))
+        run, _revision_id = self.generation_runs.start_plan_run(campaign_id, started_by=request.requested_by)
+        return run
+
+    def get_plan(self, campaign_id: str) -> CampaignPlanResponse:
+        """Return the latest pending plan (status='plan') for the campaign."""
+        self._get_campaign(campaign_id)
+        revision = self._latest_plan_revision(campaign_id)
+        if revision is None:
+            raise RevisionNotFound("plan")
+        return self._plan_response(revision)
+
+    def iterate_plan(self, campaign_id: str, request: RegenerateRequest) -> GenerationRunResponse:
+        """Re-draft the plan with the user's feedback. Never re-runs image work."""
+        self._get_campaign(campaign_id)
+        if getattr(self.generation_runs, "orchestrator", None) is None:
+            raise MissingSettingsError(("orchestrator",))
+        prompt = _normalize_prompt(request.prompt or "Refina el plan")
+        from app.workflows.banner_creation import _load_runtime_skill
+
+        normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
+        # Plan iteration must NEVER touch image generation — strip it from targets.
+        targets = [t for t in normalize_targets(request.target_nodes, prompt) if t != "image"]
+        run, _revision_id = self.generation_runs.start_plan_run(
+            campaign_id, prompt=prompt, targets=targets or None, started_by=request.requested_by
+        )
+        return run
+
+    def approve_plan(self, campaign_id: str, request: RegenerateRequest | None = None) -> RegenerateResponse:
+        """Approve the latest plan and run the costly BUILD phase. Idempotent: a
+        second approve finds no pending plan (it was flipped to selected) and 404s."""
+        self._get_campaign(campaign_id)
+        request = request or RegenerateRequest()
+        if getattr(self.generation_runs, "orchestrator", None) is None:
+            raise MissingSettingsError(("orchestrator",))
+        plan_revision = self._latest_plan_revision(campaign_id)
+        if plan_revision is None:
+            raise RevisionNotFound("plan")
+        run, revision_id = self.generation_runs.start_build_run(
+            campaign_id,
+            plan_revision=plan_revision,
+            started_by=request.requested_by,
+            parent_run_id=plan_revision.get("generation_run_id"),
+        )
+        revision = self.revisions.get(revision_id=str(revision_id)) if revision_id else None
+        if revision is None:
+            revision = self.revisions.get(revision_id=str(plan_revision["id"])) or plan_revision
+        return RegenerateResponse(generation_run=run, revision=self._revision_response(revision))
+
+    def _latest_plan_revision(self, campaign_id: str) -> dict[str, Any] | None:
+        rows = [r for r in self.revisions.list_by_campaign_id(campaign_id=campaign_id) if str(r.get("status")) == "plan"]
+        if not rows:
+            return None
+        return max(rows, key=lambda r: int(r.get("revision_number") or 0))
+
+    def _plan_response(self, revision: dict[str, Any]) -> CampaignPlanResponse:
+        concept = dict(revision.get("concept") or {})
+        plan = dict(concept.get("plan") or {})
+        return CampaignPlanResponse(
+            revision_id=str(revision["id"]),
+            campaign_id=str(revision["campaign_id"]),
+            generation_run_id=str(revision["generation_run_id"]) if revision.get("generation_run_id") else None,
+            status=str(revision.get("status") or "plan"),
+            theme=str(plan.get("theme") or ""),
+            typography=dict(plan.get("typography") or {}),
+            color_guidance=dict(plan.get("color_guidance") or {}),
+            product_intent=list(plan.get("product_intent") or []),
+            copy_preview=dict(plan.get("copy_preview") or {}),
+            layout_note=str(plan.get("layout_note") or ""),
+            hierarchy_notes=str(plan.get("hierarchy_notes") or ""),
+            wireframe=dict(plan.get("wireframe") or {}),
+            estimated_image_cost_note=str(plan.get("estimated_image_cost_note") or ""),
+        )
+
     def regenerate(self, campaign_id: str, request: RegenerateRequest) -> RegenerateResponse:
         campaign = self._get_campaign(campaign_id)
         refinement = None
@@ -217,28 +360,139 @@ class RevisionService:
 
         normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
         targets = normalize_targets(request.target_nodes, prompt)
+        refinement_id = str(refinement["id"]) if refinement is not None else None
+        def _finalize_refinement(outcome: Any) -> None:
+            if refinement_id is None:
+                return
+            rid = getattr(outcome, "revision_id", None)
+            self.refinement_requests.update(
+                refinement_request_id=refinement_id,
+                data={
+                    "status": "succeeded" if getattr(outcome, "status", None) == "succeeded" else "failed",
+                    "result_revision_id": str(rid) if rid else None,
+                    "result_summary": f"Banner edit ({', '.join(targets)}).",
+                    "finished_at": _utc_now_iso(),
+                },
+            )
         run, revision_id = self.generation_runs.start_banner_edit_run(
             campaign_id, source_revision=source_revision, prompt=prompt, targets=targets,
             started_by=request.requested_by, parent_run_id=source_revision.get("generation_run_id"),
+            on_complete=_finalize_refinement if refinement_id else None,
         )
         revision = self.revisions.get(revision_id=str(revision_id)) if revision_id else None
         if revision is None:
             revision = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id) or source_revision
-        if refinement is not None:
-            self.refinement_requests.update(
-                refinement_request_id=str(refinement["id"]),
-                data={
-                    "status": "succeeded" if run.status == "succeeded" else "failed",
-                    "result_revision_id": str(revision["id"]) if revision else None,
-                    "result_summary": f"Banner edit ({', '.join(targets)}) → revision {revision.get('revision_number') if revision else '?'}.",
-                    "finished_at": _utc_now_iso(),
-                },
-            )
         return RegenerateResponse(
             generation_run=run,
             revision=self._revision_response(revision),
             refinement_request_id=str(refinement["id"]) if refinement else None,
         )
+
+    def apply_edits(self, campaign_id: str, request: ApplyEditsRequest) -> RegenerateResponse:
+        """Direct, INSTANT edit (move/resize/color/font/copy) — NO agent, NO Gemini.
+
+        Patches the source revision's concept (clamped/coerced for safety) and
+        creates a new selected revision with a bookkeeping run, so the canvas history
+        stays uniform while guaranteeing no node/model execution.
+        """
+        campaign = self._get_campaign(campaign_id)
+        edit = request.structured_changes
+        source_revision = self._source_revision(
+            campaign_id=campaign_id,
+            source_revision_id=request.source_revision_id or campaign.get("selected_revision_id"),
+        )
+        patched_concept = _apply_structured_edits(source_revision.get("concept") or {}, edit)
+        run = self._direct_edit_run(
+            campaign_id, parent_run_id=source_revision.get("generation_run_id"), started_by=request.requested_by
+        )
+        latest = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id) or source_revision
+        revision_number = int(latest.get("revision_number") or 0) + 1
+        revision = self.revisions.create(
+            data={
+                "campaign_id": campaign_id,
+                "generation_run_id": run.id,
+                "revision_number": revision_number,
+                "status": "selected",
+                "concept": patched_concept,
+                "liquid_config": dict(source_revision.get("liquid_config") or {}),
+                "html_preview": source_revision.get("html_preview"),
+                "preview_storage_path": source_revision.get("preview_storage_path"),
+            }
+        )
+        if source_revision.get("status") == "selected":
+            self.revisions.update(revision_id=str(source_revision["id"]), data={"status": "superseded"})
+        self._copy_layout_variants(str(source_revision["id"]), str(revision["id"]), "manual edit")
+        self._copy_banner_variants_with_edits(str(source_revision["id"]), str(revision["id"]), edit, patched_concept)
+        previous_revision_id = campaign.get("selected_revision_id")
+        if previous_revision_id and str(previous_revision_id) not in (str(revision["id"]), str(source_revision["id"])):
+            previous = self.revisions.get(revision_id=str(previous_revision_id))
+            if previous and previous.get("status") == "selected":
+                self.revisions.update(revision_id=str(previous_revision_id), data={"status": "superseded"})
+        self.campaigns.update(
+            campaign_id=campaign_id,
+            team_id=self.team_id,
+            data={"selected_revision_id": str(revision["id"]), "status": "draft"},
+        )
+        return RegenerateResponse(generation_run=run, revision=self._revision_response(revision))
+
+    def _direct_edit_run(self, campaign_id: str, *, parent_run_id: Any, started_by: str | None) -> GenerationRunResponse:
+        """A bookkeeping run row for an agent-free direct edit (status succeeded)."""
+        row = self.generation_runs.run_repository.create(
+            data={
+                "campaign_id": campaign_id,
+                "parent_run_id": str(parent_run_id) if parent_run_id else None,
+                "run_type": "refinement",
+                "status": "succeeded",
+                "frontend_step": "review_publish",
+                "adk_trace_id": str(uuid4()),
+                "started_by": started_by,
+                "started_at": _utc_now_iso(),
+                "finished_at": _utc_now_iso(),
+                "metadata": {"facade_version": "direct-edit", "no_agent": True},
+            }
+        )
+        return GenerationRunService._run_response_from_record(row)
+
+    def _copy_banner_variants_with_edits(
+        self, source_revision_id: str, new_revision_id: str, edit: StructuredEdit, patched_concept: dict[str, Any]
+    ) -> None:
+        rows = self.variants.list_by_revision_id(revision_id=source_revision_id)
+        if not rows:
+            rows = _default_banner_variants(source_revision_id)
+        ink = (patched_concept.get("art_direction") or {}).get("ink")
+        copy_edit = edit.copy
+        runs_by_id = edit.headline_runs or {}
+        copies: list[dict[str, Any]] = []
+        for row in rows:
+            new = {**_without_identity(row), "revision_id": new_revision_id}
+            if copy_edit is not None:
+                if copy_edit.headline is not None:
+                    new["headline"] = copy_edit.headline
+                if copy_edit.subheadline is not None:
+                    new["subheadline"] = copy_edit.subheadline
+                if copy_edit.eyebrow is not None:
+                    new["eyebrow"] = copy_edit.eyebrow
+                if copy_edit.cta is not None:
+                    new["cta_text"] = copy_edit.cta
+            rule = dict(new.get("audience_rule") or {})
+            headline = str(new.get("headline") or "")
+            explicit = runs_by_id.get(str(row.get("id")))
+            if explicit is not None:
+                coerced = coerce_runs(explicit, headline, ink=ink)
+                if coerced:
+                    rule["headline_runs"] = coerced
+                else:
+                    rule.pop("headline_runs", None)
+            elif copy_edit is not None and copy_edit.headline is not None and rule.get("headline_runs"):
+                # Headline changed → re-validate stale runs against the new text (clears on mismatch).
+                coerced = coerce_runs(rule.get("headline_runs"), headline, ink=ink)
+                if coerced:
+                    rule["headline_runs"] = coerced
+                else:
+                    rule.pop("headline_runs", None)
+            new["audience_rule"] = rule
+            copies.append(new)
+        self.variants.create_many(variants=copies)
 
     def _agentic_regenerate(
         self,
@@ -253,12 +507,30 @@ class RevisionService:
 
         normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
         targets = normalize_targets(request.target_nodes, prompt)
+        # Finalize the refinement request with the REAL outcome once the (possibly
+        # background) run ends — not the synchronous "running" status, which would
+        # mislabel a successful background refine as failed.
+        refinement_id = str(refinement["id"]) if refinement is not None else None
+        def _finalize_refinement(outcome: Any) -> None:
+            if refinement_id is None:
+                return
+            rid = getattr(outcome, "revision_id", None)
+            self.refinement_requests.update(
+                refinement_request_id=refinement_id,
+                data={
+                    "status": "succeeded" if getattr(outcome, "status", None) == "succeeded" else "failed",
+                    "result_revision_id": str(rid) if rid else None,
+                    "result_summary": f"Agentic refine ({', '.join(targets)}).",
+                    "finished_at": _utc_now_iso(),
+                },
+            )
         run, revision_id = self.generation_runs.start_refinement_run(
             campaign_id,
             prompt=prompt,
             targets=targets,
             started_by=request.requested_by,
             parent_run_id=source_revision.get("generation_run_id"),
+            on_complete=_finalize_refinement if refinement_id else None,
         )
         # The orchestrator already created/promoted the new revision + pointed the
         # campaign at it. Read it back for the response.
@@ -267,16 +539,6 @@ class RevisionService:
             revision = self.revisions.get(revision_id=str(revision_id))
         if revision is None:
             revision = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id) or source_revision
-        if refinement is not None:
-            self.refinement_requests.update(
-                refinement_request_id=str(refinement["id"]),
-                data={
-                    "status": "succeeded" if run.status == "succeeded" else "failed",
-                    "result_revision_id": str(revision["id"]) if revision else None,
-                    "result_summary": f"Agentic refine ({', '.join(targets)}) → revision {revision.get('revision_number') if revision else '?'}.",
-                    "finished_at": _utc_now_iso(),
-                },
-            )
         return RegenerateResponse(
             generation_run=run,
             revision=self._revision_response(revision),

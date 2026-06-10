@@ -15,5 +15,6 @@ async def render(
     brand,
     assets: BannerAssets | None = None,
     placement: str | dict[str, Any] | None = None,
+    cta_url: str | None = None,
 ) -> dict[str, Any]:
-    return build_liquid_payload(concept, variants, brand=brand, assets=assets, placement=placement).as_dict()
+    return build_liquid_payload(concept, variants, brand=brand, assets=assets, placement=placement, cta_url=cta_url).as_dict()

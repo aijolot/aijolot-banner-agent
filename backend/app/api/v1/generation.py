@@ -15,6 +15,8 @@ from fastapi import APIRouter, HTTPException, Path, Request
 from app.core.auth import UserContext, require_user_context
 from app.core.settings import MissingSettingsError
 from app.schemas.generation import (
+    ApplyEditsRequest,
+    CampaignPlanResponse,
     CampaignRevisionResponse,
     GenerationEventResponse,
     GenerationRunCreate,
@@ -168,6 +170,89 @@ def banner_edit_campaign(
     except RevisionCampaignNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     except (RevisionNotFound, RefinementRequestNotFound) as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/campaigns/{campaign_id}/plan-runs", response_model=GenerationRunResponse)
+def start_campaign_plan_run(
+    campaign_id: CampaignIdPath,
+    request_scope: Request,
+    request: RegenerateRequest | None = None,
+) -> GenerationRunResponse:
+    """Start the cheap PLAN phase (concept + wireframe, no image) for review."""
+    try:
+        context = _context_for_default_factory(request_scope, _revision_service)
+        return _revision_service_for_context(context).start_plan_run(str(campaign_id), request or RegenerateRequest())
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RevisionCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/campaigns/{campaign_id}/plan", response_model=CampaignPlanResponse)
+def get_campaign_plan(campaign_id: CampaignIdPath, request: Request) -> CampaignPlanResponse:
+    try:
+        context = _context_for_default_factory(request, _revision_service)
+        return _revision_service_for_context(context).get_plan(str(campaign_id))
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RevisionCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RevisionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/campaigns/{campaign_id}/plan/iterate", response_model=GenerationRunResponse)
+def iterate_campaign_plan(
+    campaign_id: CampaignIdPath,
+    request_scope: Request,
+    request: RegenerateRequest | None = None,
+) -> GenerationRunResponse:
+    try:
+        context = _context_for_default_factory(request_scope, _revision_service)
+        return _revision_service_for_context(context).iterate_plan(str(campaign_id), request or RegenerateRequest())
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RevisionCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RevisionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/campaigns/{campaign_id}/plan/approve", response_model=RegenerateResponse)
+def approve_campaign_plan(
+    campaign_id: CampaignIdPath,
+    request_scope: Request,
+    request: RegenerateRequest | None = None,
+) -> RegenerateResponse:
+    """Approve the latest plan and run the costly BUILD phase (image + render + audit)."""
+    try:
+        context = _context_for_default_factory(request_scope, _revision_service)
+        return _revision_service_for_context(context).approve_plan(str(campaign_id), request or RegenerateRequest())
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RevisionCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RevisionNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.post("/campaigns/{campaign_id}/apply-edits", response_model=RegenerateResponse)
+def apply_campaign_edits(
+    campaign_id: CampaignIdPath,
+    request_scope: Request,
+    request: ApplyEditsRequest,
+) -> RegenerateResponse:
+    """Direct, instant edit (move/resize/color/font/copy) — creates a new revision
+    WITHOUT running the agent."""
+    try:
+        context = _context_for_default_factory(request_scope, _revision_service)
+        return _revision_service_for_context(context).apply_edits(str(campaign_id), request)
+    except MissingSettingsError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except RevisionCampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except RevisionNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc))
 
 

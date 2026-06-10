@@ -61,6 +61,31 @@ def test_patch_unknown_campaign_404():
     assert client.patch("/campaigns/nope", json={"cta": "x"}).status_code == 404
 
 
+def test_patch_products_and_destination_url_roundtrip():
+    cid = _new_campaign()
+    products = [{"product_title": "Boss Bottled", "product_gid": "gid://shopify/Product/9", "product_image_url": "https://cdn/b.jpg", "price": "1299"}]
+    r = client.patch(f"/campaigns/{cid}", json={"products": products, "destination_url": "/collections/perfumes"})
+    assert r.status_code == 200
+    brief = r.json()["structured_brief"]
+    assert brief["products"][0]["product_title"] == "Boss Bottled"
+    assert brief["destination_url"] == "/collections/perfumes"
+    # Optional fields must NOT change completeness (a brief without them can still be complete).
+    assert "products" not in brief or isinstance(brief["products"], list)
+
+
+def test_patch_rejects_malformed_destination_url():
+    cid = _new_campaign()
+    r = client.patch(f"/campaigns/{cid}", json={"destination_url": "javascript:alert(1)"})
+    assert r.status_code == 422
+
+
+def test_patch_accepts_absolute_destination_url():
+    cid = _new_campaign()
+    r = client.patch(f"/campaigns/{cid}", json={"destination_url": "https://shop.example/landing"})
+    assert r.status_code == 200
+    assert r.json()["structured_brief"]["destination_url"] == "https://shop.example/landing"
+
+
 def test_configured_campaign_service_rejects_partial_supabase_env(monkeypatch):
     from app.core.settings import MissingSettingsError
     from app.services import campaign_store

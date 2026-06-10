@@ -157,10 +157,17 @@ class GenerationRunService:
         run_row: dict[str, Any],
         base_metadata: dict[str, Any],
         coro_factory: "Callable[[], Coroutine[Any, Any, Any]]",
+        on_complete: "Callable[[Any], None] | None" = None,
     ) -> tuple[GenerationRunResponse, str | None]:
         """Execute the orchestrator job (inline or in a background thread), write
         events, and finalize the run row. In background mode returns the running
-        run immediately (revision id resolved later via polling)."""
+        run immediately (revision id resolved later via polling).
+
+        ``on_complete`` runs AFTER the outcome is known (in the background thread
+        when async), receiving the OrchestratorOutcome — used to finalize dependent
+        bookkeeping (e.g. a refinement request) with the REAL result, not the
+        synchronous "running" status.
+        """
 
         def job() -> None:
             try:
@@ -180,6 +187,11 @@ class GenerationRunService:
                     "metadata": {**base_metadata, **outcome.metadata},
                 },
             )
+            if on_complete is not None:
+                try:
+                    on_complete(outcome)
+                except Exception:  # noqa: BLE001 — bookkeeping must never crash the job
+                    pass
 
         if self.background:
             threading.Thread(target=job, daemon=True).start()
@@ -262,11 +274,13 @@ class GenerationRunService:
         started_by: str | None = None,
         parent_run_id: str | None = None,
         metadata: dict[str, Any] | None = None,
+        on_complete: "Callable[[Any], None] | None" = None,
     ) -> tuple[GenerationRunResponse, str | None]:
         """F9 — run an agentic refinement through the orchestrator.
 
         Returns the run response and the new revision id (None on failure).
-        Caller (RevisionService) handles refinement-request bookkeeping.
+        ``on_complete`` lets the caller (RevisionService) finalize refinement-request
+        bookkeeping with the REAL outcome once the (possibly background) job ends.
         """
         campaign = self._get_campaign(campaign_id)
         if self.orchestrator is None or campaign is None:
@@ -277,7 +291,7 @@ class GenerationRunService:
             started_by=started_by,
             metadata={**(metadata or {}), "prompt": prompt or "", "refine_targets": list(targets or [])},
         )
-        run = self._start_orchestrated_run(campaign_id, request, campaign, prompt=prompt, targets=targets)
+        run = self._start_orchestrated_run(campaign_id, request, campaign, prompt=prompt, targets=targets, on_complete=on_complete)
         return run, (None if self.background else self._last_revision_id)
 
     def start_banner_edit_run(
@@ -289,6 +303,7 @@ class GenerationRunService:
         targets: list[str],
         started_by: str | None = None,
         parent_run_id: str | None = None,
+        on_complete: "Callable[[Any], None] | None" = None,
     ) -> tuple[GenerationRunResponse, str | None]:
         """Banner-edit: scoped, non-destructive edit of an assembled revision."""
         campaign = self._get_campaign(campaign_id)
@@ -314,6 +329,77 @@ class GenerationRunService:
         return self._finalize_run(
             run_id=run_id, run_row=run_row, base_metadata=base_metadata,
             coro_factory=lambda: orchestrator.edit_revision(run_id=run_id, campaign_row=campaign, source_revision=source_revision, prompt=prompt, targets=targets),
+            on_complete=on_complete,
+        )
+
+    def start_plan_run(
+        self,
+        campaign_id: str,
+        *,
+        prompt: str | None = None,
+        targets: list[str] | None = None,
+        started_by: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """Cheap PLAN phase (nodes 1–5, no image). ``prompt``/``targets`` re-draft
+        the plan with the user's feedback (plan-iterate)."""
+        campaign = self._get_campaign(campaign_id)
+        if self.orchestrator is None or campaign is None:
+            raise MissingSettingsError(("orchestrator",))
+        now = _utc_now_iso()
+        base_metadata = {"phase": "plan", "prompt": prompt or "", "refine_targets": list(targets or [])}
+        run_row = self.run_repository.create(
+            data={
+                "campaign_id": campaign_id,
+                "parent_run_id": parent_run_id,
+                "run_type": "refinement" if (prompt or targets) else "initial",
+                "status": "running",
+                "frontend_step": "intake_context",
+                "adk_trace_id": str(uuid4()),
+                "started_by": started_by,
+                "started_at": now,
+                "metadata": {**base_metadata, "facade_version": "plan-phase"},
+            }
+        )
+        run_id = str(run_row["id"])
+        orchestrator = self.orchestrator
+        return self._finalize_run(
+            run_id=run_id, run_row=run_row, base_metadata=base_metadata,
+            coro_factory=lambda: orchestrator.execute_plan_phase(run_id=run_id, campaign_row=campaign, prompt=prompt, targets=targets),
+        )
+
+    def start_build_run(
+        self,
+        campaign_id: str,
+        *,
+        plan_revision: dict[str, Any],
+        started_by: str | None = None,
+        parent_run_id: str | None = None,
+    ) -> tuple[GenerationRunResponse, str | None]:
+        """Approve-the-plan BUILD phase: run the costly nodes 6–9 on the approved plan."""
+        campaign = self._get_campaign(campaign_id)
+        if self.orchestrator is None or campaign is None:
+            raise MissingSettingsError(("orchestrator",))
+        now = _utc_now_iso()
+        base_metadata = {"phase": "build"}
+        run_row = self.run_repository.create(
+            data={
+                "campaign_id": campaign_id,
+                "parent_run_id": parent_run_id,
+                "run_type": "initial",
+                "status": "running",
+                "frontend_step": "intake_context",
+                "adk_trace_id": str(uuid4()),
+                "started_by": started_by,
+                "started_at": now,
+                "metadata": {**base_metadata, "facade_version": "build-phase"},
+            }
+        )
+        run_id = str(run_row["id"])
+        orchestrator = self.orchestrator
+        return self._finalize_run(
+            run_id=run_id, run_row=run_row, base_metadata=base_metadata,
+            coro_factory=lambda: orchestrator.execute_build_phase(run_id=run_id, campaign_row=campaign, plan_revision=plan_revision),
         )
 
     def _start_orchestrated_run(
@@ -324,6 +410,7 @@ class GenerationRunService:
         *,
         prompt: str | None = None,
         targets: list[str] | None = None,
+        on_complete: "Callable[[Any], None] | None" = None,
     ) -> GenerationRunResponse:
         assert self.orchestrator is not None
         now = _utc_now_iso()
@@ -348,6 +435,7 @@ class GenerationRunService:
         run, _revision_id = self._finalize_run(
             run_id=run_id, run_row=run_row, base_metadata=base_metadata,
             coro_factory=lambda: orchestrator.execute(run_id=run_id, campaign_row=campaign_row, prompt=prompt, targets=targets),
+            on_complete=on_complete,
         )
         return run
 

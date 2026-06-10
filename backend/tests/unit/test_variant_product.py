@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from app.services.banners.run_orchestrator import _variant_catalog_context, _variant_product_ref
+from app.services.banners.run_orchestrator import (
+    _brief_product_items,
+    _coerce_price,
+    _variant_catalog_context,
+    _variant_product_ref,
+)
 
 
 _SNAPSHOT = {
@@ -44,3 +49,35 @@ def test_synthesizes_when_product_not_in_snapshot() -> None:
 def test_product_ref_only_keeps_present_fields() -> None:
     assert _variant_product_ref({"product_gid": "gid://x", "key": "male"}) == {"product_gid": "gid://x"}
     assert _variant_product_ref({"key": "male"}) == {}
+
+
+# --- Phase 2: campaign-level products → catalog grounding ---
+
+def test_coerce_price_parses_strings_and_numbers() -> None:
+    assert _coerce_price("1,299.00") == 1299.0
+    assert _coerce_price("$12.99") == 12.99
+    assert _coerce_price(999) == 999.0
+    assert _coerce_price("") is None
+    assert _coerce_price("agotado") is None
+
+
+def test_brief_product_items_shapes_catalog_items() -> None:
+    row = {
+        "structured_brief": {
+            "products": [
+                {"product_title": "Boss Bottled", "product_gid": "gid://shopify/Product/9", "product_image_url": "https://cdn/b.jpg", "price": "1,299.00"},
+                {"product_title": "", "product_gid": None},  # skipped (no title/gid)
+            ]
+        }
+    }
+    items = _brief_product_items(row)
+    assert len(items) == 1
+    assert items[0]["title"] == "Boss Bottled"
+    assert items[0]["shopify_product_gid"] == "gid://shopify/Product/9"
+    assert items[0]["image_url"] == "https://cdn/b.jpg"
+    assert items[0]["price"] == 1299.0
+
+
+def test_brief_product_items_empty_when_no_products() -> None:
+    assert _brief_product_items({"structured_brief": {}}) == []
+    assert _brief_product_items(None) == []
