@@ -39,8 +39,12 @@ from app.services.supabase.client import SupabaseClientFactory
 router = APIRouter(tags=["suggestions"])
 SuggestionIdPath = Annotated[UUID, Path(description="Suggestion UUID")]
 
+from app.services.banners.catalog_signal_service import handle_catalog_scan_job
+
 # Scan handlers, registered by their owning features (F1/F2/F3) at import time.
-JOB_HANDLERS: dict[str, Any] = {}
+JOB_HANDLERS: dict[str, Any] = {
+    "catalog_scan": handle_catalog_scan_job,
+}
 
 
 def _create_campaign_callback(context: UserContext):
