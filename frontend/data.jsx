@@ -144,8 +144,6 @@ const SCOPE_OPTS = {
     { id: "query", icon: "search", label: "Resultados de una búsqueda", param: "query" },
   ],
 };
-const BRANDS = ["Hugo Boss", "Dior", "Chanel", "Carolina Herrera"];
-const COLLECTIONS = ["Fragancias", "Hombre", "Mujer", "Novedades", "Sets de regalo"];
 
 // ---- Art direction local UI presets ----
 // Backend persists selected hero_style_key/model_key/custom_model through
@@ -193,6 +191,6 @@ const BrandAPI = {
 
 Object.assign(window, {
   BRAND, SEGMENTS, SEGMENT_ORDER, VARIANTS, PIPELINE, CODE_LINES, STORE_PAGES,
-  SCOPE_OPTS, BRANDS, COLLECTIONS, HERO_STYLES, MODELS, GRID_OPTS,
+  SCOPE_OPTS, HERO_STYLES, MODELS, GRID_OPTS,
   BrandAPI, API_BASE,
 });

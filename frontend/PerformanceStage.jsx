@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, Spinner, Banner, SEGMENTS,
-   PerformanceApi, GenerationApi, errorText */
+   PerformanceApi, GenerationApi, AijolotApi, errorText */
 // Aijolot Banner Agent — Stage 4: performance loop & self-optimization (Module 8).
 const { useState: useStateP, useEffect: useEffectP } = React;
 
@@ -164,21 +164,25 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
     });
   }, [revision && revision.id]);
 
-  // Record a manual (non-live) performance snapshot against the backend.
+  // F2 — trigger the agent's real performance sync (ingest + fatigue check),
+  // instead of registering a hardcoded fake snapshot.
   async function registerSnapshot() {
     if (snapBusy) return;
     setSnapBusy(true);
     try {
-      const r = await PerformanceApi.snapshot(campaign, { source: "manual", revision_id: revisionId, impressions: 12840, clicks: 591, conversions: 96 });
+      try {
+        await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/performance/sync`), {});
+      } catch (syncErr) { /* el GET de abajo reporta el estado real */ }
+      const r = await PerformanceApi.get(campaign);
       if (r.fallback) {
         setSnapState("error");
         onNotice && onNotice({ tone: "amber", text: r.reason });
       }
       else {
-        const label = compactSourceLabel(r.data);
+        const label = compactSourceLabel((r.data && r.data.latest_snapshot) || r.data);
         setSnapState("success");
-        setBackendPerf((prev) => prev ? { ...prev, latest_snapshot: r.data, snapshots: [r.data].concat(prev.snapshots || []) } : { latest_snapshot: r.data, snapshots: [r.data], insights: [], proposals: [], live_analytics: !!(r.data && r.data.live_analytics), data_source_label: label });
-        onNotice && onNotice({ tone: "green", text: `Snapshot registrado en backend · fuente: ${label}` });
+        setBackendPerf(r.data);
+        onNotice && onNotice({ tone: "green", text: `Sync de performance ejecutado · fuente: ${label}` });
         setPerfNotice(`Backend performance conectado · fuente: ${label}`);
       }
     } catch (e) {

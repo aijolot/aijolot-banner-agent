@@ -1,5 +1,5 @@
 /* global React, Icon, GlassCard, Button, Badge, Kicker, ChromeWindow, STORE_PAGES,
-   SCOPE_OPTS, BRANDS, COLLECTIONS, HomeMock, CollectionMock, ProductMock, SearchMock,
+   SCOPE_OPTS, HomeMock, CollectionMock, ProductMock, SearchMock,
    PlacementApi, StoreApi, LayoutDiagram, errorText, AIJOLOT_DEMO_IDS */
 // Aijolot Banner Agent — Stage 0: navigate the store template & choose a placement + scope.
 const { useState: useStatePL, useEffect: useEffectPL } = React;
@@ -369,8 +369,8 @@ function PlacementStage({ onNext, onNotice }) {
                     </button>
                     {on && o.param === "brand" ? (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, padding: "9px 2px 2px" }}>
-                        {(brandChoices.length ? brandChoices : BRANDS).map((b) => <button key={b} onClick={() => setBrand(b)} style={chip(brand === b)}>{b}</button>)}
-                        {brandChoices.length ? <Badge tone="green">vendors backend</Badge> : <Badge tone="amber">marcas fallback</Badge>}
+                        {brandChoices.map((b) => <button key={b} onClick={() => setBrand(b)} style={chip(brand === b)}>{b}</button>)}
+                        {brandChoices.length ? <Badge tone="green">vendors backend</Badge> : <Badge tone="red" icon="circle-alert">Sin vendors del backend — sincroniza la tienda</Badge>}
                       </div>
                     ) : null}
                     {on && o.param === "tag" ? (
@@ -384,7 +384,7 @@ function PlacementStage({ onNext, onNotice }) {
                     {on && o.param === "collections" ? (
                       <div style={{ padding: "9px 2px 2px", display: "flex", flexDirection: "column", gap: 7 }}>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                          {(collectionChoices.length ? collectionChoices : COLLECTIONS).map((c) => <button key={c} onClick={() => toggleColl(c)} style={chip(colls.includes(c))}>{colls.includes(c) ? <Icon name="check" size={11} /> : null}{c}</button>)}
+                          {collectionChoices.length ? collectionChoices.map((c) => <button key={c} onClick={() => toggleColl(c)} style={chip(colls.includes(c))}>{colls.includes(c) ? <Icon name="check" size={11} /> : null}{c}</button>) : <Badge tone="red" icon="circle-alert">Sin colecciones del backend — sincroniza la tienda</Badge>}
                           {collectionChoices.length ? <Badge tone="green">colecciones backend</Badge> : <Badge tone="amber">colecciones fallback</Badge>}
                         </div>
                         <span style={{ fontFamily: "Inter", fontSize: 10.5, color: "#94A3B8" }}>{colls.length}/3 seleccionadas</span>
