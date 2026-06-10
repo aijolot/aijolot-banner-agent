@@ -106,6 +106,7 @@ class RunOrchestrator:
         campaigns: CampaignRepositoryProtocol,
         catalog: Any = None,
         asset_service: Any = None,
+        art_directions: Any = None,
         settings: Settings | None = None,
         cost_guard: CostGuard | None = None,
         team_id: str | None = None,
@@ -117,6 +118,7 @@ class RunOrchestrator:
         self.campaigns = campaigns
         self.catalog = catalog
         self.asset_service = asset_service
+        self.art_directions = art_directions
         self.settings = settings or Settings.from_env()
         self.cost_guard = cost_guard or get_default_cost_guard(self.settings)
         self.team_id = team_id
@@ -559,6 +561,16 @@ class RunOrchestrator:
                 art_direction = prev_art
             fonts = art_direction.get("fonts") or {}
 
+            # C0 — creative mode: user override (art_directions.mode_source='user')
+            # is authoritative; patch-only iterates keep the previous plan's mode;
+            # otherwise the agent recommends (LLM + deterministic vertical rules).
+            mode = await self._resolve_creative_mode(
+                campaign_id=campaign_id,
+                campaign_state=campaign_state,
+                brand=brand,
+                prev_art=prev_art if not needs_redraft else {},
+            )
+
             # Directed ink ops (contrast complaints / explicit text colors).
             ink_override: str | None = None
             ink_sections: dict[str, str] = dict(prev_art.get("ink_sections") or {})
@@ -585,6 +597,8 @@ class RunOrchestrator:
                     "interpreted_ops": (rplan.op_names() if rplan else None),
                     "interpret_source": (rplan.source if rplan else None),
                     "decision_trace": decision_trace,
+                    "creative_mode": mode.get("creative_mode"),
+                    "include_humans": mode.get("include_humans"),
                     "phase": "plan",
                 },
             )
@@ -610,6 +624,7 @@ class RunOrchestrator:
                 "layout": art_direction.get("layout") or {},
                 "ink": ink,
                 **({"ink_sections": ink_sections} if ink_sections else {}),
+                **mode,
             }
             concept_dict["decision_trace"] = decision_trace
             concept_dict["plan"] = self._build_campaign_plan(
@@ -622,6 +637,10 @@ class RunOrchestrator:
                 run_id=run_id,
             )
             concept_dict["plan"]["decision_trace"] = decision_trace
+            concept_dict["plan"]["creative_mode"] = mode.get("creative_mode")
+            concept_dict["plan"]["include_humans"] = bool(mode.get("include_humans"))
+            concept_dict["plan"]["mode_rationale"] = str(mode.get("mode_rationale") or "")
+            concept_dict["plan"]["mode_source"] = str(mode.get("mode_source") or "agent")
             self.revisions.update(revision_id=revision_id, data=_json_safe({"concept": concept_dict}))
 
             return OrchestratorOutcome(
@@ -1585,6 +1604,48 @@ class RunOrchestrator:
             return None, "none"
         top = options[0]
         return {"name": top.name, "description": top.description, "css": top.css, "html": top.html}, source
+
+    async def _resolve_creative_mode(
+        self,
+        *,
+        campaign_id: str,
+        campaign_state: StateCampaign,
+        brand: Any,
+        prev_art: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """C0 — resolve creative_mode/include_humans for this plan."""
+        stored = None
+        if self.art_directions is not None:
+            try:
+                stored = self.art_directions.get_by_campaign_id(campaign_id=campaign_id)
+            except Exception:  # noqa: BLE001 — mode resolution must never sink a plan
+                stored = None
+        if stored and str(stored.get("mode_source") or "") == "user":
+            return {
+                "creative_mode": str(stored.get("creative_mode") or "composite"),
+                "include_humans": bool(stored.get("include_humans")),
+                "mode_rationale": "Definido por el usuario.",
+                "mode_source": "user",
+            }
+        prev = dict(prev_art or {})
+        if prev.get("creative_mode"):
+            return {
+                "creative_mode": str(prev.get("creative_mode")),
+                "include_humans": bool(prev.get("include_humans")),
+                "mode_rationale": str(prev.get("mode_rationale") or ""),
+                "mode_source": str(prev.get("mode_source") or "agent"),
+            }
+        skill = _load_runtime_skill("creative-mode-recommend")
+        rec = await skill.recommend(
+            campaign_state, brand, placement=getattr(campaign_state, "placement", "") or "",
+            settings=self.settings, cost_guard=self.cost_guard,
+        )
+        return {
+            "creative_mode": rec.creative_mode,
+            "include_humans": rec.include_humans,
+            "mode_rationale": rec.rationale,
+            "mode_source": "agent",
+        }
 
     async def _interpret_refinement(
         self, prompt: str, targets: list[str] | None, prev_concept: dict[str, Any] | None

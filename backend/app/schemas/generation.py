@@ -211,6 +211,10 @@ class CampaignPlanResponse(BaseModel):
     hierarchy_notes: str = ""
     wireframe: dict[str, Any] = Field(default_factory=dict)
     decision_trace: dict[str, Any] = Field(default_factory=dict)
+    creative_mode: str = "composite"
+    include_humans: bool = False
+    mode_rationale: str = ""
+    mode_source: str = "agent"
     estimated_image_cost_note: str = ""
 
 

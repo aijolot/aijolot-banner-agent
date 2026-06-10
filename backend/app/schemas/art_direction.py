@@ -5,6 +5,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 BackgroundMode = Literal["hero", "usage"]
+CreativeMode = Literal["composite", "full_picture", "video"]
+ModeSource = Literal["agent", "user"]
 UUID_PATTERN = r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 
 
@@ -17,6 +19,12 @@ class ArtDirectionUpsert(BaseModel):
     custom_model: dict[str, Any] = Field(default_factory=dict)
     fold_percentage: int = Field(default=55, ge=0, le=100)
     layout_hints: dict[str, Any] = Field(default_factory=dict)
+    # C0 — creative mode: agent-recommended, user-overridable (mode_source='user'
+    # is authoritative and never overwritten by a re-recommendation).
+    creative_mode: CreativeMode = "composite"
+    include_humans: bool = False
+    mode_rationale: str | None = None
+    mode_source: ModeSource = "agent"
 
     @model_validator(mode="after")
     def _normalize_blank_strings(self) -> "ArtDirectionUpsert":

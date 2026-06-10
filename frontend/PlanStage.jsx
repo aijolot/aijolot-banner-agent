@@ -105,6 +105,19 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
     return () => { aliveRef.current = false; };
   }, []);
 
+  const [modeBusy, setModeBusy] = React.useState(false);
+  // C0 — user override: persist mode_source='user' then re-plan so the wireframe
+  // and downstream build respect the chosen mode.
+  async function overrideMode(creative_mode, include_humans) {
+    if (modeBusy) return;
+    setModeBusy(true);
+    const saved = await ArtDirectionApi.setCreativeMode(campaign, { creative_mode, include_humans });
+    if (saved.fallback) { setModeBusy(false); setError(saved.reason || "No se pudo guardar el modo."); return; }
+    const r = await PlanApi.iterate(campaign, "Aplica el modo creativo seleccionado", ["concept"]);
+    if (!r.fallback && r.data) await pollAndLoad(r.data);
+    setModeBusy(false);
+  }
+
   async function iterate() {
     const prompt = feedback.trim();
     if (!prompt || iterating) return;
@@ -195,6 +208,32 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
                 <Banner seg={seg} live={plan.wireframe} idSuffix="plan" breakpoint="desktop" />
               </div>
               <div style={{ fontFamily: "Inter", fontSize: 11, color: "#94A3B8" }}>El recuadro del producto es un marcador; la imagen real se genera al aprobar.</div>
+            </GlassCard>
+
+            <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 13.5, color: "#002B57" }}>Modo creativo</span>
+                <Badge tone={plan.mode_source === "user" ? "amber" : "cyan"} icon={plan.mode_source === "user" ? "user" : "sparkles"}>
+                  {plan.mode_source === "user" ? "Definido por ti" : "Recomendado por el agente"}
+                </Badge>
+              </div>
+              {plan.mode_rationale ? <div style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B" }}>{plan.mode_rationale}</div> : null}
+              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                {[["composite", "Producto recortado", "scissors"], ["full_picture", "Escena completa", "image"], ["video", "Video", "clapperboard"]].map(([key, label, icon]) => (
+                  <button key={key} onClick={() => overrideMode(key, plan.include_humans)} disabled={modeBusy} style={{
+                    display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 12px", borderRadius: 9999, cursor: "pointer",
+                    border: `1px solid ${plan.creative_mode === key ? "rgba(8,145,178,0.5)" : "#E2E8F0"}`,
+                    background: plan.creative_mode === key ? "rgba(34,211,238,0.14)" : "#fff",
+                    fontFamily: "Inter", fontSize: 11.5, fontWeight: 600, color: plan.creative_mode === key ? "#0891B2" : "#64748B" }}>
+                    <Icon name={icon} size={12} /> {label}
+                  </button>
+                ))}
+                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 11.5, color: "#64748B", marginLeft: 6 }}>
+                  <input type="checkbox" checked={!!plan.include_humans} disabled={modeBusy} onChange={(e) => overrideMode(plan.creative_mode, e.target.checked)} />
+                  Incluir personas
+                </label>
+                {modeBusy ? <Spinner size={13} /> : null}
+              </div>
             </GlassCard>
 
             <GlassCard style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10 }}>

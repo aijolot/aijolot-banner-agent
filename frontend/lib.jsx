@@ -382,6 +382,28 @@ const CatalogApi = {
 };
 
 const ArtDirectionApi = {
+  // C0 — user override of the agent-recommended creative mode. Reads the stored
+  // art direction (to not clobber other fields) and PUTs mode_source='user'.
+  async setCreativeMode(campaign, { creative_mode, include_humans }) {
+    if (!isApiCampaign(campaign)) return fallbackResult("El modo creativo requiere una campaña UUID.", null);
+    try {
+      let current = {};
+      try { current = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`)); } catch (e) { current = {}; }
+      const payload = {
+        background_mode: current.background_mode || "usage",
+        hero_style_key: current.hero_style_key || null,
+        model_key: current.model_key || null,
+        custom_model: current.custom_model || {},
+        fold_percentage: current.fold_percentage || 55,
+        layout_hints: current.layout_hints || {},
+        creative_mode,
+        include_humans: !!include_humans,
+        mode_source: "user",
+      };
+      const data = await AijolotApi.put(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`), payload);
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo guardar el modo creativo (" + errorText(e) + ").", null); }
+  },
   async get(campaign) {
     if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend art-direction lookup.", null);
     const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`));

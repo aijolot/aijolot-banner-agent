@@ -202,6 +202,7 @@ class GenerationRunService:
 
     @classmethod
     def from_supabase_client(cls, client: Any, *, team_id: str | None = None) -> "GenerationRunService":
+        from app.db.repositories.art_directions import ArtDirectionRepository
         from app.db.repositories.audit_reports import AuditReportRepository
         from app.db.repositories.banner_layout_variants import BannerLayoutVariantRepository
         from app.db.repositories.banner_variants import BannerVariantRepository
@@ -223,6 +224,7 @@ class GenerationRunService:
             campaigns=campaign_repository,
             catalog=CampaignCatalogRepository(client),
             asset_service=asset_service,
+            art_directions=ArtDirectionRepository(client),
             team_id=team_id,
         )
         return cls(
