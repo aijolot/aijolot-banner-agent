@@ -325,6 +325,57 @@ class RunOrchestrator:
                 cost_usd=image_cost,
             )
 
+            # 6b — video (C2): only in video mode; degrades to the image banner.
+            video_url: str | None = None
+            video_degraded_reason: str | None = None
+            if creative_mode == "video":
+                node = "generate_video"
+                recorder.start(node)
+                from app.services.banners.video_gen import generate_video, motion_prompt
+
+                video_response, video_meta, video_cost = await generate_video(
+                    motion_prompt(str(image_meta.get("refined_prompt") or getattr(concept, "image_prompt", "") or "")),
+                    settings=self.settings,
+                    cost_guard=self.cost_guard,
+                    campaign_id=campaign_id,
+                    reference_image=(image_bytes, "image/png"),
+                )
+                total_cost += video_cost
+                if video_response is not None and self.asset_service is not None:
+                    try:
+                        video_row = self.asset_service.upload_video(
+                            video_bytes=video_response.video_bytes,
+                            campaign_id=campaign_id,
+                            revision_id=revision_id,
+                            asset_group_key="hero-clip",
+                            mime_type=video_response.mime_type,
+                            video_prompt=_short(video_response.prompt, 300),
+                        )
+                        video_url = video_row.get("public_url")
+                    except Exception:  # noqa: BLE001
+                        video_url = None
+                if video_response is not None and self.asset_service is None:
+                    video_degraded_reason = "no_storage"
+                elif video_response is None:
+                    video_degraded_reason = str(video_meta.get("reason") or "generation_failed")
+                elif not video_url:
+                    video_degraded_reason = "upload_failed"
+                # Asset-weight budget (LCP guard): warn > 1.5MB, heavy > 3MB.
+                clip_bytes = int(video_meta.get("size_bytes") or 0)
+                weight_status = "heavy" if clip_bytes > 3_000_000 else ("warn" if clip_bytes > 1_500_000 else "ok")
+                recorder.succeed(
+                    node,
+                    {
+                        "provider": video_meta.get("provider"),
+                        "duration_s": video_meta.get("duration_seconds"),
+                        "size_bytes": video_meta.get("size_bytes"),
+                        "weight_status": weight_status if not video_degraded_reason else None,
+                        "video_degraded": bool(video_degraded_reason),
+                        "degraded_reason": video_degraded_reason,
+                    },
+                    cost_usd=video_cost,
+                )
+
             # 7 — optimize + persist assets
             node = "optimize_assets"
             recorder.start(node)
@@ -377,6 +428,7 @@ class RunOrchestrator:
                     "ink": contrast["ink"],
                     "scrim": {"dir": contrast["scrim_dir"], "alpha": contrast["scrim_alpha"]},
                     "focal": {"x": round(focal_x, 1), "y": fold},
+                    **({"video": {"url": video_url, "poster_url": image_url}} if creative_mode == "video" and video_url else {}),
                 }
                 background = {
                     "name": "Escena completa generada",
@@ -419,7 +471,7 @@ class RunOrchestrator:
                     # Full-bleed ink was MEASURED against the generated scene (C1);
                     # composed banners keep the contrast-from-background heuristic.
                     "ink": (art_direction.get("ink") if art_direction.get("full_bleed") else _bg_text_ink(background)),
-                    **({k: art_direction[k] for k in ("creative_mode", "include_humans", "mode_rationale", "mode_source", "full_bleed", "scrim", "focal", "ink_sections", "type_scale") if art_direction.get(k) is not None}),
+                    **({k: art_direction[k] for k in ("creative_mode", "include_humans", "mode_rationale", "mode_source", "full_bleed", "scrim", "focal", "video", "ink_sections", "type_scale") if art_direction.get(k) is not None}),
                     **({"review": review_report} if review_report else {}),
                 }
             self.revisions.update(
@@ -433,7 +485,7 @@ class RunOrchestrator:
                     }
                 ),
             )
-            recorder.succeed(node, {"html_bytes": len(html_standalone), "has_liquid": bool(liquid_section), "image": bool(image_url), "background": (background or {}).get("name")})
+            recorder.succeed(node, {"html_bytes": len(html_standalone), "has_liquid": bool(liquid_section), "image": bool(image_url), "background": (background or {}).get("name"), **({"video": bool((art_direction or {}).get("video"))} if creative_mode == "video" else {})})
 
             # 9 — audit
             node = "audit"
@@ -1117,13 +1169,15 @@ class RunOrchestrator:
 
         prompt_skill = _load_runtime_skill("image-prompt-refine")
         refined_prompt = await prompt_skill.run(concept, brand_context=brand, art_direction=art_direction)
-        return await generate_image(
+        image_bytes, meta, cost = await generate_image(
             refined_prompt,
             settings=self.settings,
             cost_guard=self.cost_guard,
             campaign_id=campaign_id,
             concept=concept,
         )
+        meta["refined_prompt"] = refined_prompt
+        return image_bytes, meta, cost
 
     async def _compose_variant_hero(
         self,
@@ -1424,6 +1478,8 @@ class RunOrchestrator:
             "bgImageUrl": ((background or {}).get("image_url") if art_direction.get("full_bleed") else None),
             "bgFocal": art_direction.get("focal"),
             "scrim": art_direction.get("scrim"),
+            "videoUrl": ((art_direction.get("video") or {}).get("url")),
+            "posterUrl": ((art_direction.get("video") or {}).get("poster_url")),
             "imageUrls": [
                 str(r.get("product_hero_url") or r.get("product_image_url"))
                 for r in ((row.get("audience_rule") or {}).get("featured_products") or [])

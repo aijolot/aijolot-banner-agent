@@ -253,6 +253,9 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     bgImageUrl: (liveConcept.art_direction && liveConcept.art_direction.full_bleed && liveBgObj && liveBgObj.image_url) || null,
     bgFocal: (liveConcept.art_direction && liveConcept.art_direction.focal) || null,
     scrim: (liveConcept.art_direction && liveConcept.art_direction.scrim) || null,
+    // C2 — video banner clip (poster = the full-picture image).
+    videoUrl: (liveConcept.art_direction && liveConcept.art_direction.video && liveConcept.art_direction.video.url) || null,
+    posterUrl: (liveConcept.art_direction && liveConcept.art_direction.video && liveConcept.art_direction.video.poster_url) || null,
     // The background CSS was authored with a legible copy color (its first `color:`),
     // but that color lands on the empty .hb-bg layer. Lift it onto the actual copy so
     // the headline keeps the contrast the agent designed for this background.

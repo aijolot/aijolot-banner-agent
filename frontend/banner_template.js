@@ -116,8 +116,22 @@
     // C1 — full-picture: the generated scene IS the background. Scrim alpha and
     // focal point come from the backend's measured contrast (adaptive ink/scrim).
     var bgImg = live.bgImageUrl ? String(live.bgImageUrl) : "";
+    var videoUrl = live.videoUrl ? String(live.videoUrl) : "";
+    var posterUrl = live.posterUrl ? String(live.posterUrl) : bgImg;
     var bgLayer = '<div class="hb-bg"></div>';
-    if (bgImg) {
+    if (videoUrl) {
+      // C2 — video banner: muted looping clip as the background layer, the
+      // poster (the full-picture image) doubles as fallback + LCP candidate.
+      var vscr = live.scrim || {};
+      var valpha = Math.max(0, Math.min(0.55, num(vscr.alpha, 0)));
+      var vdir = (typeof vscr.dir === "string" && /^[a-z0-9 %deg]+$/i.test(vscr.dir)) ? vscr.dir : "90deg";
+      bgLayer = '<div class="hb-bg" style="overflow:hidden">' +
+        '<video class="hb-bg-video" autoplay muted loop playsinline preload="metadata"' +
+        (posterUrl ? ' poster="' + esc(posterUrl) + '"' : "") + ">" +
+        '<source src="' + esc(videoUrl) + '" type="video/mp4"></video>' +
+        (valpha > 0 ? '<div class="hb-bg-scrim" style="background:linear-gradient(' + vdir + ", rgba(0,0,0," + valpha + '), rgba(0,0,0,0.04))"></div>' : "") +
+        "</div>";
+    } else if (bgImg) {
       var foc = live.bgFocal || {};
       var fx = Math.max(0, Math.min(100, num(foc.x, 50)));
       var fy = Math.max(0, Math.min(100, num(foc.y, 50)));
