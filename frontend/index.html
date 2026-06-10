@@ -25,7 +25,7 @@
   //  - production serves the frontend from the FastAPI container → same origin.
   window.AIJOLOT_API_BASE = window.AIJOLOT_API_BASE || (function () {
     var loc = window.location;
-    var devPorts = { "5500": 1, "5173": 1, "8080": 1, "3000": 1 };
+    var devPorts = { "5500": 1, "5510": 1, "5173": 1, "8080": 1, "3000": 1 };
     if (devPorts[loc.port]) return loc.protocol + "//" + loc.hostname + ":8000";
     return loc.origin;
   })();
