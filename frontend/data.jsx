@@ -20,7 +20,7 @@ const SEGMENTS = {
   masculino: {
     id: "masculino", label: "Género: Masculino", tag: "gender:male", icon: "venus-and-mars",
     audience: "Hombres 25-45 · navegando ahora",
-    product: CATALOG[0],
+    product: { name: "Boss Bottled", sku: "" },
     eyebrow: "BOSS BOTTLED",
     headline: "Define tu\npresencia.",
     sub: "El icónico Boss Bottled. Carácter en cada nota. Solo esta semana.",
@@ -30,7 +30,7 @@ const SEGMENTS = {
   femenino: {
     id: "femenino", label: "Género: Femenino", tag: "gender:female", icon: "flower-2",
     audience: "Mujeres 22-44 · navegando ahora",
-    product: CATALOG[2],
+    product: { name: "Boss Alive", sku: "" },
     eyebrow: "BOSS ALIVE",
     headline: "Tu momento,\ntu aroma.",
     sub: "Boss Alive, una celebración luminosa. Vívelo con 10% de descuento.",
@@ -40,7 +40,7 @@ const SEGMENTS = {
   vip: {
     id: "vip", label: "Cliente VIP", tag: "vip:true", icon: "crown",
     audience: "Clientes VIP · histórico > $1K",
-    product: CATALOG[4],
+    product: { name: "Set Parfums", sku: "" },
     eyebrow: "ACCESO ANTICIPADO",
     headline: "Exclusivo\npara ti.",
     sub: "Tu set de lujo Boss, con 10% y envío prioritario. Solo para clientes VIP.",

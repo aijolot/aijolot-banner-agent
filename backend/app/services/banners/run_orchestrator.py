@@ -750,13 +750,14 @@ class RunOrchestrator:
                 ink = str(prev_art["ink"])
             else:
                 ink = _bg_text_ink(background)
-            concept_dict["art_direction"] = {
+            final_art_direction = {
                 "fonts": art_direction.get("fonts") or fonts,
                 "layout": art_direction.get("layout") or {},
                 "ink": ink,
                 **({"ink_sections": ink_sections} if ink_sections else {}),
                 **mode,
             }
+            concept_dict["art_direction"] = final_art_direction
             concept_dict["decision_trace"] = decision_trace
             # Research cache: lets the next plan-iterate skip the KG round-trip.
             concept_dict["research_cache"] = {
@@ -766,7 +767,7 @@ class RunOrchestrator:
             concept_dict["plan"] = self._build_campaign_plan(
                 concept=concept,
                 background=background,
-                art_direction=art_direction,
+                art_direction=final_art_direction,
                 campaign_row=campaign_row,
                 campaign_state=campaign_state,
                 revision_id=revision_id,
@@ -1620,7 +1621,7 @@ class RunOrchestrator:
                 "background_name": (background or {}).get("name"),
                 "background_description": (background or {}).get("description"),
                 "palette_usage": dict(getattr(concept, "palette_usage", None) or {}),
-                "text_ink": _bg_text_ink(background),
+                "text_ink": art_direction.get("ink") or _bg_text_ink(background),
             },
             "product_intent": product_intent,
             "copy_preview": {

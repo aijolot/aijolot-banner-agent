@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, CalendarApi, SuggestionsApi */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, CalendarApi, SuggestionsApi, CampaignApi */
 // Aijolot Banner Agent — F1 UI: "Calendario comercial" en el dashboard.
 // Lista las próximas fechas (seed MX/global + nicho inferido + manuales) con
 // countdown, permite ajustar la anticipación, inferir fechas del nicho de la
@@ -89,7 +89,11 @@ function CalendarPanel({ onStartBrief, onNotice }) {
     }
     onNotice && onNotice({ tone: "green", text: "Campaña creada con el brief de la fecha — revisa y planéala." });
     await refresh();
-    onStartBrief && onStartBrief({ id: r.data.campaign_id, status: "draft", structured_brief: {} });
+    // Trae la campaña real (con el brief prellenado por el agente) — un stub
+    // vacío dejaría el BriefStage sin la propuesta.
+    let full = { id: r.data.campaign_id, status: "draft", structured_brief: {} };
+    try { full = await CampaignApi.get(r.data.campaign_id); } catch (e) { /* el brief se recarga en el stage */ }
+    onStartBrief && onStartBrief(full);
   }
 
   if (status === "unavailable") return null;

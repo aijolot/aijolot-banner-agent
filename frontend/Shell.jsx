@@ -153,8 +153,9 @@ function CampaignsView({ onNew, onResume, onPerf, onStartBrief }) {
 
       {typeof SuggestionsPanel === "function" ? (
         <SuggestionsPanel
-          onCampaignCreated={(campaignId) => {
-            const c = { id: campaignId, status: "draft", structured_brief: {} };
+          onCampaignCreated={async (campaignId) => {
+            let c = { id: campaignId, status: "draft", structured_brief: {} };
+            try { c = await CampaignApi.get(campaignId); } catch (e) { /* stub si el GET falla */ }
             return onStartBrief ? onStartBrief(c) : onResume(c);
           }}
           onNotice={() => {}}
