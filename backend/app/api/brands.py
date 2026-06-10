@@ -6,6 +6,7 @@
     POST /brands/{id}/discovery-runs                             -> run Shopify brand discovery synchronously
     GET  /brands/{id}/discovery-runs/{run_id}                    -> one persisted discovery run
     POST /brands/{id}/discovery-runs/{run_id}/recommendations    -> Gemini color role draft for a run
+    POST /brands/{id}/font-suggestions                           -> font candidates (Gemini or labeled non-AI fallback)
 """
 
 from __future__ import annotations
@@ -30,6 +31,11 @@ from app.services.brands.brand_discovery_service import (
     StoreNotFound,
 )
 from app.services.brands.brand_recommendations import BrandRecommendationUnavailable
+from app.services.brands.font_suggestions import (
+    FontSuggestionResponse,
+    FontSuggestionRouteRequest,
+    FontSuggestionService,
+)
 from app.services.brands.markdown_importer import BrandMarkdownImportError
 from app.services.brands.palette_suggestions import PaletteSuggestionService, PaletteSuggestionUnavailable
 
@@ -83,6 +89,22 @@ async def suggest_palette(brand_id: BrandIdPath, request: PaletteSuggestionRoute
     except brand_store.BrandNotFound:
         raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
     except PaletteSuggestionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.post("/{brand_id}/font-suggestions", response_model=FontSuggestionResponse)
+async def suggest_fonts(
+    brand_id: BrandIdPath, request: FontSuggestionRouteRequest | None = None
+) -> FontSuggestionResponse:
+    """Font candidates for the brand: Gemini-backed when available, otherwise an
+    explicitly labeled non-AI fallback (discovered + curated seeds), never a 503."""
+
+    try:
+        service = FontSuggestionService(brand_store._default_service())
+        return await service.suggest(brand_id, request or FontSuggestionRouteRequest())
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except MissingSettingsError as exc:  # brand storage misconfigured (not Gemini-down)
         raise HTTPException(status_code=503, detail=str(exc))
 
 

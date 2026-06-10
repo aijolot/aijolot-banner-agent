@@ -153,6 +153,7 @@ def test_art_catalog_and_placement_routes_fail_closed_without_context() -> None:
         client.post("/api/v1/brands/avocado_store/discovery-runs/00000000-0000-0000-0000-000000000601/recommendations").status_code
         == 401
     )
+    assert client.post("/api/v1/brands/avocado_store/font-suggestions", json={}).status_code == 401
     assert client.get("/api/v1/stores").status_code == 401
     team_b_brands = client.get("/api/v1/brands", headers=AUTH_TEAM_B)
     assert team_b_brands.status_code == 200

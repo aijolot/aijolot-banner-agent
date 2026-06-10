@@ -559,3 +559,157 @@ def test_api_v1_palette_suggestions_uses_auth_scoped_service(monkeypatch):
     assert response.status_code == 200
     assert called["team_id"] == "team-1"
     assert response.json()["suggestions"][0]["hex"] == "#3366FF"
+
+
+# ---------------------------------------------------------------------------
+# POST /brands/{brand_id}/font-suggestions (Task 6)
+# ---------------------------------------------------------------------------
+
+
+def _gemini_font_payload() -> dict:
+    return {
+        "suggestions": [
+            {
+                "family": "Space Grotesk",
+                "css_stack": "",
+                "category": "sans",
+                "recommended_roles": ["display", "headline"],
+                "rationale": "Techy grotesk that pairs with Inter body copy.",
+            },
+            {
+                "family": "Lora",
+                "css_stack": "Lora, Georgia, serif",
+                "category": "serif",
+                "recommended_roles": ["body"],
+                "rationale": "Editorial serif counterpart.",
+            },
+        ]
+    }
+
+
+def test_root_font_suggestions_returns_gemini_suggestions_with_labeled_buckets(monkeypatch):
+    from app.services.brands import font_suggestions as fonts_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        return _gemini_font_payload()
+
+    monkeypatch.setattr(fonts_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/font-suggestions", json={"count": 4, "intent": "summer hero"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "gemini"
+    assert body["ai_available"] is True
+    assert body["message"]
+    assert [font["family"] for font in body["suggestions"]] == ["Space Grotesk", "Lora"]
+    assert all(font["source"] == "gemini_suggested" for font in body["suggestions"])
+    assert all(font["status"] == "candidate" for font in body["suggestions"])
+    assert body["suggestions"][0]["css_stack"] == '"Space Grotesk", sans-serif'  # built when missing
+    assert body["discovered"] == []  # markdown/demo mode has no discovery snapshot
+    seed_families = {font["family"] for font in body["seeds"]}
+    assert "Inter" in seed_families
+    assert seed_families.isdisjoint({"Space Grotesk", "Lora"})  # seeds trimmed against suggestions
+    assert all(font["source"] == "system_seed" for font in body["seeds"])
+
+
+def test_root_font_suggestions_gemini_unavailable_returns_labeled_fallback_not_503(monkeypatch):
+    from app.agents.tools import gemini_text
+    from app.services.brands import font_suggestions as fonts_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        raise gemini_text.GeminiUnavailable("Gemini is unavailable: set GOOGLE_API_KEY")
+
+    monkeypatch.setattr(fonts_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/font-suggestions", json={})
+
+    assert response.status_code == 200  # unlike colors: fonts fall back, they do not 503
+    body = response.json()
+    assert body["source"] == "deterministic_fallback"
+    assert body["ai_available"] is False
+    assert body["suggestions"] == []  # seeds are never relabeled as AI output
+    assert "Gemini is unavailable" in body["message"]
+    assert "non-AI" in body["message"]
+    assert body["seeds"]
+    assert all(font["source"] == "system_seed" for font in body["seeds"])
+
+
+def test_font_suggestions_missing_brand_returns_404(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    response = client.post("/brands/nope/font-suggestions", json={})
+    assert response.status_code == 404
+
+
+def test_font_suggestions_invalid_count_returns_422(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    assert client.post("/brands/avocado_store/font-suggestions", json={"count": 2}).status_code == 422
+    assert client.post("/brands/avocado_store/font-suggestions", json={"count": 99}).status_code == 422
+
+
+def test_api_v1_font_suggestions_uses_auth_scoped_service_and_discovery_snapshot(monkeypatch):
+    import app.services.brand_store as store
+    from app.services.brands import font_suggestions as fonts_module
+
+    repository = FakeBrandRepository()
+    repository.rows["supabase_brand"]["discovery_snapshot"] = {
+        "id": "disc_abc123def456",
+        "brand_id": "supabase_brand",
+        "shop_domain": "runtime.myshopify.com",
+        "status": "succeeded",
+        "discovered_at": "2026-06-10T12:00:00+00:00",
+        "fonts": [
+            {"family": "Assistant", "source": "theme_settings:config/settings_data.json", "confidence": 0.9},
+            {"family": "Archivo Black", "source": "css:assets/base.css", "css_stack": "'Archivo Black', sans-serif", "confidence": 0.5},
+        ],
+    }
+    service = BrandService(repository=repository, team_id="team-1")
+    called: dict[str, str] = {}
+
+    def fake_service_for_team(team_id: str):
+        called["team_id"] = team_id
+        return service
+
+    async def fake_generate(prompt, *, model, structured=None):
+        called["prompt"] = prompt
+        return _gemini_font_payload()
+
+    monkeypatch.setattr(store, "service_for_team", fake_service_for_team)
+    monkeypatch.setattr(fonts_module.gemini_text, "generate", fake_generate)
+
+    unauthenticated = client.post("/api/v1/brands/supabase_brand/font-suggestions", json={})
+    assert unauthenticated.status_code == 401  # fail closed without request context
+
+    response = client.post("/api/v1/brands/supabase_brand/font-suggestions", headers=AUTH_HEADERS, json={"count": 5})
+
+    assert response.status_code == 200
+    assert called["team_id"] == "team-1"
+    body = response.json()
+    assert body["source"] == "gemini"
+    assert body["ai_available"] is True
+    # Discovered candidates mapped deterministically from the persisted snapshot.
+    assert [font["family"] for font in body["discovered"]] == ["Assistant", "Archivo Black"]
+    assert body["discovered"][0]["source"] == "shopify_theme"
+    assert body["discovered"][1]["source"] == "storefront_css"
+    assert body["discovered"][0]["evidence_refs"] == ["theme_settings:config/settings_data.json"]
+    # The prompt carried the discovered evidence to Gemini.
+    assert "Assistant" in str(called["prompt"])
+
+
+def test_v1_font_suggestions_unknown_brand_returns_404(monkeypatch):
+    import app.services.brand_store as store
+
+    service = BrandService(repository=FakeBrandRepository(), team_id="team-1")
+    monkeypatch.setattr(store, "service_for_team", lambda team_id: service)
+
+    response = client.post("/api/v1/brands/missing_brand/font-suggestions", headers=AUTH_HEADERS, json={})
+
+    assert response.status_code == 404
+
+
+def test_font_suggestion_routes_are_present_in_openapi_contract():
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/brands/{brand_id}/font-suggestions" in paths
+    assert "/api/v1/brands/{brand_id}/font-suggestions" in paths
