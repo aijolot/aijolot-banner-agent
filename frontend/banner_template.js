@@ -80,6 +80,18 @@
     var ink = safeColor(live.textColor) || "#111111";
     var vars = "--banner-ar:" + ar + ";--disp:'" + disp + "';--body:'" + body + "';--ink:" + ink +
       ";--accent:#22D3EE;--chip:#FFD23F;--glow:rgba(255,255,255,.3)";
+    // Per-section ink + type scale (W0.3): emitted as CSS vars consumed by banner.css
+    // (color: var(--ink-<section>, var(--ink)); font-size: calc(clamp(...) * var(--ts-<section>,1))).
+    var SECTIONS = ["headline", "subheadline", "eyebrow", "cta"];
+    var inkSections = live.inkSections || {};
+    var typeScale = live.typeScale || {};
+    for (var si = 0; si < SECTIONS.length; si++) {
+      var sk = SECTIONS[si];
+      var sCol = safeColor(inkSections[sk]);
+      if (sCol) vars += ";--ink-" + sk + ":" + sCol;
+      var sSc = num(typeScale[sk], 1);
+      if (sSc && sSc !== 1) vars += ";--ts-" + sk + ":" + Math.max(0.5, Math.min(2.5, sSc));
+    }
 
     var eyebrow = esc(String(live.eyebrow || "").toUpperCase());
     var headlineHTML = renderHeadline(live.headline, live.headlineRuns);

@@ -68,6 +68,24 @@ function revisionMappings(rev) {
   return { lmap, smap, labels };
 }
 
+// W0.3 — compact percent stepper: − [120%] + (10% steps, editable, may exceed 100%).
+function PctStepper({ pct, onPct, min = 50, max = 250, title }) {
+  const btn = { width: 20, height: 20, borderRadius: 6, border: "1px solid #E2E8F0", background: "#fff", color: "#0F172A", fontFamily: "Inter", fontSize: 12, fontWeight: 700, cursor: "pointer", lineHeight: "18px", padding: 0 };
+  const clamp = (n) => Math.max(min, Math.min(max, Math.round(n)));
+  return (
+    <span title={title} style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+      <button type="button" style={btn} onClick={() => onPct(clamp(pct - 10))}>−</button>
+      <input
+        value={pct}
+        onChange={(e) => { const n = parseInt(String(e.target.value).replace(/[^0-9]/g, ""), 10); if (Number.isFinite(n)) onPct(clamp(n)); }}
+        style={{ width: 36, textAlign: "center", fontFamily: "Inter", fontSize: 11, padding: "3px 2px", borderRadius: 6, border: "1px solid #E2E8F0", color: "#0F172A" }}
+      />
+      <span style={{ fontFamily: "Inter", fontSize: 10, color: "#94A3B8" }}>%</span>
+      <button type="button" style={btn} onClick={() => onPct(clamp(pct + 10))}>+</button>
+    </span>
+  );
+}
+
 function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) {
   const [variant, setVariant] = useStateCV("A");
   const [segId, setSegId] = useStateCV("masculino");
@@ -83,6 +101,9 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const [draftLayout, setDraftLayout] = useStateCV(null);
   const [draftFonts, setDraftFonts] = useStateCV({});
   const [draftInk, setDraftInk] = useStateCV(null);
+  // W0.3 — per-section overrides: { headline|subheadline|eyebrow|cta: "#hex" } / { …: 1.2 }
+  const [draftInkSections, setDraftInkSections] = useStateCV({});
+  const [draftTypeScale, setDraftTypeScale] = useStateCV({});
   const [editBusy, setEditBusy] = useStateCV(false);
   const dragRef = useRefCV(null);
   const [editingId, setEditingId] = useStateCV(null);
@@ -218,6 +239,8 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     bgCss: (liveBgObj && liveBgObj.css) || null,
     displayFont, bodyFont,
     layout: (liveConcept.art_direction && liveConcept.art_direction.layout) || null,
+    inkSections: (liveConcept.art_direction && liveConcept.art_direction.ink_sections) || null,
+    typeScale: (liveConcept.art_direction && liveConcept.art_direction.type_scale) || null,
     // The background CSS was authored with a legible copy color (its first `color:`),
     // but that color lands on the empty .hb-bg layer. Lift it onto the actual copy so
     // the headline keeps the contrast the agent designed for this background.
@@ -254,6 +277,8 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     displayFont: draftFonts.display || live.displayFont,
     bodyFont: draftFonts.body || live.bodyFont,
     textColor: draftInk || live.textColor,
+    inkSections: { ...(live.inkSections || {}), ...draftInkSections },
+    typeScale: { ...(live.typeScale || {}), ...draftTypeScale },
   } : null;
 
   function _onDrag(e) {
@@ -278,14 +303,18 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
     window.addEventListener("pointermove", _onDrag);
     window.addEventListener("pointerup", _endDrag);
   }
-  const hasEdits = !!(draftLayout || draftFonts.display || draftFonts.body || draftInk);
-  function discardEdits() { setDraftLayout(null); setDraftFonts({}); setDraftInk(null); }
+  const hasEdits = !!(draftLayout || draftFonts.display || draftFonts.body || draftInk ||
+    Object.keys(draftInkSections).length || Object.keys(draftTypeScale).length);
+  function discardEdits() { setDraftLayout(null); setDraftFonts({}); setDraftInk(null); setDraftInkSections({}); setDraftTypeScale({}); }
   async function saveEdits() {
     if (!hasEdits || editBusy) return;
     const changes = {};
     if (draftLayout) changes.layout = draftLayout;
     if (draftFonts.display || draftFonts.body) changes.fonts = { ...(draftFonts.display ? { display: draftFonts.display } : {}), ...(draftFonts.body ? { body: draftFonts.body } : {}) };
-    if (draftInk) changes.ink = draftInk;
+    // Per-section colors win over the global picker; a global-only change resets sections.
+    if (Object.keys(draftInkSections).length) changes.ink = { ...draftInkSections };
+    else if (draftInk) changes.ink = draftInk;
+    if (Object.keys(draftTypeScale).length) changes.type_scale = { ...draftTypeScale };
     setEditBusy(true);
     const r = await GenerationApi.applyEdits(campaign, changes, revision && revision.id);
     setEditBusy(false);
@@ -615,27 +644,52 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
 
           {/* direct-edit properties (no LLM) */}
           {editMode ? (
-            <GlassCard style={{ padding: 12, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-              <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12.5, color: "#002B57", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="sliders-horizontal" size={14} color="#0891B2" /> Edición directa</span>
-              <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                Display
-                <select value={draftFonts.display || (live && live.displayFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, display: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
-                  {["Space Grotesk", "Archivo Black", "Fraunces", "Playfair Display", "Bebas Neue", "Anton", "Syne", "Montserrat", "Poppins", "Oswald"].map((f) => <option key={f} value={f}>{f}</option>)}
-                </select>
-              </label>
-              <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                Texto
-                <select value={draftFonts.body || (live && live.bodyFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, body: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
-                  {["Inter", "DM Sans", "Work Sans", "Manrope", "IBM Plex Sans", "Public Sans", "Nunito Sans", "Karla", "Figtree"].map((f) => <option key={f} value={f}>{f}</option>)}
-                </select>
-              </label>
-              <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
-                Color texto
-                <input type="color" value={draftInk || (live && /^#[0-9a-fA-F]{6}$/.test(live.textColor || "") ? live.textColor : "#111111")} onChange={(e) => setDraftInk(e.target.value)} style={{ width: 28, height: 22, border: "1px solid #E2E8F0", borderRadius: 6, padding: 0, cursor: "pointer" }} />
-              </label>
-              <div style={{ flex: 1 }} />
-              <Button variant="ghost" icon="rotate-ccw" onClick={discardEdits} disabled={!hasEdits || editBusy}>Descartar</Button>
-              <Button variant="primary" icon={editBusy ? "loader" : "check"} onClick={saveEdits} disabled={!hasEdits || editBusy}>{editBusy ? "Aplicando…" : "Aplicar al instante"}</Button>
+            <GlassCard style={{ padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12.5, color: "#002B57", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="sliders-horizontal" size={14} color="#0891B2" /> Edición directa</span>
+                <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  Display
+                  <select value={draftFonts.display || (live && live.displayFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, display: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
+                    {["Space Grotesk", "Archivo Black", "Fraunces", "Playfair Display", "Bebas Neue", "Anton", "Syne", "Montserrat", "Poppins", "Oswald"].map((f) => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </label>
+                <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }}>
+                  Texto
+                  <select value={draftFonts.body || (live && live.bodyFont) || ""} onChange={(e) => setDraftFonts((f) => ({ ...f, body: e.target.value }))} style={{ fontFamily: "Inter", fontSize: 11.5, padding: "4px 6px", borderRadius: 7, border: "1px solid #E2E8F0" }}>
+                    {["Inter", "DM Sans", "Work Sans", "Manrope", "IBM Plex Sans", "Public Sans", "Nunito Sans", "Karla", "Figtree"].map((f) => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </label>
+                <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }} title="Aplica un color a TODO el texto (resetea colores por sección)">
+                  Todo el texto
+                  <input type="color" value={draftInk || (live && /^#[0-9a-fA-F]{6}$/.test(live.textColor || "") ? live.textColor : "#111111")} onChange={(e) => { setDraftInk(e.target.value); setDraftInkSections({}); }} style={{ width: 28, height: 22, border: "1px solid #E2E8F0", borderRadius: 6, padding: 0, cursor: "pointer" }} />
+                </label>
+                <label style={{ fontFamily: "Inter", fontSize: 11.5, color: "#64748B", display: "inline-flex", alignItems: "center", gap: 5 }} title="Tamaño de la imagen del producto">
+                  Imagen
+                  <PctStepper
+                    pct={Math.round(((curLayout().heroW || 46) / 46) * 100)}
+                    min={50} max={170}
+                    onPct={(n) => { const L = curLayout(); const f = (n / 100) * 46 / (L.heroW || 46); setDraftLayout(clampLayoutClient({ ...L, heroW: L.heroW * f, heroH: L.heroH * f })); }}
+                  />
+                </label>
+                <div style={{ flex: 1 }} />
+                <Button variant="ghost" icon="rotate-ccw" onClick={discardEdits} disabled={!hasEdits || editBusy}>Descartar</Button>
+                <Button variant="primary" icon={editBusy ? "loader" : "check"} onClick={saveEdits} disabled={!hasEdits || editBusy}>{editBusy ? "Aplicando…" : "Aplicar al instante"}</Button>
+              </div>
+              {/* W0.3 — per-section color + size (% can exceed 100) */}
+              <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", borderTop: "1px dashed #E2E8F0", paddingTop: 9 }}>
+                <span style={{ fontFamily: "Inter", fontSize: 10.5, fontWeight: 600, color: "#94A3B8", letterSpacing: ".06em" }}>POR SECCIÓN</span>
+                {[["headline", "Título"], ["subheadline", "Subtítulo"], ["eyebrow", "Eyebrow"], ["cta", "CTA"]].map(([key, label]) => {
+                  const curInk = draftInkSections[key] || (live && live.inkSections && live.inkSections[key]) || draftInk || (live && /^#[0-9a-fA-F]{6}$/.test(live.textColor || "") ? live.textColor : "#111111");
+                  const curScale = draftTypeScale[key] != null ? draftTypeScale[key] : (live && live.typeScale && live.typeScale[key]) || 1;
+                  return (
+                    <span key={key} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontFamily: "Inter", fontSize: 11.5, color: "#64748B" }}>
+                      {label}
+                      <input type="color" value={curInk} onChange={(e) => setDraftInkSections((m) => ({ ...m, [key]: e.target.value }))} style={{ width: 24, height: 20, border: "1px solid #E2E8F0", borderRadius: 6, padding: 0, cursor: "pointer" }} title={`Color de ${label}`} />
+                      <PctStepper pct={Math.round(curScale * 100)} onPct={(n) => setDraftTypeScale((m) => ({ ...m, [key]: n / 100 }))} title={`Tamaño de ${label} (50–250%)`} />
+                    </span>
+                  );
+                })}
+              </div>
             </GlassCard>
           ) : null}
 
@@ -673,7 +727,6 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                     <React.Fragment>
                       {handle(L.textX + Math.min(L.textW, 20) / 2, L.textY, "Texto", "copy", "move")}
                       {handle(L.heroX, L.heroY, "Imagen", "hero", "move")}
-                      {handle(Math.min(L.heroX + L.heroW / 2, 96), Math.min(L.heroY + L.heroH / 2, 96), "Tamaño", "heroSize", "maximize-2")}
                     </React.Fragment>
                   );
                 })() : null}

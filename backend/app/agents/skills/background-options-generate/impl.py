@@ -126,7 +126,31 @@ def _fallback_options(brand_context: Any, count: int) -> list[BackgroundOption]:
     return options
 
 
-def _build_prompt(concept: Any, brand_context: Any, count: int) -> str:
+def _directed_edit_block(instruction: str, base_background: Any) -> str:
+    """Prompt block for a DIRECTED edit of an existing background (W0.1).
+
+    Used when the user asked for a specific tweak (e.g. swap a decorative SVG
+    motif) — the model must modify the current treatment, not invent a new one.
+    """
+    if not instruction:
+        return ""
+    base_css = sanitize_css(str(_get(base_background, "css", "") or ""))
+    base_html = sanitize_html(str(_get(base_background, "html", "") or ""))
+    block = (
+        "\nDIRECTED EDIT MODE: the user is iterating on an EXISTING background. Do NOT invent a new look.\n"
+        f'Apply exactly this request to the current treatment: "{instruction}".\n'
+        "Keep the current colors, gradient, mood and composition UNCHANGED except for what the request asks "
+        "(e.g. if the request swaps a decorative SVG shape, only the shape changes — same palette, same layout "
+        "of the motif, same density). Return the edited treatment as option 1.\n"
+    )
+    if base_css:
+        block += f"Current CSS:\n{base_css}\n"
+    if base_html:
+        block += f"Current HTML wrapper:\n{base_html}\n"
+    return block
+
+
+def _build_prompt(concept: Any, brand_context: Any, count: int, *, instruction: str = "", base_background: Any = None) -> str:
     copy = _get(concept, "copy", {}) or {}
     headline = _get(copy, "headline", "") if isinstance(copy, dict) else ""
     subheadline = _get(copy, "subheadline", "") if isinstance(copy, dict) else ""
@@ -136,7 +160,9 @@ def _build_prompt(concept: Any, brand_context: Any, count: int) -> str:
     tone = " ".join(_get(_get(brand_context, "voice", None), "tone", []) or [])
     return (
         f"You are a senior ecommerce art director. Propose exactly {count} DISTINCT background "
-        "treatments for a Shopify banner hero surface.\n\n"
+        "treatments for a Shopify banner hero surface.\n"
+        + _directed_edit_block(instruction, base_background)
+        + "\n"
         f"Campaign theme / headline: {headline}\nSupporting line: {subheadline}\n"
         f"Scene/mood context: {image_prompt}\nLayout: {layout}\nBrand tone: {tone}\n"
         f"Brand palette: {palette_lines}\n\n"
@@ -174,8 +200,17 @@ async def run(
     count: int = 3,
     cost_guard: Any = None,
     settings: Any = None,
+    instruction: str = "",
+    base_background: Any = None,
 ) -> tuple[list[BackgroundOption], str]:
-    """Return (options, source) where source is 'gemini' or 'deterministic'."""
+    """Return (options, source) where source is 'gemini' or 'deterministic'.
+
+    ``instruction`` + ``base_background`` switch the skill into directed-edit
+    mode (W0.1): the model modifies the existing treatment instead of inventing
+    a new one. The deterministic fallback cannot honor directed edits — callers
+    that need decor-only changes should keep the previous background when this
+    returns source='deterministic'.
+    """
 
     count = max(1, min(int(count or 3), 5))
 
@@ -192,7 +227,7 @@ async def run(
 
     try:
         result = await gemini_text.generate(
-            _build_prompt(concept, brand_context, count),
+            _build_prompt(concept, brand_context, count, instruction=instruction, base_background=base_background),
             model=gemini_text.FLASH_MODEL,
             structured=BackgroundOptionsOutput,
         )

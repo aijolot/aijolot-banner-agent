@@ -121,7 +121,12 @@ class StructuredEdit(BaseModel):
 
     layout: StructuredLayoutEdit | None = None
     fonts: StructuredFontsEdit | None = None
-    ink: str | None = None
+    # Global text color (hex string) — or a per-section dict keyed by
+    # headline|subheadline|eyebrow|cta (W0.3).
+    ink: str | dict[str, str] | None = None
+    # Per-section font-size multiplier (0.5–2.5 = 50%–250%), keyed by
+    # headline|subheadline|eyebrow|cta (W0.3). Values are server-clamped.
+    type_scale: dict[str, float] | None = None
     copy: StructuredCopyEdit | None = None
     # Per-variant headline emphasis runs, keyed by banner_variant_id.
     headline_runs: dict[str, list[dict[str, Any]]] | None = None

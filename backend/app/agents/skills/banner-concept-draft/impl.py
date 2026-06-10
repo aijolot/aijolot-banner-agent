@@ -266,7 +266,7 @@ def _product_lines(catalog_context: Any) -> str:
     return "; ".join(titles)
 
 
-def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, audience_override: str = "") -> str:
+def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, audience_override: str = "", refine_instruction: str = "") -> str:
     brief = _brief(campaign)
     goal = _get(brief, "goal", "")
     audience = audience_override or _get(brief, "audience", "")
@@ -289,10 +289,16 @@ def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_co
         "One headline (<=8 words, benefit-led, may reference the product/season), one short eyebrow (<=4 words), "
         "one supporting subheadline (<=16 words), one action-first CTA (<=5 words). "
         "No clickbait, no prohibited words, no emojis. Return JSON matching the schema."
+        + (
+            f"\n\nUSER REFINEMENT FEEDBACK (MUST be addressed in the rewrite, in the user's language): \"{refine_instruction}\". "
+            "Apply it to the relevant fields and keep everything else consistent with the brief."
+            if refine_instruction
+            else ""
+        )
     )
 
 
-async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any, audience_override: str = "") -> dict[str, str] | None:
+async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any, audience_override: str = "", refine_instruction: str = "") -> dict[str, str] | None:
     if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
         return None
     try:
@@ -302,7 +308,7 @@ async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_co
         if not guard.check_and_reserve(EST_CONCEPT_COPY_USD).allowed:
             return None
         result = await gemini_text.generate(
-            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint, audience_override=audience_override),
+            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint, audience_override=audience_override, refine_instruction=refine_instruction),
             model=gemini_text.FLASH_MODEL,
             structured=_ConceptCopy,
         )
@@ -367,6 +373,7 @@ async def run(
     art_direction: Any = None,
     settings: Any = None,
     cost_guard: Any = None,
+    refine_instruction: str = "",
 ) -> Concept:
     if state is not None:
         campaign = campaign or state.campaign
@@ -392,6 +399,7 @@ async def run(
     gem = await _gemini_copy(
         campaign=campaign, brand_context=brand_context, catalog_context=catalog_context,
         best_practices=best_practices, layout_hint=concept.layout, settings=settings, cost_guard=cost_guard,
+        refine_instruction=refine_instruction,
     )
     if gem:
         for key in ("eyebrow", "headline", "subheadline", "cta"):

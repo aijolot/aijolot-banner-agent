@@ -196,7 +196,7 @@ class RunOrchestrator:
                 concept.hierarchy_notes = f"Refine: {_short(prompt, 120)}; {concept.hierarchy_notes}"
             # Always generate + attach an AI background so the assembled banner
             # (and the canvas) shows a real themed background, not a flat default.
-            background = await self._refine_background(concept, brand)
+            background, _bg_source = await self._refine_background(concept, brand)
             art_direction = await self._propose_art_direction(concept, brand)
             fonts = art_direction.get("fonts") or {}
             recorder.succeed(
@@ -483,16 +483,85 @@ class RunOrchestrator:
 
             node = "draft_banner_concept"
             recorder.start(node)
-            layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
-            concept = await self._run_concept(
-                campaign_state, brand, state_variants, best_practices, layout_candidates, catalog_context
+
+            # W0.1 — grounded plan-iterate: interpret the feedback into directed
+            # ops over the PREVIOUS plan instead of re-drafting everything.
+            prev_concept: dict[str, Any] = {}
+            if is_refine:
+                latest = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id)
+                if latest and str(latest.get("status") or "") == "plan":
+                    prev_concept = dict(latest.get("concept") or {})
+            rplan = None
+            if is_refine:
+                rplan = await self._interpret_refinement(prompt or "", targets, prev_concept or None)
+                target_set = set(rplan.targets)
+
+            needs_redraft = (
+                (not is_refine)
+                or (not prev_concept)
+                or (rplan is not None and rplan.has("redraft_concept", "edit_copy", "adjust_layout"))
             )
+            if needs_redraft:
+                layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
+                concept = await self._run_concept(
+                    campaign_state, brand, state_variants, best_practices, layout_candidates, catalog_context,
+                    refine_instruction=(prompt or "") if is_refine else "",
+                )
+            else:
+                concept = _dict_to_concept(prev_concept)
             if is_refine and prompt:
                 concept.copy["revision_note"] = _short(prompt, 280)
                 concept.hierarchy_notes = f"Refine: {_short(prompt, 120)}; {concept.hierarchy_notes}"
-            background = await self._refine_background(concept, brand)
-            art_direction = await self._propose_art_direction(concept, brand)
+
+            # Background: only (re)generate when the user asked for it.
+            prev_background = dict(prev_concept.get("background") or {}) or None
+            decor_skipped = False
+            background_changed = False
+            if not is_refine or prev_background is None:
+                background, _bg_source = await self._refine_background(concept, brand)
+                background_changed = background is not None
+            else:
+                bg_op = next((o for o in rplan.ops if o.op in ("change_background", "change_decor")), None) if rplan else None
+                if bg_op is None:
+                    background = prev_background
+                elif bg_op.op == "change_decor" and not self.settings.has_google_api_key():
+                    # Directed decor swaps need the LLM; deterministically replacing
+                    # the background would be exactly the bug we're fixing — keep it.
+                    background = prev_background
+                    decor_skipped = True
+                else:
+                    new_bg, bg_source = await self._refine_background(
+                        concept, brand,
+                        instruction=(bg_op.instruction or prompt or ""),
+                        base_background=prev_background,
+                    )
+                    if bg_op.op == "change_decor" and bg_source != "gemini":
+                        background = prev_background
+                        decor_skipped = True
+                    else:
+                        background = new_bg or prev_background
+                        background_changed = new_bg is not None
+
+            # Art direction: keep fonts/layout stable across patch-only iterations.
+            prev_art = dict(prev_concept.get("art_direction") or {})
+            if needs_redraft or not prev_art:
+                art_direction = await self._propose_art_direction(concept, brand)
+            else:
+                art_direction = prev_art
             fonts = art_direction.get("fonts") or {}
+
+            # Directed ink ops (contrast complaints / explicit text colors).
+            ink_override: str | None = None
+            ink_sections: dict[str, str] = dict(prev_art.get("ink_sections") or {})
+            for op in (rplan.ops if rplan else []):
+                if op.op != "set_ink":
+                    continue
+                value = op.value or _inverted_or_contrast_ink(prev_art.get("ink"), background)
+                if op.section:
+                    ink_sections[op.section] = value
+                else:
+                    ink_override = value
+
             recorder.succeed(
                 node,
                 {
@@ -500,6 +569,11 @@ class RunOrchestrator:
                     "fonts": f"{fonts.get('display')}/{fonts.get('body')}",
                     "headline": _short(concept.copy.get("headline", "")),
                     "background": (background or {}).get("name") if background else None,
+                    "background_changed": background_changed,
+                    "decor_skipped_no_llm": decor_skipped or None,
+                    "reused_previous_concept": (not needs_redraft) or None,
+                    "interpreted_ops": (rplan.op_names() if rplan else None),
+                    "interpret_source": (rplan.source if rplan else None),
                     "phase": "plan",
                 },
             )
@@ -512,10 +586,19 @@ class RunOrchestrator:
             concept_dict = _concept_dict(concept)
             if background:
                 concept_dict["background"] = background
+            # Ink precedence: directed op > previous plan's ink (when the
+            # background didn't change) > contrast-from-background.
+            if ink_override:
+                ink = ink_override
+            elif not background_changed and prev_art.get("ink"):
+                ink = str(prev_art["ink"])
+            else:
+                ink = _bg_text_ink(background)
             concept_dict["art_direction"] = {
                 "fonts": art_direction.get("fonts") or fonts,
                 "layout": art_direction.get("layout") or {},
-                "ink": _bg_text_ink(background),
+                "ink": ink,
+                **({"ink_sections": ink_sections} if ink_sections else {}),
             }
             concept_dict["plan"] = self._build_campaign_plan(
                 concept=concept,
@@ -539,6 +622,8 @@ class RunOrchestrator:
                     "phase": "plan",
                     "awaiting_approval": True,
                     "refine_targets": sorted(target_set) if is_refine else None,
+                    "interpreted_ops": (rplan.op_names() if rplan else None),
+                    "interpret_source": (rplan.source if rplan else None),
                 },
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -692,7 +777,10 @@ class RunOrchestrator:
             recorder.start(node)
             edited = []
             if {"copy", "concept", "layout"} & target_set:
-                fresh = await self._run_concept(campaign_state, brand, [StateVariant(customer_tag="all", intent_delta="default")], [], None, None)
+                fresh = await self._run_concept(
+                    campaign_state, brand, [StateVariant(customer_tag="all", intent_delta="default")], [], None, None,
+                    refine_instruction=prompt,
+                )
                 fresh_dict = _concept_dict(fresh)
                 if {"copy", "concept"} & target_set:
                     cdict["copy"] = {**cdict.get("copy", {}), **fresh_dict.get("copy", {})}
@@ -701,11 +789,29 @@ class RunOrchestrator:
                     cdict["layout"] = fresh_dict.get("layout", cdict["layout"])
                     cdict["source_refs"] = fresh_dict.get("source_refs", cdict.get("source_refs", []))
                     edited.append("layout")
-            if "background" in target_set:
-                bg = await self._refine_background(_dict_to_concept(cdict), brand)
-                if bg:
-                    cdict["background"] = bg
-                    edited.append("background")
+            if {"background", "decor"} & target_set:
+                base_bg = dict(cdict.get("background") or {}) or None
+                directed = "decor" in target_set
+                if directed and not self.settings.has_google_api_key():
+                    # A directed decor swap can't be honored deterministically —
+                    # keep the current background instead of replacing it (W0.1).
+                    edited.append("background_kept(decor_no_llm)")
+                else:
+                    bg, bg_source = await self._refine_background(
+                        _dict_to_concept(cdict), brand,
+                        instruction=prompt if directed else "",
+                        base_background=base_bg if directed else None,
+                    )
+                    if directed and bg_source != "gemini":
+                        edited.append("background_kept(decor_no_llm)")
+                    elif bg:
+                        cdict["background"] = bg
+                        edited.append("background")
+            if "ink" in target_set:
+                art = dict(cdict.get("art_direction") or {})
+                art["ink"] = _inverted_or_contrast_ink(art.get("ink"), cdict.get("background"))
+                cdict["art_direction"] = art
+                edited.append("ink")
             cdict["copy"]["revision_note"] = _short(prompt, 280)
             recorder.succeed(node, {"edited": edited or ["(none — image only)"]})
 
@@ -848,6 +954,8 @@ class RunOrchestrator:
         best_practices: list[dict[str, Any]],
         layout_candidates: list[dict[str, Any]] | None = None,
         catalog_context: dict[str, Any] | None = None,
+        *,
+        refine_instruction: str = "",
     ) -> Any:
         skill = _load_runtime_skill("banner-concept-draft")
         return await skill.run(
@@ -859,6 +967,7 @@ class RunOrchestrator:
             catalog_context=catalog_context,
             settings=self.settings,
             cost_guard=self.cost_guard,
+            refine_instruction=refine_instruction,
         )
 
     def _load_catalog_context(self, campaign_id: str, campaign_row: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -1219,6 +1328,8 @@ class RunOrchestrator:
             "displayFont": fonts.get("display") or "Space Grotesk",
             "bodyFont": fonts.get("body") or "Inter",
             "textColor": art_direction.get("ink") or _bg_text_ink(background),
+            "inkSections": art_direction.get("ink_sections") or None,
+            "typeScale": art_direction.get("type_scale") or None,
             "layout": art_direction.get("layout") or {},
         }
 
@@ -1247,6 +1358,8 @@ class RunOrchestrator:
             "displayFont": fonts.get("display") or "Space Grotesk",
             "bodyFont": fonts.get("body") or "Inter",
             "textColor": art_direction.get("ink") or _bg_text_ink(background),
+            "inkSections": art_direction.get("ink_sections") or None,
+            "typeScale": art_direction.get("type_scale") or None,
             "layout": art_direction.get("layout") or {},
         }
 
@@ -1412,16 +1525,40 @@ class RunOrchestrator:
             "layout": layout,
         }
 
-    async def _refine_background(self, concept: Any, brand: Any) -> dict[str, Any] | None:
+    async def _refine_background(
+        self,
+        concept: Any,
+        brand: Any,
+        *,
+        instruction: str = "",
+        base_background: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Generate (or directed-edit, W0.1) a background. Returns (background, source).
+
+        ``source`` is 'gemini' | 'deterministic' | 'none' — callers doing directed
+        decor edits must keep the previous background when the LLM didn't run.
+        """
         skill = _load_runtime_skill("background-options-generate")
         try:
-            options, _source = await skill.run(concept, brand, count=1, settings=self.settings, cost_guard=self.cost_guard)
+            options, source = await skill.run(
+                concept, brand, count=1, settings=self.settings, cost_guard=self.cost_guard,
+                instruction=instruction, base_background=base_background,
+            )
         except Exception:  # noqa: BLE001 — background is best-effort in refine
-            return None
+            return None, "none"
         if not options:
-            return None
+            return None, "none"
         top = options[0]
-        return {"name": top.name, "description": top.description, "css": top.css, "html": top.html}
+        return {"name": top.name, "description": top.description, "css": top.css, "html": top.html}, source
+
+    async def _interpret_refinement(
+        self, prompt: str, targets: list[str] | None, prev_concept: dict[str, Any] | None
+    ) -> Any:
+        """Interpret a refinement prompt into directed ops (refinement-interpret, W0.1)."""
+        skill = _load_runtime_skill("refinement-interpret")
+        return await skill.interpret(
+            prompt, targets=targets, concept=prev_concept, settings=self.settings, cost_guard=self.cost_guard
+        )
 
     def _create_layout_variants(self, revision_id: str, concept: Any) -> list[dict[str, Any]]:
         layout_label = _short(concept.layout, 80)
@@ -1863,6 +2000,18 @@ def _hex_luminance(hexstr: str) -> float | None:
     except ValueError:
         return None
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _inverted_or_contrast_ink(current_ink: str | None, background: dict[str, Any] | None) -> str:
+    """Grounded auto-ink for a contrast complaint (W0.1).
+
+    The user said the CURRENT ink doesn't read — so flip it (dark↔light) when we
+    know it; otherwise fall back to contrast-from-background.
+    """
+    lum = _hex_luminance(current_ink or "")
+    if lum is not None:
+        return "#FFFFFF" if lum < 0.5 else "#111111"
+    return _bg_text_ink(background) or "#111111"
 
 
 def _bg_text_ink(background: dict[str, Any] | None) -> str | None:
