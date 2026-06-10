@@ -86,3 +86,60 @@ def test_html_renderer_keeps_legacy_palette_only_lookup() -> None:
 
     assert "--aij-bg:#F4F1EA" in rendered.html
     assert "--aij-text:#111111" in rendered.html
+
+
+_DEFAULT_BODY_FONT_CSS = "font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:#fff"
+
+
+def test_html_renderer_uses_approved_font_stacks_with_quoted_multiword_family() -> None:
+    brand = {
+        **_brand(),
+        "typography": {
+            "display": "Space Grotesk",
+            "body": "Inter",
+            "approved_fonts": [
+                {
+                    "family": "Space Grotesk",
+                    # Unquoted multi-word parts on purpose: output must be quoted.
+                    "css_stack": "Space Grotesk, Helvetica Neue, sans-serif",
+                    "category": "sans",
+                    "source": "gemini_suggested",
+                    "status": "approved",
+                    "recommended_roles": ["display"],
+                }
+            ],
+        },
+    }
+
+    rendered = render_banner_preview(_concept(), _assets(), brand=brand)
+
+    assert 'h1,.aij-eyebrow {font-family:"Space Grotesk", "Helvetica Neue", sans-serif}' in rendered.html
+    assert "font-family:Inter, sans-serif;background:#fff" in rendered.html
+    assert _DEFAULT_BODY_FONT_CSS not in rendered.html
+
+
+def test_html_renderer_falls_back_to_legacy_typography_strings() -> None:
+    brand = {**_brand(), "typography": {"display": "Archivo Black", "body": "Helvetica Neue, Arial, sans-serif"}}
+
+    rendered = render_banner_preview(_concept(), _assets(), brand=brand)
+
+    assert 'h1,.aij-eyebrow {font-family:"Archivo Black", sans-serif}' in rendered.html
+    assert 'font-family:"Helvetica Neue", Arial, sans-serif;background:#fff' in rendered.html
+
+
+def test_html_renderer_without_typography_keeps_default_fonts_unchanged() -> None:
+    rendered = render_banner_preview(_concept(), _assets(), brand=_brand())
+
+    assert _DEFAULT_BODY_FONT_CSS in rendered.html
+    assert "h1,.aij-eyebrow {font-family" not in rendered.html
+
+
+def test_html_renderer_ignores_unsafe_dict_typography_values() -> None:
+    brand = {**_brand(), "typography": {"display": "Evil;}body{background:url(x)", "body": "Inter</style><script>"}}
+
+    rendered = render_banner_preview(_concept(), _assets(), brand=brand)
+
+    assert "url(x)" not in rendered.html
+    assert "</style><script>" not in rendered.html
+    assert _DEFAULT_BODY_FONT_CSS in rendered.html
+    assert "h1,.aij-eyebrow {font-family" not in rendered.html

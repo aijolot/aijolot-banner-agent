@@ -9,6 +9,7 @@ from typing import Any
 
 from app.agents.state import BannerAssets, Concept, Variant
 from app.services.brands.color_roles import color_system_config, resolve_color_token
+from app.services.brands.font_roles import typography_config
 
 _HANDLE_RE = re.compile(r"[^a-z0-9_-]+")
 _LIQUID_ESCAPE = {"\n": " ", "\r": " "}
@@ -56,6 +57,27 @@ def _escape_liquid_string(value: Any) -> str:
     for src, dst in _LIQUID_ESCAPE.items():
         text = text.replace(src, dst)
     text = html.escape(text, quote=True).replace("'", "&#39;")
+    text = text.replace("{{", "&#123;&#123;").replace("}}", "&#125;&#125;")
+    text = text.replace("{%", "&#123;%").replace("%}", "%&#125;")
+    return text[:500]
+
+
+def _css_var_value(value: Any) -> str:
+    """Escape a CSS custom-property value for the double-quoted ``style`` attribute.
+
+    Font stacks legitimately contain double quotes (``"Space Grotesk", sans-serif``),
+    which would terminate the ``style="..."`` attribute. Swap them to single quotes —
+    valid CSS string delimiters that cannot break a double-quoted attribute — then
+    apply the same HTML/Liquid escaping as ``_escape_liquid_string`` minus the
+    single-quote entity (these values never land inside single-quoted Liquid args).
+    """
+
+    text = str(value or "").replace('"', "'")
+    for src, dst in _LIQUID_ESCAPE.items():
+        text = text.replace(src, dst)
+    # quote=False keeps the single quotes raw (they cannot terminate a double-quoted
+    # attribute); every double quote was already swapped away above.
+    text = html.escape(text, quote=False)
     text = text.replace("{{", "&#123;&#123;").replace("}}", "&#125;&#125;")
     text = text.replace("{%", "&#123;%").replace("%}", "%&#125;")
     return text[:500]
@@ -125,6 +147,7 @@ def build_liquid_payload(
         "cta_text": resolve_color_token(brand, (concept.palette_usage or {}).get("cta_text", "")),
     }
     role_css = {key: value for key, value in role_css.items() if value}
+    typography = typography_config(brand)
     config = {
         "slug": slug,
         "brand_name": brand_name,
@@ -132,6 +155,7 @@ def build_liquid_payload(
         "palette_usage": dict(concept.palette_usage or {}),
         "color_system": color_system,
         "role_css": role_css,
+        "typography": typography,
         "image": {"url": image_url, "alt": getattr(assets, "alt_text_suggestion", "") if assets else ""},
         "variants": variant_rows,
         "audit": {"human_review_required": True, "auto_publish": False},
@@ -145,6 +169,13 @@ def build_liquid_payload(
     cta_default = _escape_liquid_string(str(cta_url or "/collections/all"))
     section_css_vars = "".join(
         f"--aijolot-{_handle(key)}:{_escape_liquid_string(value)};" for key, value in role_css.items()
+    )
+    # Resolved brand font stacks as CSS vars (display/body always when resolved,
+    # headline/accent only when explicitly assigned). Double quotes inside stacks are
+    # swapped to single quotes so the style attribute below stays valid.
+    section_css_vars += "".join(
+        f"--aijolot-font-{_handle(role)}:{_css_var_value(stack)};"
+        for role, stack in (typography.get("stacks") or {}).items()
     )
     snippet = """{% comment %} Aijolot controlled banner block. Do not inject raw Liquid from campaign inputs. {% endcomment %}
 <div class=\"aijolot-banner__copy\">

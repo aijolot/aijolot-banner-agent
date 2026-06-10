@@ -11,6 +11,7 @@ from app.agents.state import BannerSessionState, Campaign, Concept, Variant
 from app.agents.tools import gemini_text
 from app.schemas.brand import BrandContext
 from app.services.brands.color_roles import choose_role_color
+from app.services.brands.font_roles import font_aesthetic_hint, font_prompt_lines
 
 EST_CONCEPT_COPY_USD = 0.002
 
@@ -215,6 +216,10 @@ def draft_concept(
         fallback_layout=fallback_layout,
     )
     layout_note = [f"KG layout: {source_refs[0]['title']}"] if source_refs else []
+    # Approved/legacy brand fonts guide the HTML/Liquid copy layers (never the
+    # generated image pixels, which stay text-free).
+    font_lines = font_prompt_lines(brand_context)
+    typography_note = [f"Typography: {', '.join(font_lines)}"] if font_lines else []
     hierarchy_notes = "; ".join(
         [
             "One headline, one support line, one CTA",
@@ -222,16 +227,20 @@ def draft_concept(
             *layout_note,
             *(variant_notes[:2] or []),
             *(practice_notes[:2] or []),
+            *typography_note,
         ]
     )
 
     safe_catalog_line = _sanitize_image_fragment(catalog_line)
+    # Category-level vibe only (e.g. "geometric sans-serif aesthetic"): font names
+    # never enter the image prompt because generated pixels must stay text-free.
+    font_hint = _sanitize_image_fragment(font_aesthetic_hint(brand_context))
     image_prompt = ", ".join(
         part for part in [
             _sanitize_image_fragment(f"{background_mode} ecommerce banner background"),
             safe_catalog_line or "featured product scene",
             f"brand color roles {_sanitize_image_fragment(primary['label'])} primary anchor and {_sanitize_image_fragment(secondary['label'])} secondary support",
-
+            font_hint,
             "clean negative space for later HTML copy and product focus",
             "mark-free, interface-free, people-free commercial composition",
         ] if part

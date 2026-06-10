@@ -7,6 +7,7 @@ from typing import Any
 
 from app.agents.state import Concept
 from app.services.brands.color_roles import color_system_prompt_lines
+from app.services.brands.font_roles import font_aesthetic_hint
 
 _FORBIDDEN_REPLACEMENTS = {
     "no text": "blank copy space",
@@ -111,9 +112,13 @@ async def run(
 
     brand_styles = _sanitize_list(_as_list(image_style_directives))
     color_role_lines: list[str] = []
+    font_hint = ""
     if brand_context is not None:
         brand_styles.extend(_sanitize_list(_as_list(_get(brand_context, "image_style_directives", []))))
         color_role_lines = color_system_prompt_lines(brand_context)
+        # Display-font CATEGORY vibe only; font names stay out of image prompts and
+        # the no-text rules below remain untouched.
+        font_hint = font_aesthetic_hint(brand_context)
         palette = _get(brand_context, "palette", []) or []
         colors = [getattr(color, "hex", None) or (color.get("hex") if isinstance(color, dict) else None) for color in palette]
         colors = [color for color in colors if color]
@@ -141,6 +146,8 @@ async def run(
         prompt_parts.append("Respect approved color roles: " + " | ".join(_sanitize(line) for line in color_role_lines) + ".")
     elif colors:
         prompt_parts.append("Use palette accents: " + ", ".join(colors[:4]) + ".")
+    if font_hint:
+        prompt_parts.append("Match a " + _sanitize(font_hint) + " in props and composition.")
     prompt_parts.append("Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "clean commercial ecommerce photography") + ".")
     if product:
         prompt_parts.append("Keep the catalog focus on " + _sanitize(product) + ".")
