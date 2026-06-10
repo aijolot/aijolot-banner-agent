@@ -608,3 +608,70 @@ def test_plan_response_exposes_decision_trace() -> None:
     plan = rev_service.get_plan(CAMPAIGN_ID)
     assert plan.decision_trace.get("decision")
     assert plan.decision_trace.get("reasons")
+
+
+# --- Session bugfixes: real durations + plan-iterate node skipping ------------
+
+
+def test_event_durations_are_real_not_placeholders() -> None:
+    import time as _time
+
+    from app.services.banners.run_orchestrator import _EventRecorder
+
+    recorder = _EventRecorder(run_id="run-x")
+    recorder.start("draft_banner_concept")
+    _time.sleep(0.03)
+    recorder.succeed("draft_banner_concept", {"ok": True})
+    succeeded = recorder.events[-1]
+    assert succeeded["duration_ms"] >= 25  # measured, not the old hardcoded 1
+    # Timestamps are real wall-clock and strictly increasing.
+    assert recorder.events[0]["created_at"] < succeeded["created_at"]
+
+
+def test_plan_iterate_reuses_research_instead_of_requerying() -> None:
+    from app.schemas.generation import RegenerateRequest
+    from app.services.banners.revision_service import RevisionService
+
+    service, campaigns, revisions, variants, layouts, _audits = _build_service()
+
+    class _NoRefinements:
+        def create(self, *, data):
+            return {**data, "id": "rr-1"}
+        def get(self, *, refinement_request_id):
+            return None
+        def update(self, *, refinement_request_id, data):
+            return None
+
+    revisions.list_by_campaign_id = lambda *, campaign_id: [  # type: ignore[attr-defined]
+        r for r in revisions.rows.values() if str(r.get("campaign_id")) == campaign_id
+    ]
+    rev_service = RevisionService(
+        campaigns=campaigns, revisions=revisions, variants=variants, layout_variants=layouts,
+        refinement_requests=_NoRefinements(), generation_runs=service, team_id="team-1",
+    )
+
+    rev_service.start_plan_run(CAMPAIGN_ID)
+    plan_rev = max(
+        (r for r in revisions.rows.values() if r.get("status") == "plan"),
+        key=lambda r: int(r.get("revision_number") or 0),
+    )
+    # The plan revision caches the research so iterations can skip the KG query.
+    assert plan_rev["concept"]["research_cache"]["best_practices"] is not None
+
+    # Count actual retrieval-skill invocations during the iterate.
+    orchestrator = service.orchestrator
+    calls: list[str] = []
+    original = orchestrator._run_skill
+
+    async def counting_run_skill(skill_id, *args, **kwargs):
+        calls.append(skill_id)
+        return await original(skill_id, *args, **kwargs)
+
+    orchestrator._run_skill = counting_run_skill  # type: ignore[assignment]
+    run = rev_service.iterate_plan(CAMPAIGN_ID, RegenerateRequest(prompt="haz el headline más corto y urgente"))
+    assert run.status == "succeeded"
+    assert "best-practices-retrieve" not in calls, "iterate must reuse cached research"
+
+    events = service.list_events(run.id)
+    research = next(e for e in events if e.node_key == "research_best_practices" and e.status == "succeeded")
+    assert (research.output_summary or {}).get("reused_from_previous_plan") is True

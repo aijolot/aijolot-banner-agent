@@ -167,8 +167,8 @@ function CampaignsView({ onNew, onResume, onPerf }) {
           <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "14px 0", fontFamily: "Inter", fontSize: 13, color: "#68737D" }}><Spinner size={14} /> Cargando campañas del backend…</div>
         ) : null}
         {apiError ? (
-          <div style={{ margin: "12px 0", padding: "10px 12px", borderRadius: 12, background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)", color: "#92400E", fontFamily: "Inter", fontSize: 12.5, display: "flex", gap: 8, alignItems: "center" }}>
-            <Icon name="wifi-off" size={15} /> No se pudo cargar campañas reales: {apiError}. Mostrando Demo/fallback explícito.
+          <div style={{ margin: "12px 0", padding: "10px 12px", borderRadius: 12, background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", color: "#991B1B", fontFamily: "Inter", fontSize: 12.5, display: "flex", gap: 8, alignItems: "center" }}>
+            <Icon name="wifi-off" size={15} /> No se pudo cargar campañas del backend: {apiError}. Verifica que el backend (:8000) y Supabase estén arriba.
           </div>
         ) : null}
         <div style={{ display: "flex", flexDirection: "column" }}>
@@ -176,13 +176,7 @@ function CampaignsView({ onNew, onResume, onPerf }) {
           {!loading && !backendCards.length && !apiError ? (
             <div style={{ padding: "18px 0 12px", fontFamily: "Inter", color: "#475569" }}>
               <div style={{ fontWeight: 600, color: "#002B57", marginBottom: 4 }}>No hay campañas creadas aún</div>
-              <div style={{ fontSize: 13 }}>Crea una campaña con intake o CampaignApi.create; aparecerá aquí después de refrescar.</div>
-            </div>
-          ) : null}
-          {!loading && !backendCards.length ? (
-            <div style={{ marginTop: 10, paddingTop: 12, borderTop: "1px solid #F1F5F9" }}>
-              <div style={{ fontFamily: "Inter", fontSize: 11.5, fontWeight: 700, color: "#B45309", textTransform: "uppercase", letterSpacing: ".08em", marginBottom: 2 }}>Demo/fallback · prototipo local</div>
-              {RECENT.map((r, i) => <CampaignRow key={r.id} r={r} index={i} onResume={onResume} onPerf={onPerf} />)}
+              <div style={{ fontSize: 13 }}>Crea tu primera campaña con «Nueva campaña»; aparecerá aquí.</div>
             </div>
           ) : null}
         </div>

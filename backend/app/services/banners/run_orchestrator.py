@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -584,21 +585,35 @@ class RunOrchestrator:
             state_variants = [StateVariant(customer_tag="all", intent_delta="default")]
             recorder.succeed(node, {"segments": len(state_variants)})
 
-            node = "research_best_practices"
-            recorder.start(node)
-            best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
-            recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
-
-            node = "draft_banner_concept"
-            recorder.start(node)
-
             # W0.1 — grounded plan-iterate: interpret the feedback into directed
-            # ops over the PREVIOUS plan instead of re-drafting everything.
+            # ops over the PREVIOUS plan instead of re-drafting everything. Loaded
+            # BEFORE research so iterations reuse the cached KG retrieval.
             prev_concept: dict[str, Any] = {}
             if is_refine:
                 latest = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id)
                 if latest and str(latest.get("status") or "") == "plan":
                     prev_concept = dict(latest.get("concept") or {})
+            research_cache = dict(prev_concept.get("research_cache") or {})
+
+            node = "research_best_practices"
+            recorder.start(node)
+            if is_refine and research_cache.get("best_practices") is not None:
+                # Plan-iterate: the KG corpus didn't change between iterations —
+                # reuse the previous run's retrieval instead of re-querying
+                # (this is what made every iteration recompute from scratch).
+                best_practices = list(research_cache.get("best_practices") or [])
+                recorder.succeed(
+                    node,
+                    {"retrieved": len(best_practices), "reused_from_previous_plan": True,
+                     "sources": _kg_sources_payload(best_practices)},
+                )
+            else:
+                best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
+                recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
+
+            node = "draft_banner_concept"
+            recorder.start(node)
+
             rplan = None
             if is_refine:
                 rplan = await self._interpret_refinement(prompt or "", targets, prev_concept or None)
@@ -609,8 +624,10 @@ class RunOrchestrator:
                 or (not prev_concept)
                 or (rplan is not None and rplan.has("redraft_concept", "edit_copy", "adjust_layout"))
             )
+            layout_candidates = list(research_cache.get("layout_candidates") or [])
             if needs_redraft:
-                layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
+                if not (is_refine and layout_candidates):
+                    layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
                 concept = await self._run_concept(
                     campaign_state, brand, state_variants, best_practices, layout_candidates, catalog_context,
                     refine_instruction=(prompt or "") if is_refine else "",
@@ -724,6 +741,11 @@ class RunOrchestrator:
                 **mode,
             }
             concept_dict["decision_trace"] = decision_trace
+            # Research cache: lets the next plan-iterate skip the KG round-trip.
+            concept_dict["research_cache"] = {
+                "best_practices": _json_safe(best_practices),
+                "layout_candidates": _json_safe(layout_candidates),
+            }
             concept_dict["plan"] = self._build_campaign_plan(
                 concept=concept,
                 background=background,
@@ -1973,23 +1995,38 @@ class RunOrchestrator:
 
 
 class _EventRecorder:
-    """Builds ordered generation_events with unique, monotonic timestamps."""
+    """Builds ordered generation_events with REAL wall-clock timestamps/durations.
+
+    ``created_at`` is the actual time the event happened (nudged forward by 1µs
+    when two events land in the same microsecond, so ordering stays strict) and
+    ``duration_ms`` is measured from the node's matching start() — the 0/1 ms
+    placeholders the timeline used to show were synthetic.
+    """
 
     def __init__(self, *, run_id: str) -> None:
         self.run_id = run_id
         self.events: list[dict[str, Any]] = []
-        self._base = datetime.now(timezone.utc)
-        self._seq = 0
+        self._last_ts = datetime.now(timezone.utc)
+        self._node_started: dict[str, float] = {}
         self.last_frontend_step: str | None = None
 
     def _next_ts(self) -> str:
-        ts = (self._base + timedelta(microseconds=self._seq)).isoformat()
-        self._seq += 1
-        return ts
+        now = datetime.now(timezone.utc)
+        if now <= self._last_ts:
+            now = self._last_ts + timedelta(microseconds=1)
+        self._last_ts = now
+        return now.isoformat()
+
+    def _elapsed_ms(self, node_key: str) -> int:
+        started = self._node_started.pop(node_key, None)
+        if started is None:
+            return 0
+        return max(0, int((time.monotonic() - started) * 1000))
 
     def start(self, node_key: str) -> None:
         step = frontend_step_for_node(node_key)
         self.last_frontend_step = step
+        self._node_started[node_key] = time.monotonic()
         self.events.append(
             {
                 "generation_run_id": self.run_id,
@@ -2015,7 +2052,7 @@ class _EventRecorder:
                 "status": "succeeded",
                 "input_summary": {},
                 "output_summary": output,
-                "duration_ms": 1,
+                "duration_ms": self._elapsed_ms(node_key),
                 "cost_usd": round(float(cost_usd), 6),
                 "created_at": self._next_ts(),
             }
@@ -2032,7 +2069,7 @@ class _EventRecorder:
                 "status": "failed",
                 "input_summary": {},
                 "output_summary": output,
-                "duration_ms": 1,
+                "duration_ms": self._elapsed_ms(node_key),
                 "cost_usd": 0.0,
                 "created_at": self._next_ts(),
             }

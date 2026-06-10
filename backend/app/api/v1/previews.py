@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Annotated, Any
+import time
+from typing import Annotated, Any, Callable
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import HTMLResponse
@@ -12,9 +13,28 @@ from app.db.repositories.campaign_revisions import CampaignRevisionRepository
 
 router = APIRouter(prefix="/campaigns", tags=["previews"])
 
+# The frontend fires /preview + /audit-report the instant a run flips to
+# succeeded, racing the background thread's last writes/connection churn. One
+# short retry absorbs that transient instead of surfacing a spurious 503.
+_READ_RETRIES = 2
+_RETRY_DELAY_S = 0.35
+
 
 def _unavailable(exc: Exception) -> HTTPException:
     return HTTPException(status_code=503, detail=f"preview repository unavailable: {exc.__class__.__name__}")
+
+
+def _read_with_retry(reader: Callable[[], Any]) -> Any:
+    last_exc: Exception | None = None
+    for attempt in range(_READ_RETRIES + 1):
+        try:
+            return reader()
+        except Exception as exc:  # noqa: BLE001 — transient client/connection errors
+            last_exc = exc
+            if attempt < _READ_RETRIES:
+                time.sleep(_RETRY_DELAY_S)
+    assert last_exc is not None
+    raise last_exc
 
 
 def _rls_client(factory: SupabaseClientFactory, authorization: str | None) -> Any:
@@ -41,7 +61,9 @@ def get_campaign_preview(
     """Return latest rendered standalone HTML preview for a campaign via RLS-scoped client."""
     try:
         client = _rls_client(factory, authorization)
-        revision = CampaignRevisionRepository(client).get_latest_by_campaign_id(campaign_id=campaign_id)
+        revision = _read_with_retry(
+            lambda: CampaignRevisionRepository(client).get_latest_by_campaign_id(campaign_id=campaign_id)
+        )
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive around external client config
@@ -66,7 +88,9 @@ def get_campaign_audit_report(
     """Return latest deterministic audit report for a campaign via RLS-scoped client."""
     try:
         client = _rls_client(factory, authorization)
-        report = AuditReportRepository(client).get_latest_by_campaign_id(campaign_id=campaign_id)
+        report = _read_with_retry(
+            lambda: AuditReportRepository(client).get_latest_by_campaign_id(campaign_id=campaign_id)
+        )
     except HTTPException:
         raise
     except Exception as exc:  # pragma: no cover - defensive around external client config
