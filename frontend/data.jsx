@@ -276,7 +276,7 @@ const BRAND_SEEDS = [
         ],
       },
     },
-    typography: { display: "Space Grotesk", body: "Inter" },
+    typography: { display: "Space Grotesk", body: "Inter", headline: null, accent: null, approved_fonts: [], discarded_fonts: [] },
     voice: { tone: ["Fresh", "Friendly", "Confident"], prohibited_words: ["cheap", "guys", "crazy deal"], required_phrases: ["free shipping over $50"] },
     logo_url: "https://cdn.avocadostore.example/logo.svg",
     image_style_directives: ["Natural daylight, soft shadows", "Product centered, generous negative space", "Organic textures (wood, linen, stone)"],
@@ -322,7 +322,7 @@ const BRAND_SEEDS = [
         ],
       },
     },
-    typography: { display: "Space Grotesk", body: "Inter" },
+    typography: { display: "Space Grotesk", body: "Inter", headline: null, accent: null, approved_fonts: [], discarded_fonts: [] },
     voice: { tone: ["Bold", "Minimal", "Street"], prohibited_words: ["elegant", "luxurious", "timeless"], required_phrases: [] },
     logo_url: "https://cdn.demoapparel.example/wordmark.svg",
     image_style_directives: ["High-contrast studio lighting", "Model-forward, dynamic poses", "Monochrome backdrops with one acid accent"],
@@ -368,7 +368,7 @@ const BRAND_SEEDS = [
         ],
       },
     },
-    typography: { display: "Space Grotesk", body: "Inter" },
+    typography: { display: "Space Grotesk", body: "Inter", headline: null, accent: null, approved_fonts: [], discarded_fonts: [] },
     voice: { tone: ["Premium", "Confident", "Direct"], prohibited_words: ["cheap", "discount blowout"], required_phrases: ["logo always uppercase"] },
     logo_url: "https://cdn.maison.example/maison-mark.svg",
     image_style_directives: ["At least one bottle visible", "No rainbow gradients", "CTA in AA+ contrast"],
@@ -413,6 +413,50 @@ const BrandAPI = {
       if (e.status) throw e; // backend validation/Gemini errors should be shown as-is
       this.online = false;
       const err = new Error("AI Palette Suggestions unavailable: backend/Gemini service is not reachable.");
+      err.body = err.message;
+      throw err;
+    }
+  },
+  // Shopify brand discovery (synchronous run). NEVER faked offline: discovery is
+  // real store evidence, so a network failure surfaces an explicit error instead
+  // of seeds. Backend errors (404/409/422/503 with detail) are rethrown as-is.
+  async startDiscovery(id, payload) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/discovery-runs`), payload || {});
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e;
+      this.online = false;
+      const err = new Error("El descubrimiento requiere el backend y Shopify conectados. No se puede simular.");
+      err.body = err.message;
+      throw err;
+    }
+  },
+  // Gemini color-role recommendation for a finished discovery run. Real AI only:
+  // never simulated offline (backend already answers 503 when Gemini is down).
+  async discoveryRecommendations(id, runId) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/discovery-runs/${runId}/recommendations`));
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e;
+      this.online = false;
+      const err = new Error("Las recomendaciones IA requieren el backend y Gemini conectados. No se pueden simular.");
+      err.body = err.message;
+      throw err;
+    }
+  },
+  // Font candidates (Gemini-backed when available; labeled non-AI fallback otherwise).
+  // The endpoint answers 200 with ai_available=false when Gemini is down, so the
+  // only offline path here is the backend itself being unreachable — never faked.
+  async fontSuggestions(id, payload) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/font-suggestions`), payload || {});
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e;
+      this.online = false;
+      const err = new Error("Las sugerencias de fuentes requieren el backend conectado. No se pueden simular.");
       err.body = err.message;
       throw err;
     }
