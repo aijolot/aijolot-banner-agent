@@ -788,7 +788,30 @@ function traceFromEvents(events) {
   return null;
 }
 
+// --- Fase 0: proactive agent suggestions -------------------------------------
+const SuggestionsApi = {
+  async list(status) {
+    try {
+      const data = await AijolotApi.get(AijolotApi.v1(`/suggestions${status ? `?status=${status}` : ""}`));
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Sugerencias no disponibles (" + errorText(e) + ").", null); }
+  },
+  async accept(id) {
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/suggestions/${id}/accept`), {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo aceptar la sugerencia (" + errorText(e) + ").", null); }
+  },
+  async dismiss(id) {
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/suggestions/${id}/dismiss`), {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo descartar la sugerencia (" + errorText(e) + ").", null); }
+  },
+};
+
 Object.assign(window, {
+  SuggestionsApi,
   DecisionTraceCard, traceFromEvents,
   Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar,
   AijolotApi, CampaignApi, StoreApi, PlacementApi, CatalogApi, ArtDirectionApi,

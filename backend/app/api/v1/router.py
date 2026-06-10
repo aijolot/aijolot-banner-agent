@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.v1 import approvals, art, art_direction, backgrounds, brands, campaigns, catalog, generation, intake, performance, placements, previews, publishing, schedules, scheduler, stores
+from app.api.v1 import approvals, art, art_direction, backgrounds, brands, campaigns, catalog, generation, intake, performance, placements, previews, publishing, schedules, scheduler, stores, suggestions
 
 router = APIRouter(prefix="/api/v1")
 
@@ -24,5 +24,6 @@ router.include_router(schedules.router)
 router.include_router(publishing.router)
 router.include_router(performance.router)
 router.include_router(scheduler.router)
+router.include_router(suggestions.router)
 
 __all__ = ["router"]

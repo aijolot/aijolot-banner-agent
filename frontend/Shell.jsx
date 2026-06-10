@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, CAMPAIGN, CampaignApi */
+/* global SuggestionsPanel, React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, CAMPAIGN, CampaignApi */
 // Aijolot Banner Agent — app shell (icon sidebar + topbar) and Campaigns landing.
 
 const NAV = [
@@ -150,6 +150,13 @@ function CampaignsView({ onNew, onResume, onPerf }) {
           </GlassCard>
         ))}
       </div>
+
+      {typeof SuggestionsPanel === "function" ? (
+        <SuggestionsPanel
+          onCampaignCreated={(campaignId) => onResume({ id: campaignId, status: "draft" })}
+          onNotice={() => {}}
+        />
+      ) : null}
 
       <GlassCard style={{ padding: 22 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
