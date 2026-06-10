@@ -742,7 +742,54 @@ const PlanApi = {
   },
 };
 
+// --- F4 explicability: "Decisión / Razones / Fuentes" card ------------------
+// Renders a DecisionTrace ({decision, reasons[], sources[{type,id,title,score}]})
+// emitted by the backend in generation events / plan / revision concepts.
+function DecisionTraceCard({ trace, compact }) {
+  if (!trace || (!Array.isArray(trace.reasons) || !trace.reasons.length) && !trace.decision) return null;
+  const sources = Array.isArray(trace.sources) ? trace.sources : [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7, padding: compact ? "8px 10px" : "10px 12px",
+      borderRadius: 10, background: "rgba(8,145,178,0.05)", border: "1px solid rgba(8,145,178,0.18)" }}>
+      {trace.decision ? (
+        <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12, color: "#002B57", display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="lightbulb" size={13} color="#0891B2" /> {trace.decision}
+        </div>
+      ) : null}
+      {(trace.reasons || []).map((r, i) => (
+        <div key={i} style={{ fontFamily: "Inter", fontSize: 11.5, color: "#475569", lineHeight: 1.45, display: "flex", gap: 6 }}>
+          <span style={{ color: "#0891B2" }}>·</span><span>{r}</span>
+        </div>
+      ))}
+      {sources.length ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
+          {sources.map((src, i) => (
+            <span key={i} title={src.score != null ? `score ${Number(src.score).toFixed(2)}` : undefined} style={{
+              display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 9999,
+              background: src.type === "brand" ? "rgba(255,210,63,0.18)" : "rgba(34,211,238,0.12)",
+              border: "1px solid rgba(8,145,178,0.2)", fontFamily: "Inter", fontSize: 10, fontWeight: 600, color: "#0E7490" }}>
+              <Icon name={src.type === "brand" ? "palette" : "database"} size={10} />
+              {src.title || src.type}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Find the freshest decision_trace within a list of generation events.
+function traceFromEvents(events) {
+  const rows = Array.isArray(events) ? events : [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const t = rows[i] && rows[i].output_summary && rows[i].output_summary.decision_trace;
+    if (t) return t;
+  }
+  return null;
+}
+
 Object.assign(window, {
+  DecisionTraceCard, traceFromEvents,
   Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar,
   AijolotApi, CampaignApi, StoreApi, PlacementApi, CatalogApi, ArtDirectionApi,
   GenerationApi, PlanApi, ReviewApi, PerformanceApi, BackgroundApi, ArtApi, API_V1, UUID_RE, isApiCampaign,

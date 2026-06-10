@@ -557,3 +557,54 @@ def test_compose_variant_hero_double_chroma_failure_is_not_silent(monkeypatch) -
     )
     assert url is None
     assert status == "chroma_failed"
+
+
+# --- F4: explicability (decision trace) -------------------------------------
+
+
+def test_events_and_revision_carry_decision_trace() -> None:
+    service, _campaigns, revisions, _variants, _layouts, _audits = _build_service()
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+
+    assert run.status == "succeeded"
+    events = service.list_events(run.id)
+    draft = next(e for e in events if e.node_key == "draft_banner_concept" and e.status == "succeeded")
+    trace = (draft.output_summary or {}).get("decision_trace")
+    assert trace and trace.get("decision")
+    assert trace.get("reasons"), "reasons must explain layout/copy/brand choices"
+    # Deterministic mode is marked honestly (no fabricated LLM provenance).
+    assert any("[DETERMINISTIC]" in r for r in trace["reasons"])
+    research = next(e for e in events if e.node_key == "research_best_practices" and e.status == "succeeded")
+    assert isinstance((research.output_summary or {}).get("sources"), list)
+    # The trace is persisted on the revision concept for the canvas.
+    revision = next(iter(revisions.rows.values()))
+    assert revision["concept"].get("decision_trace", {}).get("decision")
+
+
+def test_plan_response_exposes_decision_trace() -> None:
+    from app.services.banners.revision_service import RevisionService
+
+    service, campaigns, revisions, variants, layouts, _audits = _build_service()
+
+    class _NoRefinements:
+        def create(self, *, data):
+            return {**data, "id": "rr-1"}
+        def get(self, *, refinement_request_id):
+            return None
+        def update(self, *, refinement_request_id, data):
+            return None
+
+    # The shared in-memory repo lacks list_by_campaign_id (only the orchestrator
+    # needs it elsewhere) — add it for the plan lookup.
+    revisions.list_by_campaign_id = lambda *, campaign_id: [  # type: ignore[attr-defined]
+        r for r in revisions.rows.values() if str(r.get("campaign_id")) == campaign_id
+    ]
+    rev_service = RevisionService(
+        campaigns=campaigns, revisions=revisions, variants=variants, layout_variants=layouts,
+        refinement_requests=_NoRefinements(), generation_runs=service, team_id="team-1",
+    )
+    rev_service.start_plan_run(CAMPAIGN_ID)
+    plan = rev_service.get_plan(CAMPAIGN_ID)
+    assert plan.decision_trace.get("decision")
+    assert plan.decision_trace.get("reasons")

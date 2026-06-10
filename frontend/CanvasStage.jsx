@@ -105,6 +105,7 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
   const [draftInkSections, setDraftInkSections] = useStateCV({});
   const [draftTypeScale, setDraftTypeScale] = useStateCV({});
   const [editBusy, setEditBusy] = useStateCV(false);
+  const [showTrace, setShowTrace] = useStateCV(false);
   const dragRef = useRefCV(null);
   const [editingId, setEditingId] = useStateCV(null);
   const [applied, setApplied] = useStateCV({ brighter: false, ctaContrast: false });
@@ -647,7 +648,17 @@ function CanvasStage({ campaign, tweaks, placement, art, onNotice, onPublish }) 
                 <TabBtn key={d.id} active={device === d.id} onClick={() => setDevice(d.id)} title={d.label}><Icon name={d.icon} size={15} /></TabBtn>
               ))}
             </div>
+            {liveConcept && liveConcept.decision_trace ? (
+              <TabBtn active={showTrace} onClick={() => setShowTrace((v) => !v)} title="Por qué el agente tomó estas decisiones">
+                <Icon name="lightbulb" size={14} /> ¿Por qué?
+              </TabBtn>
+            ) : null}
           </GlassCard>
+
+          {/* F4 — decision trace of the selected revision */}
+          {showTrace && liveConcept && liveConcept.decision_trace ? (
+            <DecisionTraceCard trace={liveConcept.decision_trace} />
+          ) : null}
 
           {/* direct-edit properties (no LLM) */}
           {editMode ? (

@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign, DecisionTraceCard, traceFromEvents */
 // Aijolot Banner Agent — Stage 2: backend event-driven generation pipeline.
 const { useState: useStateG, useEffect: useEffectG, useRef: useRefG } = React;
 
@@ -98,19 +98,23 @@ function progressPct(run, steps, phase, status) {
 }
 
 function StepRail({ steps, phase, status }) {
+  // F4 — per-step expandable "¿Por qué?" panel with the agent's decision trace.
+  const [openTrace, setOpenTrace] = useStateG({});
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {steps.map((s, i) => {
         const failed = FAILED_STATUSES.includes(s.status);
         const done = !failed && (s.status === "succeeded" || phase > i);
         const running = !failed && phase === i && status !== "succeeded";
+        const trace = typeof traceFromEvents === "function" ? traceFromEvents(s.events) : null;
         return (
           <div key={s.key || s.id} style={{
-            display: "flex", alignItems: "center", gap: 13, padding: "13px 15px", borderRadius: 13,
+            display: "flex", flexDirection: "column", gap: 0, padding: "13px 15px", borderRadius: 13,
             background: failed ? "rgba(239,68,68,0.08)" : running ? "rgba(34,211,238,0.1)" : done ? "rgba(16,185,129,0.06)" : "rgba(248,250,252,0.7)",
             border: `1px solid ${failed ? "rgba(239,68,68,0.28)" : running ? "rgba(34,211,238,0.35)" : done ? "rgba(16,185,129,0.2)" : "#EEF2F6"}`,
             transition: "background .3s, border .3s", opacity: phase < i && !failed ? 0.55 : 1,
           }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
             <div style={{ width: 36, height: 36, borderRadius: 10, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
               background: failed ? "rgba(239,68,68,0.12)" : done ? "rgba(16,185,129,0.14)" : running ? "rgba(34,211,238,0.16)" : "#fff",
               color: failed ? "#EF4444" : done ? "#10B981" : running ? "#0891B2" : "#CBD5E1", border: running ? "none" : "1px solid #EEF2F6" }}>
@@ -125,8 +129,20 @@ function StepRail({ steps, phase, status }) {
                 Backend: {s.backendLabel}{s.events && s.events.length ? ` · ${s.events.length} eventos` : ""}
               </div>
             </div>
+            {trace ? (
+              <button onClick={() => setOpenTrace((m) => ({ ...m, [s.key]: !m[s.key] }))} style={{
+                display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 9999,
+                border: "1px solid rgba(8,145,178,0.3)", background: openTrace[s.key] ? "rgba(8,145,178,0.12)" : "#fff",
+                color: "#0891B2", fontFamily: "Inter", fontSize: 10.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+                <Icon name="lightbulb" size={11} /> ¿Por qué?
+              </button>
+            ) : null}
             {failed ? <Badge tone="red" icon="circle-alert">Error</Badge> : done && <Badge tone="green" icon="check">OK</Badge>}
             <span style={{ fontFamily: "Space Grotesk", fontSize: 10.5, color: "#CBD5E1" }}>{i + 1}/5</span>
+            </div>
+            {trace && openTrace[s.key] ? (
+              <div style={{ marginTop: 9 }}><DecisionTraceCard trace={trace} compact /></div>
+            ) : null}
           </div>
         );
       })}

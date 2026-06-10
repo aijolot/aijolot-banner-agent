@@ -210,6 +210,7 @@ class CampaignPlanResponse(BaseModel):
     layout_note: str = ""
     hierarchy_notes: str = ""
     wireframe: dict[str, Any] = Field(default_factory=dict)
+    decision_trace: dict[str, Any] = Field(default_factory=dict)
     estimated_image_cost_note: str = ""
 
 

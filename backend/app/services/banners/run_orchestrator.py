@@ -29,6 +29,7 @@ from typing import Any, Protocol
 
 from app.agents.state import BannerAssets, BannerSessionState, Campaign as StateCampaign, Concept as StateConcept, Variant as StateVariant
 from app.core.settings import Settings
+from app.schemas.decision_trace import build_concept_trace
 from app.services.gemini.cost_guard import CostGuard, get_default_cost_guard
 from app.workflows.banner_creation import (
     DETERMINISTIC_LAYOUT_VARIANT_KEYS,
@@ -180,7 +181,7 @@ class RunOrchestrator:
             best_practices = await self._run_skill(
                 "best-practices-retrieve", campaign_state, brand
             )
-            recorder.succeed(node, {"retrieved": len(best_practices)})
+            recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
 
             # 5 — concept (grounded in KG liquid_pattern layouts when available)
             node = "draft_banner_concept"
@@ -199,6 +200,7 @@ class RunOrchestrator:
             background, _bg_source = await self._refine_background(concept, brand)
             art_direction = await self._propose_art_direction(concept, brand)
             fonts = art_direction.get("fonts") or {}
+            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand).model_dump()
             recorder.succeed(
                 node,
                 {
@@ -209,6 +211,7 @@ class RunOrchestrator:
                     "layout_candidates": len(layout_candidates),
                     "targets": sorted(target_set) or None,
                     "background": (background or {}).get("name") if background else None,
+                    "decision_trace": decision_trace,
                 },
             )
 
@@ -246,6 +249,7 @@ class RunOrchestrator:
                 is_refine=is_refine,
                 target_set=target_set,
                 metadata_extra=({"hero_compose": compose_report} if compose_report else None),
+                decision_trace=decision_trace,
                 cta_url=self._destination_url(campaign_row),
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -280,6 +284,7 @@ class RunOrchestrator:
         is_refine: bool = False,
         target_set: set[str] | None = None,
         metadata_extra: dict[str, Any] | None = None,
+        decision_trace: dict[str, Any] | None = None,
         cta_url: str | None = None,
     ) -> OrchestratorOutcome:
         """Nodes 6–9 (image → optimize → render → audit) + promote.
@@ -338,6 +343,8 @@ class RunOrchestrator:
             concept_dict = _concept_dict(concept)
             if background:
                 concept_dict["background"] = background
+            if decision_trace:
+                concept_dict["decision_trace"] = decision_trace
             if image_url:
                 concept_dict["generated_art"] = [{"public_url": image_url, "storage_path": preview_path, "shot_type": "hero"}]
             if art_direction:
@@ -481,7 +488,7 @@ class RunOrchestrator:
             node = "research_best_practices"
             recorder.start(node)
             best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
-            recorder.succeed(node, {"retrieved": len(best_practices)})
+            recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
 
             node = "draft_banner_concept"
             recorder.start(node)
@@ -564,6 +571,7 @@ class RunOrchestrator:
                 else:
                     ink_override = value
 
+            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand).model_dump()
             recorder.succeed(
                 node,
                 {
@@ -576,6 +584,7 @@ class RunOrchestrator:
                     "reused_previous_concept": (not needs_redraft) or None,
                     "interpreted_ops": (rplan.op_names() if rplan else None),
                     "interpret_source": (rplan.source if rplan else None),
+                    "decision_trace": decision_trace,
                     "phase": "plan",
                 },
             )
@@ -602,6 +611,7 @@ class RunOrchestrator:
                 "ink": ink,
                 **({"ink_sections": ink_sections} if ink_sections else {}),
             }
+            concept_dict["decision_trace"] = decision_trace
             concept_dict["plan"] = self._build_campaign_plan(
                 concept=concept,
                 background=background,
@@ -611,6 +621,7 @@ class RunOrchestrator:
                 revision_id=revision_id,
                 run_id=run_id,
             )
+            concept_dict["plan"]["decision_trace"] = decision_trace
             self.revisions.update(revision_id=revision_id, data=_json_safe({"concept": concept_dict}))
 
             return OrchestratorOutcome(
@@ -676,7 +687,7 @@ class RunOrchestrator:
             node = "research_best_practices"
             recorder.start(node)
             best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
-            recorder.succeed(node, {"retrieved": len(best_practices)})
+            recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
 
             # Reuse the APPROVED creative verbatim (no re-draft): the plan is the contract.
             node = "draft_banner_concept"
@@ -729,6 +740,7 @@ class RunOrchestrator:
                 is_refine=False,
                 target_set=set(),
                 metadata_extra={"phase": "build", **({"hero_compose": compose_report} if compose_report else {})},
+                decision_trace=dict((plan_revision.get("concept") or {}).get("decision_trace") or {}) or None,
                 cta_url=self._destination_url(campaign_row),
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -2006,6 +2018,24 @@ _CHROMA_RETRY_PREFIX = (
     "NOTHING else: no scene, no gradient, no floor, no environment, no shadows cast on surfaces. "
     "Render ONLY the cut-out subject and floating props over flat #00FF00. "
 )
+
+
+def _kg_sources_payload(docs: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Compact KG citations for a generation event (F4 explicability)."""
+    out: list[dict[str, Any]] = []
+    for doc in (docs or [])[:5]:
+        title = str(doc.get("title") or "").strip()
+        if not title:
+            continue
+        out.append(
+            {
+                "id": str(doc.get("id")) if doc.get("id") else None,
+                "kind": str(doc.get("kind") or "kg_doc"),
+                "title": title,
+                "score": doc.get("score") if isinstance(doc.get("score"), (int, float)) else None,
+            }
+        )
+    return out
 
 
 def _brief_product_items(campaign_row: dict[str, Any] | None) -> list[dict[str, Any]]:

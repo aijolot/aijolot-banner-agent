@@ -321,6 +321,7 @@ class RevisionService:
             layout_note=str(plan.get("layout_note") or ""),
             hierarchy_notes=str(plan.get("hierarchy_notes") or ""),
             wireframe=dict(plan.get("wireframe") or {}),
+            decision_trace=dict(plan.get("decision_trace") or {}),
             estimated_image_cost_note=str(plan.get("estimated_image_cost_note") or ""),
         )
 

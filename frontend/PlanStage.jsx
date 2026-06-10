@@ -1,4 +1,4 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, SEGMENTS, PlanApi, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, SEGMENTS, PlanApi, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign, DecisionTraceCard */
 // Aijolot Banner Agent — Stage 3: iterative CAMPAIGN PLAN gate.
 // Shows a cheap, readable plan (typography, color classes, product/theme intent)
 // plus a DETERMINISTIC wireframe (no generated image) so the user can iterate the
@@ -216,6 +216,11 @@ function PlanStage({ campaign, placement, onNotice, onApprove, onBack }) {
 
           {/* Readable summary */}
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {plan.decision_trace && (plan.decision_trace.reasons || []).length ? (
+              <PlanCard icon="lightbulb" title="¿Por qué este plan?">
+                <DecisionTraceCard trace={plan.decision_trace} compact />
+              </PlanCard>
+            ) : null}
             <PlanCard icon="type" title="Tipografía">
               <div><b>Display:</b> {typo.display || "—"}</div>
               <div><b>Texto:</b> {typo.body || "—"}</div>
