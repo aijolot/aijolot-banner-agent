@@ -50,8 +50,14 @@ def build_concept_trace(
 
     reasons: list[str] = []
     if selected:
-        when = str(selected.get("applicable_when") or "").strip()
-        reasons.append(t(lang, "trace.layout_kg", title=selected.get("title"),
+        # applicable_when is raw English KG prose — embedding it in a Spanish
+        # sentence reads as language mixing, so it only ships when lang == "en".
+        # The pattern title stays verbatim in both languages (it's a citation).
+        when = str(selected.get("applicable_when") or "").strip() if lang == "en" else ""
+        # KG titles embed their own English description after " — "; cite only
+        # the short pattern name so the localized sentence stays readable.
+        short_title = str(selected.get("title") or "").split(" — ")[0].strip()
+        reasons.append(t(lang, "trace.layout_kg", title=short_title,
                          when=(t(lang, "trace.layout_kg_when", when=when) if when else "")))
     else:
         reasons.append(t(lang, "trace.layout_deterministic"))
@@ -88,5 +94,8 @@ def build_concept_trace(
     if brand_name:
         sources.append(DecisionSource(type="brand", id=str(getattr(brand, "id", "") or "") or None, title=brand_name))
 
-    decision = t(lang, "trace.decision.layout", layout=layout) if layout else t(lang, "trace.decision.concept")
+    # The layout string may be "KG Title — applicable_when…" (English KG text);
+    # for the user-facing decision line keep only the pattern title (a citation).
+    layout_title = layout.split(" — ")[0].strip()
+    decision = t(lang, "trace.decision.layout", layout=layout_title) if layout_title else t(lang, "trace.decision.concept")
     return DecisionTrace(decision=decision, reasons=reasons, sources=sources)

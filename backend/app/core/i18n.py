@@ -85,6 +85,19 @@ _MESSAGES: dict[str, dict[str, str]] = {
         "es": "Paleta, tipografía y tono restringidos al brand context «{brand}».",
         "en": "Palette, typography and tone constrained to the “{brand}” brand context.",
     },
+    # --- campaign plan surface -------------------------------------------------
+    "plan.cost_note": {
+        "es": "La imagen del producto y el render final se generan al aprobar el plan.",
+        "en": "The product image and final render are generated when you approve the plan.",
+    },
+    "plan.layout_kg": {
+        "es": "Basado en el patrón «{title}» del knowledge graph.",
+        "en": "Based on the “{title}” pattern from the knowledge graph.",
+    },
+    "plan.theme_fallback": {
+        "es": "Concepto visual alineado al objetivo: {goal}.",
+        "en": "Visual concept aligned to the goal: {goal}.",
+    },
     # --- creative mode (C0) ---------------------------------------------------
     "mode.video": {
         "es": "El brief pide motion/lanzamiento en un hero principal y la generación de video está habilitada.",

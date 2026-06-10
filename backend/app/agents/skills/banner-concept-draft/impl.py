@@ -21,6 +21,7 @@ class _ConceptCopy(BaseModel):
     headline: str = Field(default="", description="Punchy benefit-led headline, <=8 words")
     subheadline: str = Field(default="", description="One supporting line, <=16 words")
     cta: str = Field(default="", description="Action-first CTA, <=5 words")
+    theme_note: str = Field(default="", description="One-line visual scene/theme summary for the user, <=18 words")
 
 
 def _get(obj: Any, key: str, default: Any = "") -> Any:
@@ -299,7 +300,8 @@ def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_co
         f"Brand required phrases: {required or 'none'}\nProhibited words (never use): {prohibited or 'none'}\n\n"
         f"Write in {lang}. Be specific to the products and the offer — not generic. "
         "One headline (<=8 words, benefit-led, may reference the product/season), one short eyebrow (<=4 words), "
-        "one supporting subheadline (<=16 words), one action-first CTA (<=5 words). "
+        "one supporting subheadline (<=16 words), one action-first CTA (<=5 words), "
+        f"and one theme_note: a one-line summary (<=18 words, in {lang}) of the visual scene/theme the banner will convey. "
         "No clickbait, no prohibited words, no emojis. Return JSON matching the schema."
         + (
             f"\n\nUSER REFINEMENT FEEDBACK (MUST be addressed in the rewrite, in the user's language): \"{refine_instruction}\". "
@@ -330,7 +332,7 @@ async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_co
         return None
     prohibited = brand_context.voice.prohibited_words or []
     out: dict[str, str] = {}
-    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 40)):
+    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 40), ("theme_note", 160)):
         value = _remove_prohibited(str(_get(result, key, "")), prohibited)
         if value:
             out[key] = _truncate(value, limit)
@@ -415,7 +417,7 @@ async def run(
         refine_instruction=refine_instruction,
     )
     if gem:
-        for key in ("eyebrow", "headline", "subheadline", "cta"):
+        for key in ("eyebrow", "headline", "subheadline", "cta", "theme_note"):
             if gem.get(key):
                 concept.copy[key] = gem[key]
         concept.copy["copy_source"] = "gemini"

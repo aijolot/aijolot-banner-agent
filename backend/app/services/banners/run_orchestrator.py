@@ -31,7 +31,7 @@ from typing import Any, Protocol
 from app.agents.state import BannerAssets, BannerSessionState, Campaign as StateCampaign, Concept as StateConcept, Variant as StateVariant
 from app.core.settings import Settings
 from app.schemas.decision_trace import build_concept_trace
-from app.core.i18n import campaign_lang, t as i18n_t
+from app.core.i18n import campaign_lang, lang_name as i18n_lang_name, t as i18n_t
 from app.services.gemini.cost_guard import CostGuard, get_default_cost_guard
 from app.workflows.banner_creation import (
     DETERMINISTIC_LAYOUT_VARIANT_KEYS,
@@ -203,7 +203,7 @@ class RunOrchestrator:
             # Always generate + attach an AI background so the assembled banner
             # (and the canvas) shows a real themed background, not a flat default.
             background, _bg_source = await self._refine_background(concept, brand)
-            art_direction = await self._propose_art_direction(concept, brand)
+            art_direction = await self._propose_art_direction(concept, brand, lang=lang)
             art_direction = {
                 **art_direction,
                 **(await self._resolve_creative_mode(
@@ -673,7 +673,7 @@ class RunOrchestrator:
             # Art direction: keep fonts/layout stable across patch-only iterations.
             prev_art = dict(prev_concept.get("art_direction") or {})
             if needs_redraft or not prev_art:
-                art_direction = await self._propose_art_direction(concept, brand)
+                art_direction = await self._propose_art_direction(concept, brand, lang=lang)
             else:
                 art_direction = prev_art
             fonts = art_direction.get("fonts") or {}
@@ -776,6 +776,7 @@ class RunOrchestrator:
                 campaign_state=campaign_state,
                 revision_id=revision_id,
                 run_id=run_id,
+                lang=lang,
             )
             concept_dict["plan"]["decision_trace"] = decision_trace
             concept_dict["plan"]["placement_plan"] = placement_plan
@@ -1580,11 +1581,14 @@ class RunOrchestrator:
         campaign_state: StateCampaign,
         revision_id: str,
         run_id: str,
+        lang: str = "es",
     ) -> dict[str, Any]:
         """Readable, deterministic plan block stored on the revision concept.
 
         Surfaces WHAT will be generated (typography, color classes, product/theme
         intent) + a wireframe spec, so the user can iterate before the costly build.
+        Every user-facing string here is in the campaign language — image prompts
+        stay English internally and are never shown verbatim.
         """
         copy = getattr(concept, "copy", None) or {}
         fonts = art_direction.get("fonts") or {}
@@ -1611,7 +1615,22 @@ class RunOrchestrator:
                     "has_hero_planned": False,
                 }
             ]
-        theme = _short(getattr(concept, "image_prompt", "") or getattr(concept, "hierarchy_notes", ""), 280)
+        # Theme shown to the user: the model writes `theme_note` in the campaign
+        # language; the raw image_prompt is an internal English artifact and only
+        # acceptable as a fallback when the campaign itself is in English.
+        theme = _short(str(copy.get("theme_note") or ""), 280)
+        if not theme:
+            if lang == "en":
+                theme = _short(getattr(concept, "image_prompt", "") or getattr(concept, "hierarchy_notes", ""), 280)
+            else:
+                theme = i18n_t(lang, "plan.theme_fallback", goal=_short(campaign_state.goal, 160))
+        source_refs = list(getattr(concept, "source_refs", None) or [])
+        selected_ref = next((r for r in source_refs if r.get("selected")), None)
+        layout_note = (
+            i18n_t(lang, "plan.layout_kg", title=str(selected_ref.get("title") or "").split(" — ")[0].strip())
+            if selected_ref
+            else _short(getattr(concept, "layout", ""), 160)
+        )
         return {
             "revision_id": revision_id,
             "generation_run_id": run_id,
@@ -1635,10 +1654,10 @@ class RunOrchestrator:
                 "subheadline": copy.get("subheadline"),
                 "cta": copy.get("cta"),
             },
-            "layout_note": _short(getattr(concept, "layout", ""), 160),
+            "layout_note": layout_note,
             "hierarchy_notes": _short(getattr(concept, "hierarchy_notes", ""), 400),
             "wireframe": self._plan_wireframe_spec(concept, background, art_direction),
-            "estimated_image_cost_note": "La imagen del producto y el render final se generan al aprobar el plan.",
+            "estimated_image_cost_note": i18n_t(lang, "plan.cost_note"),
         }
 
     async def _style_headline(self, headline: str, brand: Any, *, ink: str | None = None) -> list[dict[str, Any]]:
@@ -1672,7 +1691,7 @@ class RunOrchestrator:
             return []
         return coerce_runs(getattr(result, "runs", []) or [], text, ink=ink)
 
-    async def _propose_art_direction(self, concept: Any, brand: Any) -> dict[str, Any]:
+    async def _propose_art_direction(self, concept: Any, brand: Any, *, lang: str = "es") -> dict[str, Any]:
         """Propose typography + banner composition (positions in %, never px).
 
         The agent picks a display/body font pairing (NOT locked to brand fonts) and
@@ -1713,7 +1732,8 @@ class RunOrchestrator:
             "You MAY be bolder: grow the hero (hero_w up to ~80) and set hero_behind=true so the product sits "
             "BEHIND the copy as a large backdrop element (then keep the copy legible over it) — do this only when it "
             "strengthens the concept, otherwise keep them side by side without bad collision. "
-            "Return JSON for all fields with a one-line rationale."
+            "Return JSON for all fields with a one-line rationale "
+            f"(write the rationale in {i18n_lang_name(lang)} — it is shown to the user)."
         )
         try:
             from app.agents.tools import gemini_text
