@@ -131,7 +131,7 @@ function App() {
   } else if (stage === "campaigns") {
     body = <>
       {apiNotice ? <div style={{ marginBottom: 12 }}><Badge tone={apiNotice.tone || "slate"} icon={apiNotice.tone === "green" ? "wifi" : "wifi-off"}>{apiNotice.text}</Badge></div> : null}
-      <CampaignsView onNew={handleNewCampaign} onResume={(c) => hydrateCampaignSelection(c, "canvas")} onPerf={(c) => hydrateCampaignSelection(c, "performance")} />
+      <CampaignsView onNew={handleNewCampaign} onResume={(c) => hydrateCampaignSelection(c, "canvas")} onPerf={(c) => hydrateCampaignSelection(c, "performance")} onStartBrief={(c) => hydrateCampaignSelection(c, "brief")} />
     </>;
   } else {
     let view;

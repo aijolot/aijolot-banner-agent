@@ -45,6 +45,13 @@ def update_settings(request: Request, payload: dict[str, Any]) -> dict[str, Any]
     return _service(request).update_settings(dict(payload or {}))
 
 
+@router.post("/scan")
+def scan_now(request: Request) -> dict[str, Any]:
+    """Run the calendar scan for this team NOW (UI trigger — same logic the
+    daily calendar_scan job executes via pg_cron + poller)."""
+    return _service(request).scan_upcoming()
+
+
 @router.post("/infer")
 def infer_niche_events(request: Request) -> dict[str, Any]:
     service = _service(request)

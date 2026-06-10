@@ -832,7 +832,32 @@ const SuggestionsApi = {
   },
 };
 
+// --- F1: commercial calendar -------------------------------------------------
+const CalendarApi = {
+  async events() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.get(AijolotApi.v1("/calendar/events")) }; }
+    catch (e) { return fallbackResult("Calendario no disponible (" + errorText(e) + ").", null); }
+  },
+  async settings() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.get(AijolotApi.v1("/calendar/settings")) }; }
+    catch (e) { return fallbackResult("Ajustes de calendario no disponibles (" + errorText(e) + ").", null); }
+  },
+  async saveSettings(payload) {
+    try { return { ok: true, fallback: false, data: await AijolotApi.put(AijolotApi.v1("/calendar/settings"), payload) }; }
+    catch (e) { return fallbackResult("No se pudo guardar la anticipación (" + errorText(e) + ").", null); }
+  },
+  async scan() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.post(AijolotApi.v1("/calendar/scan"), {}) }; }
+    catch (e) { return fallbackResult("No se pudo ejecutar el scan del calendario (" + errorText(e) + ").", null); }
+  },
+  async infer() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.post(AijolotApi.v1("/calendar/infer"), {}) }; }
+    catch (e) { return fallbackResult("No se pudieron inferir fechas de nicho (" + errorText(e) + ").", null); }
+  },
+};
+
 Object.assign(window, {
+  CalendarApi,
   SuggestionsApi,
   DecisionTraceCard, traceFromEvents,
   Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar,

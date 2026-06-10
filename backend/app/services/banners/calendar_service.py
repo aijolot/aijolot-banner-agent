@@ -263,6 +263,7 @@ class CalendarService:
         today = today or datetime.now(timezone.utc).date()
         horizon = today + timedelta(days=lead)
         created: list[str] = []
+        suggestion_rows: list[dict[str, Any]] = []
         for event in self.list_events():
             occurrence = _next_occurrence(event, today)
             if occurrence is None:
@@ -274,7 +275,7 @@ class CalendarService:
             urgency = "high" if days_left <= 7 else "medium"
             name = str(event.get("name") or event.get("slug"))
             note = str(event.get("relevance_note") or "")
-            self.suggestions.upsert_by_dedupe_key(
+            row = self.suggestions.upsert_by_dedupe_key(
                 kind="calendar_event",
                 dedupe_key=f"calendar:{event.get('slug')}:{start.year}",
                 title=f"Prepara tu campaña de {name}",
@@ -294,7 +295,13 @@ class CalendarService:
                 expires_at=datetime(end.year, end.month, end.day, tzinfo=timezone.utc).isoformat(),
             )
             created.append(str(event.get("slug")))
-        return {"enabled": True, "lead_time_days": lead, "suggestions": created}
+            suggestion_rows.append(
+                {
+                    "id": str(row.get("id")), "slug": str(event.get("slug")), "title": str(row.get("title") or ""),
+                    "status": str(row.get("status") or "pending"), "starts_on": start.isoformat(),
+                }
+            )
+        return {"enabled": True, "lead_time_days": lead, "suggestions": created, "suggestion_rows": suggestion_rows}
 
 
 # --- agent-job handler (kind='calendar_scan') ----------------------------------

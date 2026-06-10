@@ -1,4 +1,4 @@
-/* global SuggestionsPanel, React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, CampaignApi */
+/* global CalendarPanel, SuggestionsPanel, React, Icon, GlassCard, Button, Badge, Avatar, Kicker, Spinner, CampaignApi */
 // Aijolot Banner Agent — app shell (icon sidebar + topbar) and Campaigns landing.
 
 const NAV = [
@@ -97,7 +97,7 @@ function CampaignRow({ r, index, onResume, onPerf }) {
   );
 }
 
-function CampaignsView({ onNew, onResume, onPerf }) {
+function CampaignsView({ onNew, onResume, onPerf, onStartBrief }) {
   const [backendCards, setBackendCards] = React.useState([]);
   const [loading, setLoading] = React.useState(true);
   const [apiError, setApiError] = React.useState("");
@@ -144,9 +144,19 @@ function CampaignsView({ onNew, onResume, onPerf }) {
         ))}
       </div>
 
+      {typeof CalendarPanel === "function" ? (
+        <CalendarPanel
+          onStartBrief={(c) => (onStartBrief ? onStartBrief(c) : onResume(c))}
+          onNotice={() => {}}
+        />
+      ) : null}
+
       {typeof SuggestionsPanel === "function" ? (
         <SuggestionsPanel
-          onCampaignCreated={(campaignId) => onResume({ id: campaignId, status: "draft" })}
+          onCampaignCreated={(campaignId) => {
+            const c = { id: campaignId, status: "draft", structured_brief: {} };
+            return onStartBrief ? onStartBrief(c) : onResume(c);
+          }}
           onNotice={() => {}}
         />
       ) : null}
