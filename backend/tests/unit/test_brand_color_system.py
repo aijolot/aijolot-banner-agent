@@ -116,6 +116,35 @@ def test_invalid_role_keys_fail_validation() -> None:
         )
 
 
+def test_extended_typography_payload_keeps_color_system_derivation() -> None:
+    payload = _seed_payload()
+    payload["typography"] = {
+        "display": "Space Grotesk",
+        "body": "Inter",
+        "headline": "Archivo Black",
+        "approved_fonts": [
+            {
+                "family": "Sora",
+                "css_stack": '"Sora", sans-serif',
+                "category": "sans",
+                "source": "gemini_suggested",
+                "status": "approved",
+                "recommended_roles": ["headline"],
+            }
+        ],
+    }
+
+    brand = BrandContext(**payload)
+
+    assert brand.color_system is not None
+    assert brand.color_system.primary.hex == "#0E0E10"
+    assert brand.color_system.tertiary.hex == "#3D5AFE"
+    assert brand.typography.display == "Space Grotesk"
+    assert brand.typography.headline == "Archivo Black"
+    assert brand.typography.approved_fonts[0].family == "Sora"
+    assert brand.typography.approved_fonts[0].status == "approved"
+
+
 def test_explicit_color_system_preserves_role_metadata_and_variants() -> None:
     payload = _seed_payload()
     payload["color_system"] = {

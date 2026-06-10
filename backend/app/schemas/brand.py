@@ -8,6 +8,7 @@ ADK ``load_brand_context`` node downstream.
 from __future__ import annotations
 
 import re
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -111,9 +112,89 @@ def color_system_from_palette(palette: list[PaletteColor]) -> BrandColorSystem:
     )
 
 
+# Font values end up inside CSS (font-family declarations) and Liquid settings, so
+# they are whitelist-validated instead of trusting arbitrary strings. The whitelists
+# below provably reject the dangerous inputs (< > { } ; ( ) & \ / ` @ control chars,
+# and therefore also url(, expression(, @import) because none of those characters are
+# allowed at all.
+_FONT_FAMILY_EXTRA_CHARS = " -"
+_FONT_STACK_EXTRA_CHARS = " -,'\""
+
+FontRoleKey = Literal["display", "headline", "body", "accent", "caption"]
+FontCategory = Literal["sans", "serif", "display", "mono", "handwritten", "unknown"]
+FontSource = Literal["shopify_theme", "storefront_css", "gemini_suggested", "system_seed", "manual"]
+FontStatus = Literal["candidate", "approved", "discarded"]
+
+
+def _normalize_font_value(v: str, *, extra_chars: str, kind: str) -> str:
+    # str.split() collapses/strips all unicode whitespace (incl. tabs/newlines).
+    v = " ".join(v.split())
+    bad = sorted({ch for ch in v if not (ch.isalnum() or ch in extra_chars)})
+    if bad:
+        raise ValueError(f"{kind} contains unsupported characters: {bad!r}")
+    return v
+
+
+def _normalize_font_family(v: str) -> str:
+    """Normalize a single font family name: letters/digits/spaces/hyphens only."""
+
+    v = _normalize_font_value(v, extra_chars=_FONT_FAMILY_EXTRA_CHARS, kind="font family")
+    if not v:
+        raise ValueError("font family must not be empty")
+    return v
+
+
+def _normalize_font_stack(v: str) -> str:
+    """Normalize a CSS font-family stack: family characters plus commas/quotes."""
+
+    return _normalize_font_value(v, extra_chars=_FONT_STACK_EXTRA_CHARS, kind="font stack")
+
+
+class FontCandidate(BaseModel):
+    """A discovered/suggested font family moving through candidate -> approved/discarded."""
+
+    family: str
+    css_stack: str
+    category: FontCategory = "unknown"
+    source: FontSource
+    status: FontStatus = "candidate"
+    recommended_roles: list[FontRoleKey] = Field(default_factory=list)
+    rationale: str = ""
+    evidence_refs: list[str] = Field(default_factory=list)
+
+    @field_validator("family")
+    @classmethod
+    def _safe_family(cls, v: str) -> str:
+        return _normalize_font_family(v)
+
+    @field_validator("css_stack")
+    @classmethod
+    def _safe_css_stack(cls, v: str) -> str:
+        v = _normalize_font_stack(v)
+        if not v:
+            raise ValueError("css_stack must not be empty")
+        return v
+
+
 class Typography(BaseModel):
+    # Legacy fields: every existing payload only carries these two.
     display: str = "Space Grotesk"
     body: str = "Inter"
+    # Optional role assignments and the approved/discarded font system (discovery flow).
+    headline: str | None = None
+    accent: str | None = None
+    approved_fonts: list[FontCandidate] = Field(default_factory=list)
+    discarded_fonts: list[FontCandidate] = Field(default_factory=list)
+
+    @field_validator("display", "body", "headline", "accent")
+    @classmethod
+    def _safe_font_value(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        # Stack rule (commas/quotes allowed) keeps any historically stored value such
+        # as "Helvetica Neue, sans-serif" valid while still blocking CSS injection.
+        # Empty strings stay allowed for backward compatibility.
+        return _normalize_font_stack(v)
 
 
 class Voice(BaseModel):
