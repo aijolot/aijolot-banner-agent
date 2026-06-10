@@ -217,6 +217,131 @@ type PaletteSuggestionResponse = {
 
 Frontend rules: show suggestions as draft choices; accepting one appends it to `draft.color_system[role].variants` with `source: "ai_suggested"`; persist only through the normal `saveBrand()` flow. If the backend/network/Gemini is unavailable, surface the error and do not create local deterministic "AI" suggestions. Expected errors include `401` without auth, `404` for missing brand, `422` for invalid input, and `503` when Gemini is unavailable or returns no usable suggestions.
 
+### `BrandAPI.startDiscovery(brandId, payload?)`
+
+```ts
+POST /api/v1/brands/{brand_id}/discovery-runs
+```
+
+Params:
+
+- `brand_id: string` path param.
+- Body optional: `{ store_id?: string | null }` (store UUID validated against the request team's stores).
+
+Functionality: runs Shopify brand discovery synchronously and returns the completed run for the `Brand Discovery` card (`Descubrir desde Shopify`). The snapshot is raw evidence with provenance; nothing is applied to the brand until the user accepts items into the draft and saves.
+
+Response:
+
+```ts
+type BrandDiscoveryRunPayload = {
+  id: string; // run UUID, needed for discoveryRecommendations()
+  brand_id: string;
+  store_id?: string | null;
+  status: "pending" | "running" | "succeeded" | "failed" | "partial";
+  snapshot?: {
+    id: string;
+    shop_domain: string;
+    status: string;
+    discovered_at: string;
+    source_summary: string;
+    assets: Array<{ kind: string; url?: string | null; theme_asset_key?: string | null; source: string; metadata: Record<string, unknown> }>;
+    colors: Array<{ hex: string; name: string; source: string; confidence: number; usage_hint: string }>;
+    fonts: Array<{ family: string; source: string; css_stack: string; confidence: number; sample_usage: string }>;
+    theme_metadata: Record<string, unknown>;
+    errors: string[];
+  } | null;
+  recommendation: Record<string, unknown>; // {} until discoveryRecommendations()
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+```
+
+Frontend rules: discovery is real store evidence and must NEVER be faked offline. When the backend is unreachable, surface the explicit error (`El descubrimiento requiere el backend y Shopify conectados. No se puede simular.`) instead of seeds. Show `partial` runs with their `snapshot.errors`. Expected errors: `401` without auth, `404` missing brand/store, `422` invalid ids, `503` when Shopify credentials or Supabase persistence are missing.
+
+### `BrandAPI.discoveryRecommendations(brandId, runId)`
+
+```ts
+POST /api/v1/brands/{brand_id}/discovery-runs/{run_id}/recommendations
+```
+
+Params:
+
+- `brand_id: string` path param.
+- `run_id: string` path param (UUID from `startDiscovery()`); no request body.
+
+Functionality: asks Gemini to turn the run's evidence into a draft of recommended color roles (`Recomendar roles de color (IA)`). Returns the updated run payload whose `recommendation` carries the draft:
+
+```ts
+type BrandRecommendationDraft = {
+  colors: Array<{
+    role_key: "primary" | "secondary" | "tertiary";
+    base_hex: string;
+    label: string;
+    usage_hint: string;
+    agent_hint: string;
+    variants: Array<{ name: string; hex: string; usage_hint?: string; source?: string }>; // source: "gemini"
+    rationale: string; // "kept from existing approved brand context" marks non-AI backfill
+    evidence_refs: string[];
+  }>;
+  fonts: unknown[]; // currently always []
+  summary: string;
+  source_notes: string[];
+};
+```
+
+Frontend rules: recommendations are draft-only. `Aplicar a borrador` replaces the role in the local draft (variants relabeled `source: "ai_suggested"`); nothing persists until `Guardar cambios` -> `saveBrand()`. Real AI only: never simulate offline. Expected errors: `401` without auth, `404` missing brand/run, `409` run has no snapshot, `503` Gemini unavailable.
+
+### `BrandAPI.fontSuggestions(brandId, payload?)`
+
+```ts
+POST /api/v1/brands/{brand_id}/font-suggestions
+```
+
+Params:
+
+- `brand_id: string` path param.
+- Body optional:
+
+```ts
+type FontSuggestionRouteRequest = {
+  count?: number; // default 8, min 3, max 16
+  intent?: string;
+  include_discovered?: boolean; // default true
+  include_seeds?: boolean; // default true
+  draft_brand_context?: BrandContext | null; // send the unsaved draft so approvals/discards are respected
+};
+```
+
+Functionality: returns font candidates for the `Tipografía` card (`Sugerencias de fuentes (IA)`) in three buckets with honest sourcing.
+
+Response:
+
+```ts
+type FontCandidate = {
+  family: string;
+  css_stack: string;
+  category: "sans" | "serif" | "display" | "mono" | "handwritten" | "unknown";
+  source: "shopify_theme" | "storefront_css" | "gemini_suggested" | "system_seed" | "manual";
+  status: "candidate" | "approved" | "discarded"; // always "candidate" here
+  recommended_roles: Array<"display" | "headline" | "body" | "accent" | "caption">;
+  rationale: string;
+  evidence_refs: string[];
+};
+
+type FontSuggestionResponse = {
+  source: "gemini" | "deterministic_fallback";
+  ai_available: boolean;
+  message: string;
+  discovered: FontCandidate[]; // deterministic, from the latest discovery snapshot (non-AI)
+  suggestions: FontCandidate[]; // Gemini-backed; [] in the fallback
+  seeds: FontCandidate[]; // curated system_seed pool (non-AI)
+};
+```
+
+Frontend rules: when `ai_available` is `false`, show the fallback warning and label `discovered`/`seeds` as non-AI (`Shopify · no-IA`, `No-IA / curado`) -- the endpoint returns `200` in that case, not `503`. Approving/discarding a candidate only mutates the local draft (`typography.approved_fonts` / `typography.discarded_fonts`, deduped by family); discarded families are never re-suggested after saving. Expected errors: `401` without auth, `404` missing brand, `422` invalid body, `503` only when brand storage is misconfigured.
+
+Draft accumulation and save path: the Brand Context UI applies all discovery/AI acceptances (role replacements, `shopify_discovery` variants, font approvals/discards, role assignments) to the local draft only, then persists everything through the normal `Guardar cambios` -> `saveBrand()` (`PUT /api/v1/brands/{brand_id}`). The backend route `POST /api/v1/brands/{brand_id}/apply-discovery-recommendations` performs the same merge server-side for API consumers/agent flows; the shipped UI does not call it. Contract details: `docs/architecture/brand-discovery-and-font-system.md`.
+
 ### `importBrand(input)`
 
 ```ts
@@ -1102,6 +1227,11 @@ POST /brands/import
 GET  /brands/{brand_id}
 PUT  /brands/{brand_id}
 POST /brands/{brand_id}/palette-suggestions
+POST /brands/{brand_id}/discovery-runs
+GET  /brands/{brand_id}/discovery-runs/{run_id}
+POST /brands/{brand_id}/discovery-runs/{run_id}/recommendations
+POST /brands/{brand_id}/font-suggestions
+POST /brands/{brand_id}/apply-discovery-recommendations
 POST /campaigns
 GET  /campaigns
 POST /campaigns/intake
@@ -1114,7 +1244,7 @@ Frontend agents should prefer `/api/v1` functions above.
 ## 12. Recommended frontend implementation order
 
 1. Add shared API client with base URL and demo auth headers.
-2. Wire `listBrands`, `getBrand`, `saveBrand`, and `suggestBrandPalette` for role-based color editing.
+2. Wire `listBrands`, `getBrand`, `saveBrand`, and `suggestBrandPalette` for role-based color editing; add `BrandAPI.startDiscovery`/`discoveryRecommendations`/`fontSuggestions` for the Brand Discovery and Tipografía cards.
 3. Wire `createCampaign` or `streamIntake`; store returned backend campaign id.
 4. Wire `patchCampaign` for editable brief chips.
 5. Wire placement selectors: stores/resources/placement-types/targets/validate/save.

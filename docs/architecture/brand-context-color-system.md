@@ -15,6 +15,12 @@ type BrandContext = {
   typography?: {
     display?: string;
     body?: string;
+    // Optional role assignments + approved/discarded font system live here too;
+    // see docs/architecture/brand-discovery-and-font-system.md.
+    headline?: string | null;
+    accent?: string | null;
+    approved_fonts?: FontCandidate[];
+    discarded_fonts?: FontCandidate[];
   };
   voice?: {
     tone?: string[];
@@ -50,7 +56,7 @@ type BrandColorVariant = {
   name: string;
   hex: string;              // normalized to uppercase #RRGGBB
   usage_hint?: string;
-  source?: "manual" | "ai_suggested" | "seed_migration" | string;
+  source?: "manual" | "ai_suggested" | "seed_migration" | "shopify_discovery" | "gemini" | string;
 };
 ```
 
@@ -118,7 +124,7 @@ Required fields:
 Optional fields:
 
 - `usage_hint`: practical use such as `CTA hover`, `soft background`, `badge accent`, or `dark text`.
-- `source`: provenance. Current expected values are `manual`, `ai_suggested`, and `seed_migration`; clients should tolerate unknown future strings.
+- `source`: provenance. Current expected values are `manual`, `ai_suggested`, `seed_migration`, `shopify_discovery` (discovered store color accepted into a role), and `gemini` (variant inside a backend recommendation draft); clients should tolerate unknown future strings.
 
 Generation should treat variants as active approved colors, not as passive notes. When a role has variants, agents/renderers should choose from the base role color and accepted variants before inventing any non-brand color. If contrast or placement requirements cannot be satisfied from approved colors, that is a carry-over compliance gap rather than a reason to silently create arbitrary colors.
 
@@ -205,6 +211,15 @@ Errors:
 The user-facing/demo suggestion path is Gemini-only. The API response source is always `gemini`. When Gemini, API key, budget, or provider response quality is unavailable, the backend must return a clear `503` instead of deterministic or fake "AI" suggestions.
 
 Deterministic color math may exist only as a private unit-test helper or explicitly labeled developer fixture. It must not be exposed as user-facing AI suggestions.
+
+## Discovery recommendations and the color role system
+
+Shopify brand discovery (full contract: `docs/architecture/brand-discovery-and-font-system.md`) feeds this color system through a second, evidence-backed AI flow:
+
+- `POST /brands/{brand_id}/discovery-runs/{run_id}/recommendations` returns a Gemini draft of `BrandColorRecommendation` items, one per role (`role_key`, `base_hex`, `label`, hints, `variants`, `rationale`, `evidence_refs`). It is Gemini-only (`503` when unavailable) like palette suggestions; roles Gemini does not answer are backfilled from the user's approved system with `rationale: "kept from existing approved brand context"`.
+- Accepting a recommendation replaces the whole role (label, base hex, hints, and variants), unlike per-role palette suggestions, which only append variants. Unaccepted roles keep their current values and variants. When at least one role is accepted, legacy `palette[0..2]` is re-synced to the role colors (extras beyond index 2 preserved) by both the frontend draft flow and the backend `apply-discovery-recommendations` merge.
+- Variant provenance: variants inside a backend recommendation draft carry `source: "gemini"`. The frontend relabels accepted recommendation variants as `source: "ai_suggested"`, marks a discovered store color added to a role as `source: "shopify_discovery"`, and keeps `source: "manual"` for hand-entered variants.
+- Draft-only rule is unchanged: discovery evidence and recommendation drafts never auto-apply. The UI accumulates accepted items into the local draft and persists through the normal Save/Guardar flow (`PUT /brands/{brand_id}`); API consumers can use `POST /brands/{brand_id}/apply-discovery-recommendations` for the same merge.
 
 ## Frontend usage rules
 
