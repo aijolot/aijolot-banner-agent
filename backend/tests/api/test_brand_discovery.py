@@ -538,6 +538,214 @@ def test_discovery_routes_are_present_in_openapi_contract() -> None:
     assert "/api/v1/brands/{brand_id}/discovery-runs" in paths
     assert "/api/v1/brands/{brand_id}/discovery-runs/{run_id}" in paths
     assert "/api/v1/brands/{brand_id}/discovery-runs/{run_id}/recommendations" in paths
+    assert "/api/v1/brands/{brand_id}/apply-discovery-recommendations" in paths
     assert "/brands/{brand_id}/discovery-runs" in paths
     assert "/brands/{brand_id}/discovery-runs/{run_id}" in paths
     assert "/brands/{brand_id}/discovery-runs/{run_id}/recommendations" in paths
+    assert "/brands/{brand_id}/apply-discovery-recommendations" in paths
+
+
+# ---------------------------------------------------------------------------
+# POST /brands/{brand_id}/apply-discovery-recommendations (Task 7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def apply_store(monkeypatch) -> FakeBrandRepository:
+    """Route brand storage (root ``_default_service`` + v1 ``service_for_team``)
+    onto one fake repository, mirroring how test_brands.py stubs the brand store."""
+
+    from app.services import brand_store
+
+    repository = FakeBrandRepository()
+    seen_teams: list[str] = []
+
+    def for_team(team_id: str) -> BrandService:
+        seen_teams.append(team_id)
+        return BrandService(repository=repository, team_id=team_id)
+
+    monkeypatch.setattr(brand_store, "_default_service", lambda: BrandService(repository=repository, team_id="team-1"))
+    monkeypatch.setattr(brand_store, "service_for_team", for_team)
+    repository.seen_teams = seen_teams  # type: ignore[attr-defined]
+    return repository
+
+
+def _apply_payload(**overrides) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "run_id": "00000000-0000-0000-0000-000000000001",
+        "colors": [
+            {
+                "role_key": "tertiary",
+                "base_hex": "#FF6B5C",
+                "label": "Coral CTA",
+                "usage_hint": "CTA buttons and promo badges.",
+                "agent_hint": "Reserve for promo moments.",
+                "variants": [{"name": "Coral Hover", "hex": "#FF8478", "usage_hint": "Hover", "source": "ai_suggested"}],
+                "rationale": "Warm contrast against the discovered ink.",
+                "evidence_refs": ["snapshot:colors:0"],
+            }
+        ],
+        "logo_url": "https://cdn.shopify.com/demo/logo.svg",
+        "image_style_directives": ["Soft daylight", "Linen texture"],
+        "approved_fonts": [
+            {
+                "family": "Sora",
+                "css_stack": '"Sora", sans-serif',
+                "category": "sans",
+                "source": "gemini_suggested",
+                "status": "candidate",
+                "recommended_roles": ["headline"],
+                "rationale": "Matches the wordmark.",
+            }
+        ],
+        "discarded_fonts": [
+            {
+                "family": "Papyrus",
+                "css_stack": "Papyrus, fantasy",
+                "category": "handwritten",
+                "source": "shopify_theme",
+                "status": "candidate",
+            }
+        ],
+        "typography_roles": {"headline": "Sora"},
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_root_apply_merges_accepted_recommendations_and_persists(apply_store) -> None:
+    response = client.post("/brands/demo_brand/apply-discovery-recommendations", json=_apply_payload())
+
+    assert response.status_code == 200
+    body = response.json()
+    # Accepted role replaced wholesale; the other roles keep the palette-derived values.
+    assert body["color_system"]["tertiary"]["label"] == "Coral CTA"
+    assert body["color_system"]["tertiary"]["hex"] == "#FF6B5C"
+    assert body["color_system"]["tertiary"]["variants"][0]["source"] == "ai_suggested"
+    assert body["color_system"]["primary"]["hex"] == "#111111"
+    assert body["color_system"]["secondary"]["hex"] == "#111111"
+    # Legacy palette synced to the three post-merge role colors.
+    assert [color["hex"] for color in body["palette"]] == ["#111111", "#111111", "#FF6B5C"]
+    assert body["palette"][2]["name"] == "Coral CTA"
+    # Fonts: approved with status flipped, discarded persisted; role assigned.
+    assert [font["family"] for font in body["typography"]["approved_fonts"]] == ["Sora"]
+    assert body["typography"]["approved_fonts"][0]["status"] == "approved"
+    assert [font["family"] for font in body["typography"]["discarded_fonts"]] == ["Papyrus"]
+    assert body["typography"]["discarded_fonts"][0]["status"] == "discarded"
+    assert body["typography"]["headline"] == "Sora"
+    assert body["typography"]["display"] == "Inter"  # legacy fields untouched
+    assert body["typography"]["body"] == "Inter"
+    assert body["logo_url"] == "https://cdn.shopify.com/demo/logo.svg"
+    assert body["image_style_directives"] == ["Soft daylight", "Linen texture"]
+
+    # Persisted through save_brand: the merged brand survives a reload.
+    row = apply_store.rows["demo_brand"]
+    assert row["color_system"]["tertiary"]["hex"] == "#FF6B5C"
+    assert row["typography_system"]["headline"] == "Sora"
+    assert [font["family"] for font in row["typography_system"]["discarded_fonts"]] == ["Papyrus"]
+    reloaded = client.get("/brands/demo_brand")
+    assert reloaded.status_code == 200
+    assert reloaded.json() == body
+
+
+def test_root_apply_empty_request_is_noop(apply_store) -> None:
+    before = client.get("/brands/demo_brand").json()
+
+    response = client.post("/brands/demo_brand/apply-discovery-recommendations", json={})
+
+    assert response.status_code == 200
+    assert response.json() == before
+    # No write happened: upsert would have added the color_system column payload.
+    assert "color_system" not in apply_store.rows["demo_brand"]
+
+
+def test_root_apply_unknown_brand_returns_404(apply_store) -> None:
+    response = client.post("/brands/nope/apply-discovery-recommendations", json=_apply_payload())
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "brand 'nope' not found"
+
+
+def test_root_apply_unapproved_role_family_returns_422(apply_store) -> None:
+    payload = _apply_payload(typography_roles={"headline": "Comic Neue"})
+
+    response = client.post("/brands/demo_brand/apply-discovery-recommendations", json=payload)
+
+    assert response.status_code == 422
+    assert "'Comic Neue' is not in approved_fonts" in response.json()["detail"]
+    assert "color_system" not in apply_store.rows["demo_brand"]  # nothing persisted
+
+
+def test_root_apply_unknown_role_key_returns_422(apply_store) -> None:
+    payload = _apply_payload(typography_roles={"hero": "Sora"})
+
+    response = client.post("/brands/demo_brand/apply-discovery-recommendations", json=payload)
+
+    assert response.status_code == 422
+    assert "unknown typography role" in response.json()["detail"]
+
+
+def test_root_apply_same_family_approved_and_discarded_returns_422(apply_store) -> None:
+    payload = _apply_payload()
+    payload["discarded_fonts"].append(
+        {"family": "sora", "css_stack": '"Sora", sans-serif', "category": "sans", "source": "gemini_suggested"}
+    )
+
+    response = client.post("/brands/demo_brand/apply-discovery-recommendations", json=payload)
+
+    assert response.status_code == 422
+    assert "approved and discarded in the same request" in response.json()["detail"]
+    assert "color_system" not in apply_store.rows["demo_brand"]
+
+
+def test_root_apply_invalid_color_payload_returns_422(apply_store) -> None:
+    payload = _apply_payload()
+    payload["colors"][0]["base_hex"] = "not-a-color"
+
+    response = client.post("/brands/demo_brand/apply-discovery-recommendations", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_v1_apply_fails_closed_without_context(apply_store) -> None:
+    response = client.post("/api/v1/brands/demo_brand/apply-discovery-recommendations", json=_apply_payload())
+
+    assert response.status_code == 401
+    assert apply_store.seen_teams == []  # no team service is even built without auth
+    assert "color_system" not in apply_store.rows["demo_brand"]
+
+
+def test_v1_apply_uses_request_team_scope_and_persists(apply_store) -> None:
+    response = client.post(
+        "/api/v1/brands/demo_brand/apply-discovery-recommendations", headers=AUTH_TEAM_1, json=_apply_payload()
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["color_system"]["tertiary"]["hex"] == "#FF6B5C"
+    assert body["typography"]["headline"] == "Sora"
+    assert apply_store.seen_teams == ["team-1"]
+    assert apply_store.rows["demo_brand"]["team_id"] == "team-1"
+
+    fetched = client.get("/api/v1/brands/demo_brand", headers=AUTH_TEAM_1)
+    assert fetched.status_code == 200
+    assert fetched.json() == body
+
+
+def test_v1_apply_unknown_brand_returns_404(apply_store) -> None:
+    response = client.post(
+        "/api/v1/brands/nope/apply-discovery-recommendations", headers=AUTH_TEAM_1, json=_apply_payload()
+    )
+
+    assert response.status_code == 404
+
+
+def test_v1_apply_invalid_request_returns_422(apply_store) -> None:
+    payload = _apply_payload(typography_roles={"headline": "Comic Neue"})
+
+    response = client.post(
+        "/api/v1/brands/demo_brand/apply-discovery-recommendations", headers=AUTH_TEAM_1, json=payload
+    )
+
+    assert response.status_code == 422
+    assert "'Comic Neue' is not in approved_fonts" in response.json()["detail"]

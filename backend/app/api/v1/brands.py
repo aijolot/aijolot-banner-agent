@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.core.auth import require_user_context
 from app.core.settings import MissingSettingsError
 from app.schemas.brand import BrandContext, BrandSummary
+from app.schemas.brand_recommendations import ApplyDiscoveryRecommendationsRequest
 from app.schemas.palette_suggestions import PaletteSuggestionResponse, PaletteSuggestionRouteRequest
 from app.services import brand_store
 from app.services.brands import brand_discovery_service
@@ -150,6 +151,27 @@ def get_discovery_run(request: Request, brand_id: BrandIdPath, run_id: RunIdPath
     if run is None:
         raise HTTPException(status_code=404, detail=f"discovery run '{run_id}' not found")
     return run
+
+
+@router.post("/{brand_id}/apply-discovery-recommendations", response_model=BrandContext)
+def apply_discovery_recommendations(
+    request: Request, brand_id: BrandIdPath, payload: ApplyDiscoveryRecommendationsRequest
+) -> BrandContext:
+    """Explicitly merge user-accepted discovery recommendations into the request team's brand.
+
+    Only items listed in the request change; the saved BrandContext is returned
+    (same response shape as ``PUT /api/v1/brands/{id}``). An empty body is a valid no-op.
+    """
+
+    service = _service(request)  # require_user_context: 401 without auth
+    try:
+        return service.apply_discovery_recommendations(brand_id, payload)
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except (BrandMarkdownImportError, ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except MissingSettingsError as exc:  # brand storage misconfigured
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 @router.post("/{brand_id}/discovery-runs/{run_id}/recommendations", response_model=BrandDiscoveryRunPayload)

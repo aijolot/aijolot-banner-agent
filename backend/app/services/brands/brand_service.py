@@ -6,6 +6,8 @@ from typing import Any, Protocol
 from app.db.repositories.brand_contexts import BrandContextRepository
 from app.schemas.brand import BrandContext, BrandSummary
 from app.schemas.brand_discovery import BrandDiscoverySnapshot
+from app.schemas.brand_recommendations import ApplyDiscoveryRecommendationsRequest
+from app.services.brands.apply_recommendations import merge_discovery_recommendations
 from app.services.brands.markdown_importer import BrandMarkdownImporter, dump_markdown
 
 
@@ -96,6 +98,22 @@ class BrandService:
         output_path = BrandMarkdownImporter(base_dir=self.markdown_writes_dir).path_for_id(brand_id)
         output_path.write_text(dump_markdown(brand), encoding="utf-8")
         return brand
+
+    def apply_discovery_recommendations(
+        self, brand_id: str, request: ApplyDiscoveryRecommendationsRequest
+    ) -> BrandContext:
+        """Merge ONLY the user-accepted discovery recommendations into the brand and persist.
+
+        Merge semantics live in ``apply_recommendations.merge_discovery_recommendations``;
+        invalid requests raise ``RecommendationApplyError`` (a ValueError -> 422 at the
+        route layer). An empty request is a validated no-op: the current brand is
+        returned without a write.
+        """
+        brand = self.get_brand(brand_id)  # BrandNotFound -> 404 at the route layer
+        merged = merge_discovery_recommendations(brand, request)
+        if merged == brand:
+            return brand
+        return self.save_brand(brand_id, merged)
 
     def import_markdown(self, *, brand_id: str | None = None, path: str | Path | None = None) -> BrandContext:
         if path is not None:
