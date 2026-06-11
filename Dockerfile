@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         libjpeg62-turbo \
         zlib1g \
+        postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # 1) Install Python deps first for better layer caching. We copy the whole
@@ -40,6 +41,13 @@ RUN playwright install --with-deps chromium
 
 # 3) Frontend static assets (no build step — CDN React + Babel-standalone).
 COPY frontend/ /app/frontend/
+
+# 4) DB migrations + the applier the entrypoint runs on boot. The self-hosted
+#    Supabase DB persists across deploys, so the entrypoint forward-migrates it
+#    (psql, installed above) to match supabase/migrations/ before serving.
+COPY supabase/ /app/supabase/
+COPY scripts/apply-migrations.sh /app/scripts/apply-migrations.sh
+RUN chmod +x /app/scripts/apply-migrations.sh
 
 # Cloud Run injects $PORT (defaults to 8080). The entrypoint loads runtime
 # config from the mounted Secret Manager env file, then binds 0.0.0.0:$PORT.

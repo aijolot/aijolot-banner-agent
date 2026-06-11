@@ -9,7 +9,7 @@
 -- 1. agent_suggestions
 -- ----------------------------------------------------------------------------
 
-create table public.agent_suggestions (
+create table if not exists public.agent_suggestions (
   id          uuid primary key default gen_random_uuid(),
   team_id     uuid not null references public.teams(id) on delete cascade,
   kind        text not null check (kind in ('calendar_event', 'performance_refresh', 'catalog_signal')),
@@ -30,14 +30,16 @@ create table public.agent_suggestions (
   updated_at  timestamptz not null default now()
 );
 
-create unique index agent_suggestions_dedupe_uidx
+create unique index if not exists agent_suggestions_dedupe_uidx
   on public.agent_suggestions (team_id, dedupe_key)
   where dedupe_key is not null;
-create index agent_suggestions_team_status_idx on public.agent_suggestions (team_id, status, created_at desc);
+create index if not exists agent_suggestions_team_status_idx on public.agent_suggestions (team_id, status, created_at desc);
 
 alter table public.agent_suggestions enable row level security;
+drop policy if exists agent_suggestions_member_select on public.agent_suggestions;
 create policy agent_suggestions_member_select on public.agent_suggestions
   for select using (public.is_team_member(team_id));
+drop policy if exists agent_suggestions_member_update on public.agent_suggestions;
 create policy agent_suggestions_member_update on public.agent_suggestions
   for update using (public.is_team_member(team_id)) with check (public.is_team_member(team_id));
 -- Inserts come from the agent (service_role bypasses RLS); members only read/act.
@@ -46,7 +48,7 @@ create policy agent_suggestions_member_update on public.agent_suggestions
 -- 2. agent_jobs (scan queue)
 -- ----------------------------------------------------------------------------
 
-create table public.agent_jobs (
+create table if not exists public.agent_jobs (
   id                     uuid primary key default gen_random_uuid(),
   team_id                uuid not null references public.teams(id) on delete cascade,
   kind                   text not null check (kind in ('calendar_scan', 'performance_sync', 'catalog_scan')),
@@ -60,14 +62,15 @@ create table public.agent_jobs (
   created_at             timestamptz not null default now()
 );
 
-create index agent_jobs_due_idx on public.agent_jobs (status, run_after);
-create index agent_jobs_processing_idx on public.agent_jobs (status, processing_started_at)
+create index if not exists agent_jobs_due_idx on public.agent_jobs (status, run_after);
+create index if not exists agent_jobs_processing_idx on public.agent_jobs (status, processing_started_at)
   where status = 'processing';
 -- Avoid piling up duplicate pending scans of the same kind for a team.
-create unique index agent_jobs_pending_uidx on public.agent_jobs (team_id, kind)
+create unique index if not exists agent_jobs_pending_uidx on public.agent_jobs (team_id, kind)
   where status in ('pending', 'processing');
 
 alter table public.agent_jobs enable row level security;
+drop policy if exists agent_jobs_member_select on public.agent_jobs;
 create policy agent_jobs_member_select on public.agent_jobs
   for select using (public.is_team_member(team_id));
 -- Writes are service_role only (pg_cron functions + backend poller).

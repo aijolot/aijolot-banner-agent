@@ -3,7 +3,7 @@
 -- inferred/manual events, and per-team scan settings. The calendar_scan agent
 -- job turns upcoming events into agent_suggestions with a prefilled brief.
 
-create table public.commercial_calendar_events (
+create table if not exists public.commercial_calendar_events (
   id              uuid primary key default gen_random_uuid(),
   team_id         uuid references public.teams(id) on delete cascade,  -- null = global seed
   slug            text not null,
@@ -21,17 +21,19 @@ create table public.commercial_calendar_events (
   created_at      timestamptz not null default now()
 );
 
-create unique index commercial_calendar_events_uidx
+create unique index if not exists commercial_calendar_events_uidx
   on public.commercial_calendar_events (coalesce(team_id::text, 'global'), slug);
 
 alter table public.commercial_calendar_events enable row level security;
+drop policy if exists calendar_events_select on public.commercial_calendar_events;
 create policy calendar_events_select on public.commercial_calendar_events
   for select using (team_id is null or public.is_team_member(team_id));
+drop policy if exists calendar_events_member_write on public.commercial_calendar_events;
 create policy calendar_events_member_write on public.commercial_calendar_events
   for all using (team_id is not null and public.is_team_member(team_id))
   with check (team_id is not null and public.is_team_member(team_id));
 
-create table public.team_calendar_settings (
+create table if not exists public.team_calendar_settings (
   team_id         uuid primary key references public.teams(id) on delete cascade,
   lead_time_days  integer not null default 14,
   auto_concept    boolean not null default false,
@@ -40,6 +42,7 @@ create table public.team_calendar_settings (
 );
 
 alter table public.team_calendar_settings enable row level security;
+drop policy if exists team_calendar_settings_rw on public.team_calendar_settings;
 create policy team_calendar_settings_rw on public.team_calendar_settings
   for all using (public.is_team_member(team_id)) with check (public.is_team_member(team_id));
 
@@ -53,4 +56,5 @@ insert into public.commercial_calendar_events (slug, name, country, month, day, 
   ('regreso-a-clases',    'Regreso a clases',             'MX',     8, 15, 21, 'seed', 'Útiles, ropa, tecnología y accesorios.'),
   ('el-buen-fin',         'El Buen Fin',                  'MX',    11, 13,  5, 'seed', 'El fin de semana más barato del año (aprox segunda quincena de noviembre).'),
   ('black-friday-cyber',  'Black Friday + Cyber Monday',  'GLOBAL',11, 27,  5, 'seed', 'BFCM — pico global de descuentos.'),
-  ('navidad',             'Navidad',                      'GLOBAL',12, 24,  8, 'seed', 'Campañas de regalos navideños y envío garantizado.');
+  ('navidad',             'Navidad',                      'GLOBAL',12, 24,  8, 'seed', 'Campañas de regalos navideños y envío garantizado.')
+on conflict do nothing;
