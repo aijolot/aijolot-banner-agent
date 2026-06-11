@@ -120,6 +120,24 @@ def _copy_zone_instruction(layout: Any) -> str:
     )
 
 
+_HEX_TOKEN_RE = re.compile(r"#[0-9A-Fa-f]{3,8}\b")
+
+
+def _strip_hex(text: str) -> str:
+    """Remove hex color codes from an image prompt.
+
+    Image models render literal ``#RRGGBB`` tokens as on-canvas color swatches /
+    hex labels, which breaks the text/mark-free rule (observed as palette chips
+    baked into generated banners). The precise palette is enforced later in the
+    HTML/Liquid layer, never in generated pixels — so hex never belongs here.
+    """
+    cleaned = _HEX_TOKEN_RE.sub("", str(text or ""))
+    cleaned = re.sub(r"\s+([—,;:)])", r"\1", cleaned)  # close gaps left by removed hex
+    cleaned = re.sub(r"\(\s+", "(", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
 def _word_count(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text))
 
@@ -213,9 +231,13 @@ async def run(
     # mark-free/people-free safety rules.
     suffix_parts = []
     if color_role_lines:
+        # Descriptive color-role guidance (labels + usage), hex stripped below so
+        # the model paints the mood, not literal swatches.
         suffix_parts.append("Respect approved color roles: " + " | ".join(_sanitize(line) for line in color_role_lines) + ".")
     elif colors:
-        suffix_parts.append("Use palette accents: " + ", ".join(colors[:4]) + ".")
+        # Soft palette cue only — never list raw hex (the model would render the
+        # codes as on-canvas color chips). Exact colors are applied in HTML/Liquid.
+        suffix_parts.append("Harmonize with the brand's established color palette.")
     if font_hint:
         suffix_parts.append("Match a " + _sanitize(font_hint) + " in props and composition.")
     if include_humans:
@@ -236,4 +258,5 @@ async def run(
         words.pop()
     if _word_count(refined) > body_budget:
         refined = " ".join(words).rstrip(" ,;:") + "."
-    return _single_paragraph([refined, suffix])
+    # Final guard: no hex codes ever reach the image model (they render as swatches).
+    return _strip_hex(_single_paragraph([refined, suffix]))
