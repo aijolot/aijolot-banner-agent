@@ -130,3 +130,30 @@ def test_v1_routes_are_present_in_openapi_contract():
     assert "/api/v1/campaigns/{campaign_id}" in paths
     assert "/campaigns/intake" in paths
     assert "/health" in paths
+
+
+def test_preview_read_retries_transient_failures(monkeypatch) -> None:
+    """503 race after build: one transient repo failure must NOT surface as 503."""
+    from app.api.v1 import previews
+
+    monkeypatch.setattr(previews, "_RETRY_DELAY_S", 0.0)
+    attempts: list[int] = []
+
+    def flaky_reader():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise ConnectionError("transient")
+        return {"html_preview": "<html></html>"}
+
+    result = previews._read_with_retry(flaky_reader)
+    assert result["html_preview"]
+    assert len(attempts) == 2
+
+    # Persistent failures still bubble up (mapped to 503 by the endpoint).
+    def always_broken():
+        raise ConnectionError("down")
+
+    import pytest as _pytest
+
+    with _pytest.raises(ConnectionError):
+        previews._read_with_retry(always_broken)

@@ -208,3 +208,76 @@ def test_agentic_regenerate_creates_real_new_revision() -> None:
     # Campaign points at the new revision; old one superseded.
     assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == new_rev["id"]
     assert revisions.get(revision_id=initial["id"])["status"] == "superseded"
+
+
+# --- W0.1: grounded plan-iterate --------------------------------------------
+
+
+def _latest_plan(revisions):
+    rows = [r for r in revisions.rows.values() if r.get("status") == "plan"]
+    return max(rows, key=lambda r: int(r.get("revision_number") or 0))
+
+
+def test_plan_iterate_contrast_complaint_changes_only_ink() -> None:
+    """'la fuente negra no contrasta' → set_ink: same background, same copy, flipped ink."""
+    svc, _campaigns, revisions = _build_stack()
+    svc.start_plan_run(CAMPAIGN_ID)
+    first = _latest_plan(revisions)
+    first_bg = copy.deepcopy(first["concept"].get("background") or {})
+    first_copy = copy.deepcopy(first["concept"].get("copy") or {})
+    first_ink = first["concept"]["art_direction"]["ink"]
+
+    run = svc.iterate_plan(CAMPAIGN_ID, RegenerateRequest(prompt="la fuente negra no contrasta bien"))
+
+    assert run.status == "succeeded"
+    assert "set_ink" in (run.metadata.get("interpreted_ops") or [])
+    second = _latest_plan(revisions)
+    assert second["id"] != first["id"]
+    # Background untouched (THE bug: it used to be regenerated unconditionally).
+    assert (second["concept"].get("background") or {}).get("css") == first_bg.get("css")
+    assert (second["concept"].get("background") or {}).get("html") == first_bg.get("html")
+    # Copy preserved (no full re-draft for an ink complaint).
+    assert second["concept"]["copy"].get("headline") == first_copy.get("headline")
+    # Ink actually changed (flipped for contrast).
+    assert second["concept"]["art_direction"]["ink"] != first_ink
+
+
+def test_plan_iterate_decor_swap_without_llm_keeps_background() -> None:
+    """SVG/shape swap needs the LLM; deterministically it must KEEP the background."""
+    svc, _campaigns, revisions = _build_stack()
+    svc.start_plan_run(CAMPAIGN_ID)
+    first = _latest_plan(revisions)
+    first_bg = copy.deepcopy(first["concept"].get("background") or {})
+
+    run = svc.iterate_plan(CAMPAIGN_ID, RegenerateRequest(prompt="cambia el SVG de círculo por una estrella de mar"))
+
+    assert run.status == "succeeded"
+    assert "change_decor" in (run.metadata.get("interpreted_ops") or [])
+    second = _latest_plan(revisions)
+    assert (second["concept"].get("background") or {}).get("css") == first_bg.get("css")
+
+
+def test_plan_iterate_background_request_does_change_background_fields() -> None:
+    """An explicit background request still flows to the background generator."""
+    svc, _campaigns, revisions = _build_stack()
+    svc.start_plan_run(CAMPAIGN_ID)
+
+    run = svc.iterate_plan(CAMPAIGN_ID, RegenerateRequest(prompt="quiero otro fondo, algo más veraniego"))
+
+    assert run.status == "succeeded"
+    assert "change_background" in (run.metadata.get("interpreted_ops") or [])
+
+
+def test_edit_ink_target_patches_ink_without_background_change() -> None:
+    """Build-side edit: contrast complaint patches ink, keeps background."""
+    svc, _campaigns, revisions = _build_stack()
+    svc.generation_runs.start_generation_run(CAMPAIGN_ID)
+    initial = revisions.get_latest_by_campaign_id(campaign_id=CAMPAIGN_ID)
+    initial_bg = copy.deepcopy(initial["concept"].get("background") or {})
+
+    result = svc.edit(CAMPAIGN_ID, RegenerateRequest(prompt="el texto no contrasta, no se lee"))
+
+    assert result.generation_run.status == "succeeded"
+    new_rev = revisions.get(revision_id=result.revision.id)
+    assert (new_rev["concept"].get("background") or {}).get("css") == initial_bg.get("css")
+    assert new_rev["concept"].get("art_direction", {}).get("ink")

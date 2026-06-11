@@ -50,6 +50,9 @@ class PersonalizationVariant(BaseModel):
 
 
 class StructuredBrief(BaseModel):
+    # Idioma de TODO lo que el cliente ve de esta campaña (copy, rationales,
+    # trazas, chat) — lo fija el switcher del UI vía X-Aijolot-Lang.
+    language: str = "es"
     goal: str = ""
     audience: str = ""
     cta: str = ""
@@ -104,6 +107,9 @@ class Campaign(BaseModel):
 class IntakeRequest(BaseModel):
     message: str
     campaign_id: str | None = None
+    # Idioma del switcher del UI: fija structured_brief.language ANTES de
+    # extraer y responder, para que el chat nunca mezcle idiomas.
+    language: str | None = None
 
 
 class BriefPatch(BaseModel):

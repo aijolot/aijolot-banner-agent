@@ -39,6 +39,15 @@ _MODEL_TREATMENTS = {
     "unisex": "Composición editorial neutra; el producto es el protagonista.",
 }
 
+# C3 — face-on variants, used ONLY when include_humans is set on the campaign's
+# art direction (the image-prompt sanitizer stays people-free otherwise).
+_MODEL_TREATMENTS_HUMANS = {
+    "male": "Modelo masculino adulto de frente aplicándose el perfume, expresión serena y segura; luz direccional de estudio.",
+    "female": "Modelo femenina adulta de frente aplicándose el perfume, expresión natural; luz suave envolvente.",
+    "vip": "Modelo adulto en set premium minimalista sosteniendo el producto, estilismo elegante; materiales nobles.",
+    "unisex": "Dos modelos adultos diversos en composición editorial, el producto como punto focal compartido.",
+}
+
 
 class CampaignRepositoryProtocol(Protocol):
     def get(self, *, campaign_id: str, team_id: str | None = None) -> dict[str, Any] | None: ...
@@ -61,12 +70,14 @@ class ArtConceptService:
         catalog: CatalogRepositoryProtocol | None = None,
         settings: Settings | None = None,
         team_id: str | None = None,
+        art_directions: Any = None,
     ) -> None:
         self.campaigns = campaigns
         self.revisions = revisions
         self.catalog = catalog
         self.settings = settings
         self.team_id = team_id
+        self.art_directions = art_directions
 
     @classmethod
     def from_supabase_client(cls, client: Any, *, settings: Settings | None = None, team_id: str | None = None) -> "ArtConceptService":
@@ -74,12 +85,15 @@ class ArtConceptService:
         from app.db.repositories.campaign_revisions import CampaignRevisionRepository
         from app.db.repositories.campaigns import CampaignRepository
 
+        from app.db.repositories.art_directions import ArtDirectionRepository
+
         return cls(
             campaigns=CampaignRepository(client),
             revisions=CampaignRevisionRepository(client),
             catalog=CampaignCatalogRepository(client),
             settings=settings,
             team_id=team_id,
+            art_directions=ArtDirectionRepository(client),
         )
 
     def propose_concepts(self, campaign_id: str, request: ArtConceptsRequest) -> ArtConceptsResponse:
@@ -117,6 +131,15 @@ class ArtConceptService:
         # 3 — featured product (catalog, grounded).
         product, product_rationale, product_tag = self._pick_product(catalog)
 
+        # C3 — humans in imagery only when the campaign's art direction allows it.
+        include_humans = False
+        if self.art_directions is not None:
+            try:
+                stored_art = self.art_directions.get_by_campaign_id(campaign_id=campaign_id)
+                include_humans = bool((stored_art or {}).get("include_humans"))
+            except Exception:  # noqa: BLE001 — concepts must not fail on this lookup
+                include_humans = False
+
         promo = str(brief.get("promo") or "")
         feedback = (request.feedback or "").strip()
         concepts: list[ArtConceptVariant] = []
@@ -139,7 +162,8 @@ class ArtConceptService:
             )
             if copy.get("headline") and self.settings is not None and getattr(self.settings, "has_google_api_key", lambda: False)():
                 copy_source = "gemini"
-            treatment = _MODEL_TREATMENTS.get(spec["key"]) or _MODEL_TREATMENTS.get(_segment_kind(spec))
+            treatments = _MODEL_TREATMENTS_HUMANS if include_humans else _MODEL_TREATMENTS
+            treatment = treatments.get(spec["key"]) or treatments.get(_segment_kind(spec))
             shot_type = "usage" if treatment else "hero"
             bg = bg_options[index % len(bg_options)] if bg_options else None
             background = {"name": getattr(bg, "name", "Gradiente de marca"), "description": getattr(bg, "description", ""), "css": getattr(bg, "css", "")} if bg else {}
@@ -218,7 +242,9 @@ class ArtConceptService:
             except (TypeError, ValueError):
                 return 0
 
-        ranked = sorted(items, key=_stock, reverse=True)
+        # W0.2 — products the user picked in the brief outrank the stock heuristic;
+        # stock only breaks ties within each group.
+        ranked = sorted(items, key=lambda i: (0 if i.get("from_brief") else 1, -_stock(i)))
         top = ranked[0]
         stock = _stock(top)
         price = top.get("price") if isinstance(top.get("price"), (int, float)) else top.get("sale_price")

@@ -149,6 +149,8 @@ const AIJOLOT_DEMO_AUTH_HEADERS = {
   "X-Aijolot-User-Id": AIJOLOT_DEMO_IDS.user,
   "X-Aijolot-Team-Id": AIJOLOT_DEMO_IDS.team,
   "X-Aijolot-Store-Id": AIJOLOT_DEMO_IDS.store,
+  // Idioma del switcher: el backend responde/redacta/razona en este idioma.
+  "X-Aijolot-Lang": (typeof AIJOLOT_LANG !== "undefined" ? AIJOLOT_LANG : "es"),
   "Authorization": `Bearer demo:${AIJOLOT_DEMO_IDS.user}:${AIJOLOT_DEMO_IDS.team}:${AIJOLOT_DEMO_IDS.store}`,
 };
 
@@ -214,7 +216,7 @@ const AijolotApi = {
     const resp = await fetch(this.base + this.v1("/campaigns/intake"), {
       method: "POST",
       headers: { Accept: "text/event-stream", "Content-Type": "application/json", ...AIJOLOT_DEMO_AUTH_HEADERS },
-      body: JSON.stringify({ message, campaign_id: campaignId || null }),
+      body: JSON.stringify({ message, campaign_id: campaignId || null, language: (typeof AIJOLOT_LANG !== "undefined" ? AIJOLOT_LANG : "es") }),
     });
     if (!resp.ok || !resp.body) throw new Error(`intake failed: ${resp.status} ${await resp.text()}`);
     const reader = resp.body.getReader(), decoder = new TextDecoder();
@@ -279,7 +281,12 @@ function placementPayloadFromPrototype(placement) {
 }
 
 const CampaignApi = {
-  async create(input) { return AijolotApi.post(AijolotApi.v1("/campaigns"), input || {}); },
+  async create(input) {
+    const body = { ...(input || {}) };
+    // El brief nace con el idioma del switcher — gobierna todo el pipeline.
+    body.structured_brief = { language: (typeof AIJOLOT_LANG !== "undefined" ? AIJOLOT_LANG : "es"), ...(body.structured_brief || {}) };
+    return AijolotApi.post(AijolotApi.v1("/campaigns"), body);
+  },
   async list() { return AijolotApi.get(AijolotApi.v1("/campaigns")); },
   async listSafe() {
     try {
@@ -360,11 +367,31 @@ const PlacementApi = {
     return { ok: true, fallback: false, data };
   },
   async save(campaign, placement) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend placement API requires a UUID campaign; local intake uses prototype ids unless Supabase is configured.", placement);
+    if (!isApiCampaign(campaign)) return fallbackResult("La ubicación requiere una campaña de backend (UUID) — nada se guardó.", null);
     const payload = placementPayloadFromPrototype(placement);
     await this.validate(payload);
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), payload);
     return { ok: true, fallback: false, data };
+  },
+  // Aplica una pieza propuesta por el agente (placement-plan-recommend) como
+  // ubicación de la campaña. Si el target exige recurso (colección/producto),
+  // el backend lo dirá — el error se muestra, no se inventa un handle.
+  async applySuggested(campaign, piece) {
+    if (!isApiCampaign(campaign)) return fallbackResult("La ubicación requiere una campaña de backend (UUID).", null);
+    const payload = {
+      store_id: window.AIJOLOT_STORE_ID || AIJOLOT_DEMO_IDS.store,
+      placement_type_key: piece.placement_key,
+      mode: "existing_section",
+      target_type: piece.target || "home",
+      slot: piece.slot || null,
+    };
+    try {
+      await this.validate(payload);
+      const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/placement`), payload);
+      return { ok: true, fallback: false, data };
+    } catch (e) {
+      return fallbackResult("No se pudo aplicar la ubicación sugerida (" + errorText(e) + ").", null);
+    }
   },
 };
 
@@ -382,13 +409,35 @@ const CatalogApi = {
 };
 
 const ArtDirectionApi = {
+  // C0 — user override of the agent-recommended creative mode. Reads the stored
+  // art direction (to not clobber other fields) and PUTs mode_source='user'.
+  async setCreativeMode(campaign, { creative_mode, include_humans }) {
+    if (!isApiCampaign(campaign)) return fallbackResult("El modo creativo requiere una campaña UUID.", null);
+    try {
+      let current = {};
+      try { current = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`)); } catch (e) { current = {}; }
+      const payload = {
+        background_mode: current.background_mode || "usage",
+        hero_style_key: current.hero_style_key || null,
+        model_key: current.model_key || null,
+        custom_model: current.custom_model || {},
+        fold_percentage: current.fold_percentage || 55,
+        layout_hints: current.layout_hints || {},
+        creative_mode,
+        include_humans: !!include_humans,
+        mode_source: "user",
+      };
+      const data = await AijolotApi.put(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`), payload);
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo guardar el modo creativo (" + errorText(e) + ").", null); }
+  },
   async get(campaign) {
     if (!isApiCampaign(campaign)) return fallbackResult("No UUID campaign for backend art-direction lookup.", null);
     const data = await AijolotApi.get(AijolotApi.v1(`/campaigns/${campaign.id}/art-direction`));
     return { ok: true, fallback: false, data };
   },
   async save(campaign, art, placement) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend art-direction API requires a UUID campaign; saved locally in prototype state.", art);
+    if (!isApiCampaign(campaign)) return fallbackResult("La dirección de arte requiere una campaña de backend (UUID) — nada se guardó.", null);
     const payload = {
       background_mode: art.bg || "usage",
       hero_style_key: art.heroStyle || null,
@@ -404,7 +453,7 @@ const ArtDirectionApi = {
 
 const GenerationApi = {
   async start(campaign, metadata) {
-    if (!isApiCampaign(campaign)) return fallbackResult("Backend generation runs require a UUID campaign; showing labeled prototype progress.", { id: localId("run"), status: "succeeded" });
+    if (!isApiCampaign(campaign)) return fallbackResult("La generación requiere una campaña de backend (UUID).", null);
     const data = await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/generation-runs`), { metadata: metadata || {} });
     return { ok: true, fallback: false, data };
   },
@@ -742,7 +791,102 @@ const PlanApi = {
   },
 };
 
+// --- F4 explicability: "Decisión / Razones / Fuentes" card ------------------
+// Renders a DecisionTrace ({decision, reasons[], sources[{type,id,title,score}]})
+// emitted by the backend in generation events / plan / revision concepts.
+function DecisionTraceCard({ trace, compact }) {
+  if (!trace || (!Array.isArray(trace.reasons) || !trace.reasons.length) && !trace.decision) return null;
+  const sources = Array.isArray(trace.sources) ? trace.sources : [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7, padding: compact ? "8px 10px" : "10px 12px",
+      borderRadius: 10, background: "rgba(8,145,178,0.05)", border: "1px solid rgba(8,145,178,0.18)" }}>
+      {trace.decision ? (
+        <div style={{ fontFamily: "Space Grotesk", fontWeight: 600, fontSize: 12, color: "#002B57", display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon name="lightbulb" size={13} color="#0891B2" /> {trace.decision}
+        </div>
+      ) : null}
+      {(trace.reasons || []).map((r, i) => (
+        <div key={i} style={{ fontFamily: "Inter", fontSize: 11.5, color: "#475569", lineHeight: 1.45, display: "flex", gap: 6 }}>
+          <span style={{ color: "#0891B2" }}>·</span><span>{r}</span>
+        </div>
+      ))}
+      {sources.length ? (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 2 }}>
+          {sources.map((src, i) => (
+            <span key={i} title={src.score != null ? `score ${Number(src.score).toFixed(2)}` : undefined} style={{
+              display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", borderRadius: 9999,
+              background: src.type === "brand" ? "rgba(255,210,63,0.18)" : "rgba(34,211,238,0.12)",
+              border: "1px solid rgba(8,145,178,0.2)", fontFamily: "Inter", fontSize: 10, fontWeight: 600, color: "#0E7490" }}>
+              <Icon name={src.type === "brand" ? "palette" : "database"} size={10} />
+              {src.title || src.type}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+// Find the freshest decision_trace within a list of generation events.
+function traceFromEvents(events) {
+  const rows = Array.isArray(events) ? events : [];
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const t = rows[i] && rows[i].output_summary && rows[i].output_summary.decision_trace;
+    if (t) return t;
+  }
+  return null;
+}
+
+// --- Fase 0: proactive agent suggestions -------------------------------------
+const SuggestionsApi = {
+  async list(status) {
+    try {
+      const data = await AijolotApi.get(AijolotApi.v1(`/suggestions${status ? `?status=${status}` : ""}`));
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("Sugerencias no disponibles (" + errorText(e) + ").", null); }
+  },
+  async accept(id) {
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/suggestions/${id}/accept`), {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo aceptar la sugerencia (" + errorText(e) + ").", null); }
+  },
+  async dismiss(id) {
+    try {
+      const data = await AijolotApi.post(AijolotApi.v1(`/suggestions/${id}/dismiss`), {});
+      return { ok: true, fallback: false, data };
+    } catch (e) { return fallbackResult("No se pudo descartar la sugerencia (" + errorText(e) + ").", null); }
+  },
+};
+
+// --- F1: commercial calendar -------------------------------------------------
+const CalendarApi = {
+  async events() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.get(AijolotApi.v1("/calendar/events")) }; }
+    catch (e) { return fallbackResult("Calendario no disponible (" + errorText(e) + ").", null); }
+  },
+  async settings() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.get(AijolotApi.v1("/calendar/settings")) }; }
+    catch (e) { return fallbackResult("Ajustes de calendario no disponibles (" + errorText(e) + ").", null); }
+  },
+  async saveSettings(payload) {
+    try { return { ok: true, fallback: false, data: await AijolotApi.put(AijolotApi.v1("/calendar/settings"), payload) }; }
+    catch (e) { return fallbackResult("No se pudo guardar la anticipación (" + errorText(e) + ").", null); }
+  },
+  async scan() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.post(AijolotApi.v1("/calendar/scan"), {}) }; }
+    catch (e) { return fallbackResult("No se pudo ejecutar el scan del calendario (" + errorText(e) + ").", null); }
+  },
+  async infer() {
+    try { return { ok: true, fallback: false, data: await AijolotApi.post(AijolotApi.v1("/calendar/infer"), {}) }; }
+    catch (e) { return fallbackResult("No se pudieron inferir fechas de nicho (" + errorText(e) + ").", null); }
+  },
+};
+
 Object.assign(window, {
+  CalendarApi,
+  SuggestionsApi,
+  DecisionTraceCard, traceFromEvents,
   Icon, GlassCard, Button, Badge, BADGE_TONES, Kicker, Spinner, Avatar,
   AijolotApi, CampaignApi, StoreApi, PlacementApi, CatalogApi, ArtDirectionApi,
   GenerationApi, PlanApi, ReviewApi, PerformanceApi, BackgroundApi, ArtApi, API_V1, UUID_RE, isApiCampaign,

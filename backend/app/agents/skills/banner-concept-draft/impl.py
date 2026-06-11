@@ -23,6 +23,11 @@ class _ConceptCopy(BaseModel):
     headline: str = Field(default="", description="Punchy benefit-led headline, <=8 words")
     subheadline: str = Field(default="", description="One supporting line, <=16 words")
     cta: str = Field(default="", description="Action-first CTA, <=5 words")
+    theme_note: str = Field(default="", description="One-line visual scene/theme summary for the user, <=18 words")
+    image_concept: str = Field(
+        default="",
+        description="ENGLISH visual scene for the image generator, <=40 words: concrete subjects, setting, season/event cues that express the campaign goal",
+    )
 
 
 def _get(obj: Any, key: str, default: Any = "") -> Any:
@@ -239,10 +244,15 @@ def draft_concept(
         part for part in [
             _sanitize_image_fragment(f"{background_mode} ecommerce banner background"),
             safe_catalog_line or "featured product scene",
+            # Ground the deterministic prompt in the brief too — the image must
+            # express the campaign, not just the product (Gemini replaces this
+            # with a richer image_concept when available).
+            _sanitize_image_fragment(f"campaign theme: {_truncate(goal, 80)}") if goal else "",
             f"brand color roles {_sanitize_image_fragment(primary['label'])} primary anchor and {_sanitize_image_fragment(secondary['label'])} secondary support",
             font_hint,
+            # Safety (mark-free/people-free) is appended by image-prompt-refine's
+            # un-truncatable suffix — repeating it here only eats word budget.
             "clean negative space for later HTML copy and product focus",
-            "mark-free, interface-free, people-free commercial composition",
         ] if part
     )
 
@@ -277,7 +287,19 @@ def _product_lines(catalog_context: Any) -> str:
     return "; ".join(titles)
 
 
-def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, audience_override: str = "") -> str:
+def _campaign_lang_name(campaign: Any) -> str:
+    from app.core.i18n import campaign_lang, lang_name
+
+    brief = _brief(campaign)
+    explicit = brief.get("language") if isinstance(brief, dict) else getattr(brief, "language", None)
+    if explicit:
+        return lang_name(str(explicit))
+    # Fallback heurístico solo cuando la campaña no trae idioma explícito.
+    goal = str(_get(brief, "goal", "")); audience = str(_get(brief, "audience", ""))
+    return "Spanish (Mexico)" if re.search(r"[áéíóúñ¿¡]|\b(de|para|con|los|las|promo)\b", f"{goal} {audience}", re.I) else "English"
+
+
+def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, audience_override: str = "", refine_instruction: str = "") -> str:
     brief = _brief(campaign)
     goal = _get(brief, "goal", "")
     audience = audience_override or _get(brief, "audience", "")
@@ -288,22 +310,37 @@ def _build_copy_prompt(*, campaign: Any, brand_context: BrandContext, catalog_co
     practices = "; ".join([str(d.get("title", "")) for d in (best_practices or [])[:4] if d.get("title")])
     required = ", ".join(brand_context.voice.required_phrases or [])
     prohibited = ", ".join(brand_context.voice.prohibited_words or [])
-    lang = "Spanish" if re.search(r"[áéíóúñ¿¡]|\b(de|para|con|los|las|promo)\b", f"{goal} {audience}", re.I) else "the brief's language"
+    lang = _campaign_lang_name(campaign)
     return (
         "You are a senior ecommerce copywriter. Write ONE banner's hero copy.\n"
-        f"Campaign goal: {goal}\nAudience: {audience}\nTone: {tone}\nUrgency: {urgency}\n"
+        f"CAMPAIGN GOAL (this is the THEME — the copy, theme_note and image_concept MUST visibly express it; "
+        f"products support the goal, never replace it): {goal}\n"
+        f"Audience: {audience}\nTone: {tone}\nUrgency: {urgency}\n"
         f"Offer / CTA seed: {cta}\nFeatured products: {products or 'the featured catalog'}\n"
         f"Layout direction: {layout_hint}\n"
         f"Best-practice notes from our knowledge base: {practices or 'standard ecommerce banner hierarchy'}\n"
         f"Brand required phrases: {required or 'none'}\nProhibited words (never use): {prohibited or 'none'}\n\n"
         f"Write in {lang}. Be specific to the products and the offer — not generic. "
+        "If the goal names an event, season or moment (e.g. a World Cup, a holiday, same-day delivery), "
+        "the headline and image_concept must reference it concretely. "
         "One headline (<=8 words, benefit-led, may reference the product/season), one short eyebrow (<=4 words), "
-        "one supporting subheadline (<=16 words), one action-first CTA (<=5 words). "
+        "one supporting subheadline (<=16 words), one action-first CTA (<=5 words), "
+        f"and one theme_note: a one-line summary (<=18 words, in {lang}) of the visual scene/theme the banner will convey. "
+        "Also return image_concept (ALWAYS in English, <=40 words): the concrete visual scene the banner IMAGE should "
+        "show — subjects, setting, props and season/event cues that genuinely express the campaign goal and offer "
+        "(e.g. a World Cup campaign needs football/celebration cues, a same-day-delivery promo needs motion/urgency cues). "
+        "Describe a scene, not abstract style words. NEVER write text/letters/logos into the scene. "
         "No clickbait, no prohibited words, no emojis. Return JSON matching the schema."
+        + (
+            f"\n\nUSER REFINEMENT FEEDBACK (MUST be addressed in the rewrite, in the user's language): \"{refine_instruction}\". "
+            "Apply it to the relevant fields and keep everything else consistent with the brief."
+            if refine_instruction
+            else ""
+        )
     )
 
 
-async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any, audience_override: str = "") -> dict[str, str] | None:
+async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_context: Any, best_practices: list[dict[str, Any]] | None, layout_hint: str, settings: Any, cost_guard: Any, audience_override: str = "", refine_instruction: str = "") -> dict[str, str] | None:
     if settings is None or not getattr(settings, "has_google_api_key", lambda: False)():
         return None
     try:
@@ -313,7 +350,7 @@ async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_co
         if not guard.check_and_reserve(EST_CONCEPT_COPY_USD).allowed:
             return None
         result = await gemini_text.generate(
-            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint, audience_override=audience_override),
+            _build_copy_prompt(campaign=campaign, brand_context=brand_context, catalog_context=catalog_context, best_practices=best_practices, layout_hint=layout_hint, audience_override=audience_override, refine_instruction=refine_instruction),
             model=gemini_text.FLASH_MODEL,
             structured=_ConceptCopy,
         )
@@ -323,7 +360,7 @@ async def _gemini_copy(*, campaign: Any, brand_context: BrandContext, catalog_co
         return None
     prohibited = brand_context.voice.prohibited_words or []
     out: dict[str, str] = {}
-    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 40)):
+    for key, limit in (("eyebrow", 32), ("headline", 60), ("subheadline", 120), ("cta", 40), ("theme_note", 160), ("image_concept", 320)):
         value = _remove_prohibited(str(_get(result, key, "")), prohibited)
         if value:
             out[key] = _truncate(value, limit)
@@ -351,6 +388,7 @@ async def copy_for_audience(
         "goal": _get(brief, "goal", ""), "audience": audience or _get(brief, "audience", ""),
         "cta": _get(brief, "cta", ""), "tone": _get(brief, "tone", ""),
         "urgency": _get(brief, "urgency", ""), "placement": _get(brief, "placement", ""),
+        "language": _get(brief, "language", ""),
     }
     base = draft_concept(campaign=overridden, brand_context=brand_context, best_practices=best_practices, catalog_context=catalog_context)
     copy = {k: base.copy.get(k, "") for k in ("eyebrow", "headline", "subheadline", "cta")}
@@ -378,6 +416,7 @@ async def run(
     art_direction: Any = None,
     settings: Any = None,
     cost_guard: Any = None,
+    refine_instruction: str = "",
 ) -> Concept:
     if state is not None:
         campaign = campaign or state.campaign
@@ -403,10 +442,16 @@ async def run(
     gem = await _gemini_copy(
         campaign=campaign, brand_context=brand_context, catalog_context=catalog_context,
         best_practices=best_practices, layout_hint=concept.layout, settings=settings, cost_guard=cost_guard,
+        refine_instruction=refine_instruction,
     )
     if gem:
-        for key in ("eyebrow", "headline", "subheadline", "cta"):
+        for key in ("eyebrow", "headline", "subheadline", "cta", "theme_note"):
             if gem.get(key):
                 concept.copy[key] = gem[key]
         concept.copy["copy_source"] = "gemini"
+        # The model's brief-grounded scene REPLACES the deterministic catalog/palette
+        # image prompt — this is what makes the generated image reflect the campaign
+        # theme (e.g. World Cup, same-day delivery) instead of a generic product mood.
+        if gem.get("image_concept"):
+            concept.image_prompt = _sanitize_image_fragment(gem["image_concept"]) or concept.image_prompt
     return concept

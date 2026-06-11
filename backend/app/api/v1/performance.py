@@ -60,3 +60,27 @@ def create_optimization_proposal(campaign_id: CampaignIdPath, payload: Optimizat
         raise HTTPException(status_code=404, detail=str(exc))
     except MissingSettingsError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
+
+@router.post("/campaigns/{campaign_id}/performance/sync")
+def sync_campaign_performance(campaign_id: CampaignIdPath, request: Request) -> dict:
+    """F2 — manual trigger: ingest one snapshot + evaluate fatigue for this campaign."""
+    from app.core.settings import Settings
+    from app.services.banners.async_run import run_coro
+    from app.services.banners.performance_loop import run_performance_loop
+    from app.services.banners.suggestion_service import configured_service_for_team as suggestions_for_team
+
+    context = require_user_context(request)
+    performance = configured_service_for_team(context.team_id)
+    try:
+        campaign = performance._get_campaign(str(campaign_id))
+    except CampaignNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    summary = run_coro(
+        run_performance_loop(
+            campaigns=[{**campaign, "status": "published"}],
+            performance_service=performance,
+            suggestions=suggestions_for_team(context.team_id),
+            settings=Settings.from_env(),
+        )
+    )
+    return summary

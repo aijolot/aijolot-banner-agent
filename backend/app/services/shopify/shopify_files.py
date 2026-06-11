@@ -38,7 +38,11 @@ mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
 _FILE_CREATE = """
 mutation fileCreate($files: [FileCreateInput!]!) {
   fileCreate(files: $files) {
-    files { id fileStatus alt ... on MediaImage { image { url } } }
+    files {
+      id fileStatus alt
+      ... on MediaImage { image { url } }
+      ... on Video { sources { url mimeType } }
+    }
     userErrors { field message }
   }
 }
@@ -48,6 +52,7 @@ _NODE_IMAGE = """
 query fileUrl($id: ID!) {
   node(id: $id) {
     ... on MediaImage { id fileStatus image { url } }
+    ... on Video { id fileStatus sources { url mimeType } }
   }
 }
 """
@@ -77,6 +82,10 @@ def _mime_for(url: str) -> str:
         return "image/jpeg"
     if lower.endswith(".avif"):
         return "image/avif"
+    if lower.endswith(".mp4"):
+        return "video/mp4"
+    if lower.endswith(".webm"):
+        return "video/webm"
     return "image/webp"
 
 
@@ -127,9 +136,10 @@ def upload_bytes_to_files(
     poster = http_post or _default_multipart_post
     poster(upload_url, params, data, filename, mime_type)
 
+    is_video = mime_type.startswith("video/")
     created = client.graphql(
         _FILE_CREATE,
-        {"files": [{"originalSource": resource_url, "contentType": "IMAGE", "alt": filename}]},
+        {"files": [{"originalSource": resource_url, "contentType": ("VIDEO" if is_video else "IMAGE"), "alt": filename}]},
     )
     fblock = created.get("fileCreate") or {}
     if fblock.get("userErrors"):
@@ -138,19 +148,33 @@ def upload_bytes_to_files(
     if not files:
         return None
     first = files[0]
-    url = ((first.get("image") or {}) or {}).get("url")
+    url = _file_url(first)
     if url:
-        return str(url)
+        return url
 
     # File registered but the CDN URL is not ready yet — poll node(id).
+    # Video processing takes noticeably longer than images (C2): widen the poll.
     file_id = first.get("id")
-    for _ in range(max(0, poll)):
+    attempts = max(0, poll) * (4 if is_video else 1)
+    for _ in range(attempts):
         node = client.graphql(_NODE_IMAGE, {"id": file_id}).get("node") or {}
-        url = ((node.get("image") or {}) or {}).get("url")
-        if url:
-            return str(url)
+        url = _file_url(node)
+        if url and (not is_video or node.get("fileStatus") == "READY"):
+            return url
         if node.get("fileStatus") == "FAILED":
             return None
+    return None
+
+
+def _file_url(node: dict[str, Any]) -> str | None:
+    """CDN URL from a File node — MediaImage.image.url or Video.sources[0].url."""
+    url = ((node.get("image") or {}) or {}).get("url")
+    if url:
+        return str(url)
+    sources = node.get("sources") or []
+    for source in sources:
+        if source.get("url"):
+            return str(source["url"])
     return None
 
 
