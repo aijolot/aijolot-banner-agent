@@ -85,6 +85,7 @@
     var headlineHTML = renderHeadline(live.headline, live.headlineRuns);
     var sub = esc(live.sub || "");
     var cta = esc(live.cta || "");
+    var ctaUrl = esc(live.ctaUrl || "");
     var img = live.imageUrl || "";
     var d = discountParts(live.promo);
     var heroBehind = !!L.heroBehind;
@@ -94,7 +95,7 @@
       (eyebrow ? '<span class="hb-eyebrow" style="font-family:var(--body)">' + eyebrow + "</span>" : "") +
       '<h2 class="hb-headline">' + headlineHTML + "</h2>" +
       (sub ? '<p class="hb-sub" style="font-family:var(--body)">' + sub + "</p>" : "") +
-      (cta ? '<a class="hb-cta" style="font-family:var(--body)">' + cta +
+      (cta ? '<a class="hb-cta"' + (ctaUrl ? ' href="' + ctaUrl + '"' : '') + ' style="font-family:var(--body)">' + cta +
         '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>' : "");
     var badge = (d.big !== "—")
       ? '<span class="hb-discount"><b>' + esc(d.big) + "</b>" + (d.small ? "<span>" + esc(d.small) + "</span>" : "") + "</span>"

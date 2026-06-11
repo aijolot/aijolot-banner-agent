@@ -43,6 +43,9 @@ class ShopifyAdminClient:
         payload = {"asset": {"key": key, "value": value}}
         return self._request("PUT", f"/themes/{theme_id}/assets.json", json=payload).get("asset", {})
 
+    def get_theme_asset(self, *, theme_id: str, key: str) -> dict[str, Any]:
+        return self._request("GET", f"/themes/{theme_id}/assets.json", params={"asset[key]": key}).get("asset", {})
+
     def get_shop_metafield(self, *, namespace: str, key: str) -> dict[str, Any] | None:
         response = self._request("GET", "/metafields.json", params={"namespace": namespace, "key": key, "owner_resource": "shop"})
         metafields = response.get("metafields") or []

@@ -19,6 +19,7 @@ rather than failing the whole publish.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable
 from urllib.parse import urlparse
 
@@ -212,6 +213,22 @@ def rehost_config_assets(
         new_url = _resolve(str(image["url"]))
         if new_url != image["url"]:
             out["image"] = {**image, "url": new_url}
+
+    # Flat image_url field used by CONTROLLED_SNIPPET in the metafield.
+    flat_url = out.get("image_url")
+    if isinstance(flat_url, str) and flat_url:
+        new_url = _resolve(flat_url)
+        if new_url != flat_url:
+            out["image_url"] = new_url
+
+    # Also replace local URLs embedded inside the Liquid section string.
+    section = out.get("section")
+    if isinstance(section, str):
+        def _replace_url(m: re.Match) -> str:  # type: ignore[type-arg]
+            return _resolve(m.group(0))
+        new_section = re.sub(r"https?://[^\s'\"\\>&]+", _replace_url, section)
+        if new_section != section:
+            out["section"] = new_section
 
     if rehosted:
         out["asset_hosting"] = {"provider": "shopify_files", "rehosted": rehosted}
