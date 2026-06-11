@@ -117,7 +117,9 @@ def test_end_to_end_context_to_concept_to_image_prompt_is_deterministic():
     assert prompt == asyncio.run(image_skill.run(concept, brand_context=brand, catalog_context=catalog, art_direction=art))
     assert "ecommerce banner background" in prompt
     assert "Cloud Runner" in prompt
-    assert "#123456" in prompt
+    # Hex codes must never reach the image prompt (they render as on-canvas color
+    # swatches); the brand palette is cued without hex and enforced in HTML/Liquid.
+    assert "#123456" not in prompt
     assert "16:9" in prompt
     assert "\n" not in prompt
     assert 60 <= len(re.findall(r"\b\w+\b", prompt)) <= 120
@@ -258,10 +260,13 @@ def test_concept_and_image_prompt_use_color_system_variants() -> None:
     assert concept.palette_usage["text"] == "Readable Navy"
 
     prompt = asyncio.run(image_skill.run(concept, brand_context=brand))
+    # Color ROLE guidance reaches the image prompt by label + usage hint, but the
+    # hex codes are stripped (they would render as literal swatches on the canvas).
     assert "Trust Blue" in prompt
-    assert "#123456" in prompt
-    assert "Action Amber #FF8800" in prompt
+    assert "Action Amber" in prompt
     assert "Use for CTA" in prompt
+    assert "#123456" not in prompt
+    assert "#FF8800" not in prompt
 
 
 def test_concept_includes_typography_guidance_for_approved_fonts() -> None:

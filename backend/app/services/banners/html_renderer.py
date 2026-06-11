@@ -49,6 +49,48 @@ def _color(concept: Concept, brand: Any, key: str, fallback: str) -> str:
     return value.upper() if isinstance(value, str) and _HEX_RE.match(value) else fallback
 
 
+_INK_DARK = "#111111"
+_INK_LIGHT = "#FFFFFF"
+# WCAG contrast floor for large/bold UI text (the CTA label and headline are
+# both bold and large). Below this we override the resolved text color with a
+# readable ink so a brand palette can never paint, e.g., white-on-white.
+_MIN_TEXT_CONTRAST = 3.0
+
+
+def _relative_luminance(hex_color: str) -> float:
+    """WCAG relative luminance (0..1) of a ``#RRGGBB`` color."""
+    try:
+        r, g, b = (int(hex_color[i : i + 2], 16) / 255.0 for i in (1, 3, 5))
+    except (ValueError, IndexError):
+        return 0.0
+
+    def _lin(channel: float) -> float:
+        return channel / 12.92 if channel <= 0.03928 else ((channel + 0.055) / 1.055) ** 2.4
+
+    return 0.2126 * _lin(r) + 0.7152 * _lin(g) + 0.0722 * _lin(b)
+
+
+def _contrast_ratio(a: str, b: str) -> float:
+    la, lb = _relative_luminance(a), _relative_luminance(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _readable_ink(background: str) -> str:
+    """Pick black or white ink for the strongest contrast against ``background``."""
+    return _INK_DARK if _contrast_ratio(_INK_DARK, background) >= _contrast_ratio(_INK_LIGHT, background) else _INK_LIGHT
+
+
+def _ensure_readable(text_color: str, background: str) -> str:
+    """Keep the brand's text color when legible; otherwise fall back to a
+    readable ink. Preserves brand intent except when contrast is unusably low."""
+    if not (_HEX_RE.match(text_color) and _HEX_RE.match(background)):
+        return text_color
+    if _contrast_ratio(text_color, background) >= _MIN_TEXT_CONTRAST:
+        return text_color
+    return _readable_ink(background)
+
+
 def _asset_url_map(source: dict[Any, str] | None) -> dict[int, str]:
     out: dict[int, str] = {}
     for key, url in (source or {}).items():
@@ -133,6 +175,12 @@ def render_banner_preview(concept: Concept, assets: BannerAssets, *, brand: Any 
     text = _color(concept, brand, "text", _DEFAULT_TEXT)
     cta_bg = _color(concept, brand, "cta_background", _DEFAULT_ACCENT)
     cta_text = _color(concept, brand, "cta_text", _DEFAULT_ACCENT_TEXT)
+    # Legibility guards: the copy sits on a near-white frosted panel and the CTA
+    # label on the accent button. A brand palette can resolve both sides to the
+    # same tone (e.g. white-on-white), so enforce a readable contrast floor while
+    # keeping the brand color whenever it is already legible.
+    text = _ensure_readable(text, _INK_LIGHT)
+    cta_text = _ensure_readable(cta_text, cta_bg)
 
     # Approved/legacy brand fonts (whitelist-validated + quote-normalized upstream);
     # empty resolution keeps today's hardcoded defaults byte-for-byte.
