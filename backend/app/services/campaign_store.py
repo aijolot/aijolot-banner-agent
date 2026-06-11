@@ -171,8 +171,29 @@ def _title(brief: StructuredBrief, text: str) -> str:
     return (promo + " — campaña").strip(" —") if promo else (brief.goal[:40] or "Nueva campaña")
 
 
+_FIELD_LABELS_EN = {
+    "goal": "goal", "audience": "audience", "cta": "CTA", "tone": "tone",
+    "urgency": "urgency", "placement": "placement", "promo": "promo", "deadline": "deadline",
+}
+
+
 def _agent_reply(brief: StructuredBrief) -> str:
+    from app.core.i18n import resolve_lang
+
+    lang = resolve_lang(getattr(brief, "language", None))
     missing = brief.missing()
+    if lang == "en":
+        if not missing:
+            return ("Done — the brief is complete. Review the fields on the right, "
+                    "tweak anything you need and move on whenever you're ready.")
+        labels = [_FIELD_LABELS_EN.get(f, f) for f in missing]
+        captured = []
+        if brief.audience: captured.append(f'audience "{brief.audience}"')
+        if brief.placement: captured.append(f'placement "{brief.placement}"')
+        if brief.urgency: captured.append(f"urgency {brief.urgency}")
+        pre = ("I'm capturing " + ", ".join(captured) + ". ") if captured else ""
+        need = labels[0] if len(labels) == 1 else ", ".join(labels[:-1]) + " and " + labels[-1]
+        return f"{pre}To close the brief I still need: {need}. Can you confirm?"
     if not missing:
         return ("Listo — tengo el brief completo. Revisa los campos a la derecha, "
                 "ajústalos si hace falta y avanza a Arte cuando quieras.")
@@ -328,9 +349,25 @@ def apply_patch(cid: str, fields: dict) -> Campaign | None:
     return get_service().apply_patch(cid, fields)
 
 
-def _intake_with_service(service: CampaignService, message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+def _lang_extractor(lang: str | None):
+    """extract_into + fija structured_brief.language (idioma del switcher)."""
+
+    def _extract(brief: StructuredBrief, message: str) -> StructuredBrief:
+        updated = extract_into(brief, message)
+        if lang and getattr(updated, "language", None) != lang:
+            updated = updated.model_copy(update={"language": lang})
+        return updated
+
+    return _extract
+
+
+def _intake_with_service(service: CampaignService, message: str, campaign_id: str | None, lang: str | None = None) -> tuple[Campaign, str]:
     """Process one user turn using the supplied service."""
 
+    if lang:
+        from app.core.i18n import resolve_lang
+
+        lang = resolve_lang(lang)
     if _gemini_intake_enabled():
         existing = service.get_campaign(campaign_id) if campaign_id else None
         if existing is not None and not can_patch_brief(existing.status):
@@ -338,18 +375,21 @@ def _intake_with_service(service: CampaignService, message: str, campaign_id: st
             return service.intake(
                 message,
                 campaign_id,
-                extractor=extract_into,
+                extractor=_lang_extractor(lang),
                 title_builder=_title,
                 reply_builder=_agent_reply,
             )
         transcript = [m.model_dump() for m in (existing.messages if existing else [])]
         transcript.append({"author_type": "user", "body": message})
+        base_brief = existing.structured_brief if existing else StructuredBrief()
+        if lang:
+            base_brief = base_brief.model_copy(update={"language": lang})
         skill_brief: StructuredBrief | None = None
         skill_question: str | None = None
         try:
             result = _run_campaign_intake_skill_sync(
                 messages=transcript,
-                current_brief=existing.structured_brief if existing else StructuredBrief(),
+                current_brief=base_brief,
             )
             if result is not None:
                 skill_brief = result.structured_brief
@@ -376,19 +416,19 @@ def _intake_with_service(service: CampaignService, message: str, campaign_id: st
     return service.intake(
         message,
         campaign_id,
-        extractor=extract_into,
+        extractor=_lang_extractor(lang),
         title_builder=_title,
         reply_builder=_agent_reply,
     )
 
 
-def intake(message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+def intake(message: str, campaign_id: str | None, lang: str | None = None) -> tuple[Campaign, str]:
     """Process one user turn. Returns (campaign, agent_reply_text)."""
 
-    return _intake_with_service(get_service(), message, campaign_id)
+    return _intake_with_service(get_service(), message, campaign_id, lang=lang)
 
 
-def intake_for_context(context: UserContext, message: str, campaign_id: str | None) -> tuple[Campaign, str]:
+def intake_for_context(context: UserContext, message: str, campaign_id: str | None, lang: str | None = None) -> tuple[Campaign, str]:
     """Process one user turn with a request-scoped campaign service."""
 
-    return _intake_with_service(get_service_for_context(context), message, campaign_id)
+    return _intake_with_service(get_service_for_context(context), message, campaign_id, lang=lang)

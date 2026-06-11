@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,8 @@ from typing import Any, Protocol
 
 from app.agents.state import BannerAssets, BannerSessionState, Campaign as StateCampaign, Concept as StateConcept, Variant as StateVariant
 from app.core.settings import Settings
+from app.schemas.decision_trace import build_concept_trace
+from app.core.i18n import campaign_lang, lang_name as i18n_lang_name, t as i18n_t
 from app.services.gemini.cost_guard import CostGuard, get_default_cost_guard
 from app.workflows.banner_creation import (
     DETERMINISTIC_LAYOUT_VARIANT_KEYS,
@@ -105,6 +108,7 @@ class RunOrchestrator:
         campaigns: CampaignRepositoryProtocol,
         catalog: Any = None,
         asset_service: Any = None,
+        art_directions: Any = None,
         settings: Settings | None = None,
         cost_guard: CostGuard | None = None,
         team_id: str | None = None,
@@ -116,6 +120,7 @@ class RunOrchestrator:
         self.campaigns = campaigns
         self.catalog = catalog
         self.asset_service = asset_service
+        self.art_directions = art_directions
         self.settings = settings or Settings.from_env()
         self.cost_guard = cost_guard or get_default_cost_guard(self.settings)
         self.team_id = team_id
@@ -135,6 +140,7 @@ class RunOrchestrator:
         is attached when ``background`` is a target.
         """
         campaign_id = str(campaign_row["id"])
+        lang = campaign_lang(campaign_row)
         is_refine = bool(prompt) or bool(targets)
         target_set = set(targets or [])
         recorder = _EventRecorder(run_id=run_id)
@@ -180,7 +186,7 @@ class RunOrchestrator:
             best_practices = await self._run_skill(
                 "best-practices-retrieve", campaign_state, brand
             )
-            recorder.succeed(node, {"retrieved": len(best_practices)})
+            recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
 
             # 5 — concept (grounded in KG liquid_pattern layouts when available)
             node = "draft_banner_concept"
@@ -196,9 +202,16 @@ class RunOrchestrator:
                 concept.hierarchy_notes = f"Refine: {_short(prompt, 120)}; {concept.hierarchy_notes}"
             # Always generate + attach an AI background so the assembled banner
             # (and the canvas) shows a real themed background, not a flat default.
-            background = await self._refine_background(concept, brand)
-            art_direction = await self._propose_art_direction(concept, brand)
+            background, _bg_source = await self._refine_background(concept, brand)
+            art_direction = await self._propose_art_direction(concept, brand, lang=lang)
+            art_direction = {
+                **art_direction,
+                **(await self._resolve_creative_mode(
+                    campaign_id=campaign_id, campaign_state=campaign_state, brand=brand, prev_art={}, lang=lang
+                )),
+            }
             fonts = art_direction.get("fonts") or {}
+            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand, lang=lang).model_dump()
             recorder.succeed(
                 node,
                 {
@@ -209,6 +222,7 @@ class RunOrchestrator:
                     "layout_candidates": len(layout_candidates),
                     "targets": sorted(target_set) or None,
                     "background": (background or {}).get("name") if background else None,
+                    "decision_trace": decision_trace,
                 },
             )
 
@@ -218,10 +232,12 @@ class RunOrchestrator:
             )
             revision_id = str(revision["id"])
             layout_rows = self._create_layout_variants(revision_id, concept)
+            compose_report: dict[str, Any] = {}
             variant_rows = await self._create_variant_banners(
                 revision_id=revision_id, concept=concept, campaign_state=campaign_state,
                 campaign_row=campaign_row, brand=brand, catalog_context=catalog_context, best_practices=best_practices,
-                text_ink=_bg_text_ink(background),
+                text_ink=_bg_text_ink(background), compose_report=compose_report,
+                compose_heroes=str(art_direction.get("creative_mode") or "composite") == "composite",
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
@@ -244,6 +260,8 @@ class RunOrchestrator:
                 total_cost=total_cost,
                 is_refine=is_refine,
                 target_set=target_set,
+                metadata_extra=({"hero_compose": compose_report} if compose_report else None),
+                decision_trace=decision_trace,
                 cta_url=self._destination_url(campaign_row),
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -278,6 +296,7 @@ class RunOrchestrator:
         is_refine: bool = False,
         target_set: set[str] | None = None,
         metadata_extra: dict[str, Any] | None = None,
+        decision_trace: dict[str, Any] | None = None,
         cta_url: str | None = None,
     ) -> OrchestratorOutcome:
         """Nodes 6–9 (image → optimize → render → audit) + promote.
@@ -289,18 +308,76 @@ class RunOrchestrator:
         target_set = target_set or set()
         node = ""
         try:
+            creative_mode = str((art_direction or {}).get("creative_mode") or "composite")
+            full_bleed = creative_mode in ("full_picture", "video")
+
             # 6 — image (cost-gated; degrades to free fake provider)
             node = "generate_image"
             recorder.start(node)
             image_bytes, image_meta, image_cost = await self._generate_image(
-                concept=concept, brand=brand, campaign_id=campaign_id
+                concept=concept, brand=brand, campaign_id=campaign_id, art_direction=art_direction
             )
             total_cost += image_cost
             recorder.succeed(
                 node,
-                {"provider": image_meta.get("provider"), "size_bytes": image_meta.get("size_bytes")},
+                {
+                    "provider": image_meta.get("provider"),
+                    "size_bytes": image_meta.get("size_bytes"),
+                    "creative_mode": creative_mode,
+                },
                 cost_usd=image_cost,
             )
+
+            # 6b — video (C2): only in video mode; degrades to the image banner.
+            video_url: str | None = None
+            video_degraded_reason: str | None = None
+            if creative_mode == "video":
+                node = "generate_video"
+                recorder.start(node)
+                from app.services.banners.video_gen import generate_video, motion_prompt
+
+                video_response, video_meta, video_cost = await generate_video(
+                    motion_prompt(str(image_meta.get("refined_prompt") or getattr(concept, "image_prompt", "") or "")),
+                    settings=self.settings,
+                    cost_guard=self.cost_guard,
+                    campaign_id=campaign_id,
+                    reference_image=(image_bytes, "image/png"),
+                )
+                total_cost += video_cost
+                if video_response is not None and self.asset_service is not None:
+                    try:
+                        video_row = self.asset_service.upload_video(
+                            video_bytes=video_response.video_bytes,
+                            campaign_id=campaign_id,
+                            revision_id=revision_id,
+                            asset_group_key="hero-clip",
+                            mime_type=video_response.mime_type,
+                            video_prompt=_short(video_response.prompt, 300),
+                        )
+                        video_url = video_row.get("public_url")
+                    except Exception:  # noqa: BLE001
+                        video_url = None
+                if video_response is not None and self.asset_service is None:
+                    video_degraded_reason = "no_storage"
+                elif video_response is None:
+                    video_degraded_reason = str(video_meta.get("reason") or "generation_failed")
+                elif not video_url:
+                    video_degraded_reason = "upload_failed"
+                # Asset-weight budget (LCP guard): warn > 1.5MB, heavy > 3MB.
+                clip_bytes = int(video_meta.get("size_bytes") or 0)
+                weight_status = "heavy" if clip_bytes > 3_000_000 else ("warn" if clip_bytes > 1_500_000 else "ok")
+                recorder.succeed(
+                    node,
+                    {
+                        "provider": video_meta.get("provider"),
+                        "duration_s": video_meta.get("duration_seconds"),
+                        "size_bytes": video_meta.get("size_bytes"),
+                        "weight_status": weight_status if not video_degraded_reason else None,
+                        "video_degraded": bool(video_degraded_reason),
+                        "degraded_reason": video_degraded_reason,
+                    },
+                    cost_usd=video_cost,
+                )
 
             # 7 — optimize + persist assets
             node = "optimize_assets"
@@ -334,8 +411,39 @@ class RunOrchestrator:
             # Surface the generated image + background onto the concept so the
             # canvas Banner renders them (not just the standalone html_preview).
             concept_dict = _concept_dict(concept)
+            if full_bleed and image_url and art_direction is not None:
+                # C1 — full-picture: the generated scene IS the banner background.
+                # No chroma/compose; copy legibility comes from measured ink + scrim.
+                layout_for_zone = dict(art_direction.get("layout") or {})
+                from app.services.banners.contrast import adaptive_ink_and_scrim
+
+                contrast = adaptive_ink_and_scrim(image_bytes, layout_for_zone)
+                try:
+                    fold = int((art_direction.get("fold_percentage") or 55))
+                except (TypeError, ValueError):
+                    fold = 55
+                text_x = float(layout_for_zone.get("textX") or 6.0)
+                text_w = float(layout_for_zone.get("textW") or 48.0)
+                focal_x = max(0.0, min(100.0, 100.0 - (text_x + text_w / 2.0)))
+                art_direction = {
+                    **art_direction,
+                    "full_bleed": True,
+                    "ink": contrast["ink"],
+                    "scrim": {"dir": contrast["scrim_dir"], "alpha": contrast["scrim_alpha"]},
+                    "focal": {"x": round(focal_x, 1), "y": fold},
+                    **({"video": {"url": video_url, "poster_url": image_url}} if creative_mode == "video" and video_url else {}),
+                }
+                background = {
+                    "name": "Escena completa generada",
+                    "description": "Imagen full-bleed generada por el agente (modo full picture).",
+                    "css": "",
+                    "html": "",
+                    "image_url": image_url,
+                }
             if background:
                 concept_dict["background"] = background
+            if decision_trace:
+                concept_dict["decision_trace"] = decision_trace
             if image_url:
                 concept_dict["generated_art"] = [{"public_url": image_url, "storage_path": preview_path, "shot_type": "hero"}]
             if art_direction:
@@ -363,7 +471,10 @@ class RunOrchestrator:
                 concept_dict["art_direction"] = {
                     "fonts": art_direction.get("fonts") or fonts,
                     "layout": layout,
-                    "ink": _bg_text_ink(background),
+                    # Full-bleed ink was MEASURED against the generated scene (C1);
+                    # composed banners keep the contrast-from-background heuristic.
+                    "ink": (art_direction.get("ink") if art_direction.get("full_bleed") else _bg_text_ink(background)),
+                    **({k: art_direction[k] for k in ("creative_mode", "include_humans", "mode_rationale", "mode_source", "full_bleed", "scrim", "focal", "video", "ink_sections", "type_scale") if art_direction.get(k) is not None}),
                     **({"review": review_report} if review_report else {}),
                 }
             self.revisions.update(
@@ -377,7 +488,7 @@ class RunOrchestrator:
                     }
                 ),
             )
-            recorder.succeed(node, {"html_bytes": len(html_standalone), "has_liquid": bool(liquid_section), "image": bool(image_url), "background": (background or {}).get("name")})
+            recorder.succeed(node, {"html_bytes": len(html_standalone), "has_liquid": bool(liquid_section), "image": bool(image_url), "background": (background or {}).get("name"), **({"video": bool((art_direction or {}).get("video"))} if creative_mode == "video" else {})})
 
             # 9 — audit
             node = "audit"
@@ -443,6 +554,7 @@ class RunOrchestrator:
         with the user's feedback).
         """
         campaign_id = str(campaign_row["id"])
+        lang = campaign_lang(campaign_row)
         is_refine = bool(prompt) or bool(targets)
         target_set = set(targets or [])
         recorder = _EventRecorder(run_id=run_id)
@@ -476,23 +588,151 @@ class RunOrchestrator:
             state_variants = [StateVariant(customer_tag="all", intent_delta="default")]
             recorder.succeed(node, {"segments": len(state_variants)})
 
+            # W0.1 — grounded plan-iterate: interpret the feedback into directed
+            # ops over the PREVIOUS plan instead of re-drafting everything. Loaded
+            # BEFORE research so iterations reuse the cached KG retrieval.
+            prev_concept: dict[str, Any] = {}
+            if is_refine:
+                latest = self.revisions.get_latest_by_campaign_id(campaign_id=campaign_id)
+                if latest and str(latest.get("status") or "") == "plan":
+                    prev_concept = dict(latest.get("concept") or {})
+            research_cache = dict(prev_concept.get("research_cache") or {})
+
             node = "research_best_practices"
             recorder.start(node)
-            best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
-            recorder.succeed(node, {"retrieved": len(best_practices)})
+            if is_refine and research_cache.get("best_practices") is not None:
+                # Plan-iterate: the KG corpus didn't change between iterations —
+                # reuse the previous run's retrieval instead of re-querying
+                # (this is what made every iteration recompute from scratch).
+                best_practices = list(research_cache.get("best_practices") or [])
+                recorder.succeed(
+                    node,
+                    {"retrieved": len(best_practices), "reused_from_previous_plan": True,
+                     "sources": _kg_sources_payload(best_practices)},
+                )
+            else:
+                best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
+                recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
 
             node = "draft_banner_concept"
             recorder.start(node)
-            layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
-            concept = await self._run_concept(
-                campaign_state, brand, state_variants, best_practices, layout_candidates, catalog_context
+
+            rplan = None
+            if is_refine:
+                rplan = await self._interpret_refinement(prompt or "", targets, prev_concept or None)
+                target_set = set(rplan.targets)
+
+            needs_redraft = (
+                (not is_refine)
+                or (not prev_concept)
+                or (rplan is not None and rplan.has("redraft_concept", "edit_copy", "adjust_layout"))
             )
+            layout_candidates = list(research_cache.get("layout_candidates") or [])
+            if needs_redraft:
+                if not (is_refine and layout_candidates):
+                    layout_candidates = await self._run_layout_retrieve(campaign_state, brand)
+                concept = await self._run_concept(
+                    campaign_state, brand, state_variants, best_practices, layout_candidates, catalog_context,
+                    refine_instruction=(prompt or "") if is_refine else "",
+                )
+            else:
+                concept = _dict_to_concept(prev_concept)
             if is_refine and prompt:
                 concept.copy["revision_note"] = _short(prompt, 280)
                 concept.hierarchy_notes = f"Refine: {_short(prompt, 120)}; {concept.hierarchy_notes}"
-            background = await self._refine_background(concept, brand)
-            art_direction = await self._propose_art_direction(concept, brand)
+
+            # Background: only (re)generate when the user asked for it.
+            prev_background = dict(prev_concept.get("background") or {}) or None
+            decor_skipped = False
+            background_changed = False
+            if not is_refine or prev_background is None:
+                background, _bg_source = await self._refine_background(concept, brand)
+                background_changed = background is not None
+            else:
+                bg_op = next((o for o in rplan.ops if o.op in ("change_background", "change_decor")), None) if rplan else None
+                if bg_op is None:
+                    background = prev_background
+                elif bg_op.op == "change_decor" and not self.settings.has_google_api_key():
+                    # Directed decor swaps need the LLM; deterministically replacing
+                    # the background would be exactly the bug we're fixing — keep it.
+                    background = prev_background
+                    decor_skipped = True
+                else:
+                    new_bg, bg_source = await self._refine_background(
+                        concept, brand,
+                        instruction=(bg_op.instruction or prompt or ""),
+                        base_background=prev_background,
+                    )
+                    if bg_op.op == "change_decor" and bg_source != "gemini":
+                        background = prev_background
+                        decor_skipped = True
+                    else:
+                        background = new_bg or prev_background
+                        background_changed = new_bg is not None
+
+            # Art direction: keep fonts/layout stable across patch-only iterations.
+            prev_art = dict(prev_concept.get("art_direction") or {})
+            if needs_redraft or not prev_art:
+                art_direction = await self._propose_art_direction(concept, brand, lang=lang)
+            else:
+                art_direction = prev_art
             fonts = art_direction.get("fonts") or {}
+
+            # C0 — creative mode: user override (art_directions.mode_source='user')
+            # is authoritative; patch-only iterates keep the previous plan's mode;
+            # otherwise the agent recommends (LLM + deterministic vertical rules).
+            mode = await self._resolve_creative_mode(
+                campaign_id=campaign_id,
+                campaign_state=campaign_state,
+                brand=brand,
+                prev_art=prev_art if not needs_redraft else {},
+                lang=lang,
+            )
+
+            # El placement deja de ser un paso manual previo: el agente propone
+            # el SET de piezas (dónde, cuántas, formato) como consecuencia del
+            # brief. Patch-only iterates conservan la propuesta anterior.
+            prev_plan_block = dict(prev_concept.get("plan") or {})
+            if not needs_redraft and prev_plan_block.get("placement_plan"):
+                placement_plan = dict(prev_plan_block["placement_plan"])
+            else:
+                placement_skill = _load_runtime_skill("placement-plan-recommend")
+                placement_plan = (
+                    await placement_skill.recommend(
+                        campaign_row, brand,
+                        creative_mode=str(mode.get("creative_mode") or "composite"),
+                        settings=self.settings, cost_guard=self.cost_guard, lang=lang,
+                    )
+                ).model_dump()
+
+            # Directed ink ops (contrast complaints / explicit text colors).
+            ink_override: str | None = None
+            ink_sections: dict[str, str] = dict(prev_art.get("ink_sections") or {})
+            for op in (rplan.ops if rplan else []):
+                if op.op != "set_ink":
+                    continue
+                value = op.value or _inverted_or_contrast_ink(prev_art.get("ink"), background)
+                if op.section:
+                    ink_sections[op.section] = value
+                else:
+                    ink_override = value
+
+            # Directed image-scene op: the user corrected WHAT the image should
+            # show. The override is the new scene seed; it survives patch-only
+            # iterations and is dropped on a full concept redraft (new concept →
+            # new brief-grounded scene).
+            image_op = next((o for o in (rplan.ops if rplan else []) if o.op == "set_image_prompt"), None)
+            if image_op is not None and (image_op.instruction or prompt or "").strip():
+                image_prompt_override: str | None = _short((image_op.instruction or prompt or "").strip(), 600)
+                image_prompt_source = "user"
+            elif not needs_redraft and prev_art.get("image_prompt_override"):
+                image_prompt_override = str(prev_art["image_prompt_override"])
+                image_prompt_source = str(prev_art.get("image_prompt_source") or "user")
+            else:
+                image_prompt_override = None
+                image_prompt_source = "agent"
+
+            decision_trace = build_concept_trace(concept=concept, best_practices=best_practices, brand=brand, lang=lang).model_dump()
             recorder.succeed(
                 node,
                 {
@@ -500,6 +740,15 @@ class RunOrchestrator:
                     "fonts": f"{fonts.get('display')}/{fonts.get('body')}",
                     "headline": _short(concept.copy.get("headline", "")),
                     "background": (background or {}).get("name") if background else None,
+                    "background_changed": background_changed,
+                    "decor_skipped_no_llm": decor_skipped or None,
+                    "reused_previous_concept": (not needs_redraft) or None,
+                    "interpreted_ops": (rplan.op_names() if rplan else None),
+                    "interpret_source": (rplan.source if rplan else None),
+                    "decision_trace": decision_trace,
+                    "creative_mode": mode.get("creative_mode"),
+                    "include_humans": mode.get("include_humans"),
+                    "placement_pieces": len(placement_plan.get("pieces") or []),
                     "phase": "plan",
                 },
             )
@@ -512,20 +761,64 @@ class RunOrchestrator:
             concept_dict = _concept_dict(concept)
             if background:
                 concept_dict["background"] = background
-            concept_dict["art_direction"] = {
+            # Ink precedence: directed op > previous plan's ink (when the
+            # background didn't change) > contrast-from-background.
+            if ink_override:
+                ink = ink_override
+            elif not background_changed and prev_art.get("ink"):
+                ink = str(prev_art["ink"])
+            else:
+                ink = _bg_text_ink(background)
+            final_art_direction = {
                 "fonts": art_direction.get("fonts") or fonts,
                 "layout": art_direction.get("layout") or {},
-                "ink": _bg_text_ink(background),
+                "ink": ink,
+                **({"ink_sections": ink_sections} if ink_sections else {}),
+                **({"image_prompt_override": image_prompt_override, "image_prompt_source": image_prompt_source}
+                   if image_prompt_override else {}),
+                **mode,
+            }
+            concept_dict["art_direction"] = final_art_direction
+            concept_dict["decision_trace"] = decision_trace
+            # Research cache: lets the next plan-iterate skip the KG round-trip.
+            concept_dict["research_cache"] = {
+                "best_practices": _json_safe(best_practices),
+                "layout_candidates": _json_safe(layout_candidates),
             }
             concept_dict["plan"] = self._build_campaign_plan(
                 concept=concept,
                 background=background,
-                art_direction=art_direction,
+                art_direction=final_art_direction,
                 campaign_row=campaign_row,
                 campaign_state=campaign_state,
                 revision_id=revision_id,
                 run_id=run_id,
+                lang=lang,
             )
+            concept_dict["plan"]["decision_trace"] = decision_trace
+            concept_dict["plan"]["placement_plan"] = placement_plan
+            concept_dict["plan"]["creative_mode"] = mode.get("creative_mode")
+            concept_dict["plan"]["include_humans"] = bool(mode.get("include_humans"))
+            concept_dict["plan"]["mode_rationale"] = str(mode.get("mode_rationale") or "")
+            concept_dict["plan"]["mode_source"] = str(mode.get("mode_source") or "agent")
+            # image_plan — the EXACT prompt the build will send to the image model,
+            # plus the editable scene seed. Shown in the plan so the user corrects
+            # the image BEFORE paying for the build (op: set_image_prompt).
+            scene_seed = image_prompt_override or str(getattr(concept, "image_prompt", "") or "")
+            planned_image_prompt = await _load_runtime_skill("image-prompt-refine").run(
+                {"image_prompt": scene_seed, "layout": getattr(concept, "layout", "")},
+                brand_context=brand,
+                art_direction=final_art_direction,
+            )
+            wants_video = str(mode.get("creative_mode") or "") == "video"
+            concept_dict["plan"]["image_plan"] = {
+                "scene": scene_seed,
+                "prompt": planned_image_prompt,
+                "source": image_prompt_source if image_prompt_override else "agent",
+                "creative_mode": str(mode.get("creative_mode") or "composite"),
+                "video_requested": wants_video,
+                "video_enabled": bool(getattr(self.settings, "video_generation_enabled", False)),
+            }
             self.revisions.update(revision_id=revision_id, data=_json_safe({"concept": concept_dict}))
 
             return OrchestratorOutcome(
@@ -539,6 +832,8 @@ class RunOrchestrator:
                     "phase": "plan",
                     "awaiting_approval": True,
                     "refine_targets": sorted(target_set) if is_refine else None,
+                    "interpreted_ops": (rplan.op_names() if rplan else None),
+                    "interpret_source": (rplan.source if rplan else None),
                 },
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -589,7 +884,7 @@ class RunOrchestrator:
             node = "research_best_practices"
             recorder.start(node)
             best_practices = await self._run_skill("best-practices-retrieve", campaign_state, brand)
-            recorder.succeed(node, {"retrieved": len(best_practices)})
+            recorder.succeed(node, {"retrieved": len(best_practices), "sources": _kg_sources_payload(best_practices)})
 
             # Reuse the APPROVED creative verbatim (no re-draft): the plan is the contract.
             node = "draft_banner_concept"
@@ -610,6 +905,7 @@ class RunOrchestrator:
 
             revision_id = str(plan_revision["id"])
             self._create_layout_variants(revision_id, concept)
+            compose_report: dict[str, Any] = {}
             variant_rows = await self._create_variant_banners(
                 revision_id=revision_id,
                 concept=concept,
@@ -619,6 +915,8 @@ class RunOrchestrator:
                 catalog_context=catalog_context,
                 best_practices=best_practices,
                 text_ink=_bg_text_ink(background),
+                compose_report=compose_report,
+                compose_heroes=str((art_direction or {}).get("creative_mode") or "composite") == "composite",
             )
             banner_variant_id = str(variant_rows[0]["id"]) if variant_rows else None
 
@@ -639,7 +937,8 @@ class RunOrchestrator:
                 total_cost=0.0,
                 is_refine=False,
                 target_set=set(),
-                metadata_extra={"phase": "build"},
+                metadata_extra={"phase": "build", **({"hero_compose": compose_report} if compose_report else {})},
+                decision_trace=dict((plan_revision.get("concept") or {}).get("decision_trace") or {}) or None,
                 cta_url=self._destination_url(campaign_row),
             )
         except Exception as exc:  # noqa: BLE001 — honest failure: record + surface
@@ -692,7 +991,10 @@ class RunOrchestrator:
             recorder.start(node)
             edited = []
             if {"copy", "concept", "layout"} & target_set:
-                fresh = await self._run_concept(campaign_state, brand, [StateVariant(customer_tag="all", intent_delta="default")], [], None, None)
+                fresh = await self._run_concept(
+                    campaign_state, brand, [StateVariant(customer_tag="all", intent_delta="default")], [], None, None,
+                    refine_instruction=prompt,
+                )
                 fresh_dict = _concept_dict(fresh)
                 if {"copy", "concept"} & target_set:
                     cdict["copy"] = {**cdict.get("copy", {}), **fresh_dict.get("copy", {})}
@@ -701,11 +1003,29 @@ class RunOrchestrator:
                     cdict["layout"] = fresh_dict.get("layout", cdict["layout"])
                     cdict["source_refs"] = fresh_dict.get("source_refs", cdict.get("source_refs", []))
                     edited.append("layout")
-            if "background" in target_set:
-                bg = await self._refine_background(_dict_to_concept(cdict), brand)
-                if bg:
-                    cdict["background"] = bg
-                    edited.append("background")
+            if {"background", "decor"} & target_set:
+                base_bg = dict(cdict.get("background") or {}) or None
+                directed = "decor" in target_set
+                if directed and not self.settings.has_google_api_key():
+                    # A directed decor swap can't be honored deterministically —
+                    # keep the current background instead of replacing it (W0.1).
+                    edited.append("background_kept(decor_no_llm)")
+                else:
+                    bg, bg_source = await self._refine_background(
+                        _dict_to_concept(cdict), brand,
+                        instruction=prompt if directed else "",
+                        base_background=base_bg if directed else None,
+                    )
+                    if directed and bg_source != "gemini":
+                        edited.append("background_kept(decor_no_llm)")
+                    elif bg:
+                        cdict["background"] = bg
+                        edited.append("background")
+            if "ink" in target_set:
+                art = dict(cdict.get("art_direction") or {})
+                art["ink"] = _inverted_or_contrast_ink(art.get("ink"), cdict.get("background"))
+                cdict["art_direction"] = art
+                edited.append("ink")
             cdict["copy"]["revision_note"] = _short(prompt, 280)
             recorder.succeed(node, {"edited": edited or ["(none — image only)"]})
 
@@ -828,6 +1148,7 @@ class RunOrchestrator:
             urgency=structured.get("urgency") or "medium",
             placement=structured.get("placement") or "hero_main",
             deadline=deadline,
+            language=str(structured.get("language") or "es"),
         )
 
     async def _run_skill(self, skill_id: str, campaign: Any, brand: Any) -> list[dict[str, Any]]:
@@ -849,6 +1170,8 @@ class RunOrchestrator:
         best_practices: list[dict[str, Any]],
         layout_candidates: list[dict[str, Any]] | None = None,
         catalog_context: dict[str, Any] | None = None,
+        *,
+        refine_instruction: str = "",
     ) -> Any:
         skill = _load_runtime_skill("banner-concept-draft")
         return await skill.run(
@@ -860,6 +1183,7 @@ class RunOrchestrator:
             catalog_context=catalog_context,
             settings=self.settings,
             cost_guard=self.cost_guard,
+            refine_instruction=refine_instruction,
         )
 
     def _load_catalog_context(self, campaign_id: str, campaign_row: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -921,18 +1245,29 @@ class RunOrchestrator:
             return _short(text, 40)
         return ""
 
-    async def _generate_image(self, *, concept: Any, brand: Any, campaign_id: str) -> tuple[bytes, dict[str, Any], float]:
+    async def _generate_image(
+        self, *, concept: Any, brand: Any, campaign_id: str, art_direction: dict[str, Any] | None = None
+    ) -> tuple[bytes, dict[str, Any], float]:
         from app.services.banners.image_gen import generate_image
 
         prompt_skill = _load_runtime_skill("image-prompt-refine")
-        refined_prompt = await prompt_skill.run(concept, brand_context=brand)
-        return await generate_image(
+        # A user-corrected scene (plan's image_plan / op set_image_prompt) replaces
+        # the concept's scene seed verbatim — the plan is the contract.
+        override = str((art_direction or {}).get("image_prompt_override") or "").strip()
+        prompt_input: Any = (
+            {"image_prompt": override, "layout": getattr(concept, "layout", "")} if override else concept
+        )
+        refined_prompt = await prompt_skill.run(prompt_input, brand_context=brand, art_direction=art_direction)
+        image_bytes, meta, cost = await generate_image(
             refined_prompt,
             settings=self.settings,
             cost_guard=self.cost_guard,
             campaign_id=campaign_id,
             concept=concept,
         )
+        meta["refined_prompt"] = refined_prompt
+        meta["prompt_source"] = "user" if override else "agent"
+        return image_bytes, meta, cost
 
     async def _compose_variant_hero(
         self,
@@ -943,18 +1278,21 @@ class RunOrchestrator:
         revision_id: str,
         campaign_state: StateCampaign | None = None,
         brand: Any = None,
-    ) -> str | None:
+    ) -> tuple[str | None, str]:
         """Generate a campaign-styled, background-removed product hero for a variant.
 
         Feeds the variant's REAL product photo to Nano Banana Pro as a reference and
         asks for a composition (bottle + campaign props) on a flat chroma-green field,
         then keys the green out to a transparent PNG so the creative background shows
-        through. Returns the hero's public URL, or None (caller falls back to the raw
-        product photo) when there is no product image, no storage, or generation fails.
+        through. Returns ``(public_url | None, status)``; a ``chroma_failed`` first
+        attempt is retried ONCE with a reinforced chroma instruction (W0.2), and the
+        status is surfaced so failures are never silent.
         """
         product_url = str(spec.get("product_image_url") or "").strip()
-        if not product_url or self.asset_service is None:
-            return None
+        if not product_url:
+            return None, "no_image"
+        if self.asset_service is None:
+            return None, "no_storage"
 
         import httpx
 
@@ -964,11 +1302,11 @@ class RunOrchestrator:
             with httpx.Client(timeout=20.0) as http:
                 resp = http.get(product_url)
             if resp.status_code >= 400 or not resp.content:
-                return None
+                return None, "ref_fetch_failed"
             ref_bytes = resp.content
             ref_mime = resp.headers.get("content-type", "image/jpeg").split(";")[0] or "image/jpeg"
         except Exception:  # noqa: BLE001
-            return None
+            return None, "ref_fetch_failed"
 
         scene = await self._propose_art_scene(
             concept=concept, brand=brand, product_title=str(spec.get("product_title") or "the featured product"),
@@ -977,31 +1315,42 @@ class RunOrchestrator:
         prompt = self._hero_compose_prompt(spec=spec, concept=concept, scene=scene)
         from app.services.banners.image_gen import generate_image as _gen
 
-        try:
-            raw_bytes, meta, _cost = await _gen(
-                prompt,
-                settings=self.settings,
-                cost_guard=self.cost_guard,
-                campaign_id=campaign_id,
-                aspect_ratio="3:4",
-                concept=concept,
-                reference_images=((ref_bytes, ref_mime),),
-            )
-        except Exception:  # noqa: BLE001 — generation failed; fall back to product photo
-            return None
-        if not meta.get("is_real_provider"):
-            # Fake provider has no chroma field to key — not a usable transparent hero.
-            return None
-        try:
-            png = chroma_key_to_png(raw_bytes)
-        except ValueError:
-            return None
-        # Sanity: a clean cut-out keys out a large green margin. If little was removed,
-        # the model rendered a full scene instead of flat green (un-keyable) — reject it
-        # so the Canvas falls back to the plain product photo rather than show a messy
-        # rectangle with baked-in scenery/text.
-        if transparent_fraction(png) < 0.25:
-            return None
+        async def _attempt(attempt_prompt: str) -> tuple[bytes | None, str]:
+            try:
+                raw_bytes, meta, _cost = await _gen(
+                    attempt_prompt,
+                    settings=self.settings,
+                    cost_guard=self.cost_guard,
+                    campaign_id=campaign_id,
+                    aspect_ratio="3:4",
+                    concept=concept,
+                    reference_images=((ref_bytes, ref_mime),),
+                )
+            except Exception:  # noqa: BLE001 — generation failed; fall back to product photo
+                return None, "error"
+            if not meta.get("is_real_provider"):
+                # Fake provider has no chroma field to key — not a usable transparent hero.
+                return None, "fake_provider"
+            try:
+                keyed = chroma_key_to_png(raw_bytes)
+            except ValueError:
+                return None, "chroma_failed"
+            # Sanity: a clean cut-out keys out a large green margin. If little was removed,
+            # the model rendered a full scene instead of flat green (un-keyable).
+            if transparent_fraction(keyed) < 0.25:
+                return None, "chroma_failed"
+            return keyed, "ok"
+
+        png, status = await _attempt(prompt)
+        if png is None and status == "chroma_failed":
+            # W0.2 — ONE reinforced retry: product shots must come back on chroma
+            # green so the background can be keyed out; never silently accept a
+            # baked-in scene.
+            png, status = await _attempt(_CHROMA_RETRY_PREFIX + prompt)
+            if png is not None:
+                status = "ok_retry"
+        if png is None:
+            return None, status
         try:
             row = self.asset_service.upload_png(
                 png_bytes=png,
@@ -1012,9 +1361,9 @@ class RunOrchestrator:
                 alt_text=str(spec.get("product_title") or "Producto"),
                 image_prompt=_short(prompt, 300),
             )
-            return row.get("public_url")
+            return row.get("public_url"), status
         except Exception:  # noqa: BLE001
-            return None
+            return None, "upload_failed"
 
     async def _propose_art_scene(self, *, concept: Any, brand: Any, product_title: str, campaign_state: StateCampaign) -> str:
         """Creative-concept step for the IMAGE: an agent reads the brief and proposes a
@@ -1215,11 +1564,23 @@ class RunOrchestrator:
             "sub": row.get("subheadline") or copy.get("subheadline") or "",
             "cta": row.get("cta_text") or copy.get("cta") or "",
             "promo": row.get("cta_text") or copy.get("cta") or "",
-            "imageUrl": fp.get("product_hero_url") or fp.get("product_image_url") or image_url,
+            "imageUrl": (None if art_direction.get("full_bleed") else (fp.get("product_hero_url") or fp.get("product_image_url") or image_url)),
+            "bgImageUrl": ((background or {}).get("image_url") if art_direction.get("full_bleed") else None),
+            "bgFocal": art_direction.get("focal"),
+            "scrim": art_direction.get("scrim"),
+            "videoUrl": ((art_direction.get("video") or {}).get("url")),
+            "posterUrl": ((art_direction.get("video") or {}).get("poster_url")),
+            "imageUrls": [
+                str(r.get("product_hero_url") or r.get("product_image_url"))
+                for r in ((row.get("audience_rule") or {}).get("featured_products") or [])
+                if (r.get("product_hero_url") or r.get("product_image_url"))
+            ] or None,
             "bgCss": bg_css,
             "displayFont": fonts.get("display") or "Space Grotesk",
             "bodyFont": fonts.get("body") or "Inter",
             "textColor": art_direction.get("ink") or _bg_text_ink(background),
+            "inkSections": art_direction.get("ink_sections") or None,
+            "typeScale": art_direction.get("type_scale") or None,
             "layout": art_direction.get("layout") or {},
         }
 
@@ -1248,6 +1609,8 @@ class RunOrchestrator:
             "displayFont": fonts.get("display") or "Space Grotesk",
             "bodyFont": fonts.get("body") or "Inter",
             "textColor": art_direction.get("ink") or _bg_text_ink(background),
+            "inkSections": art_direction.get("ink_sections") or None,
+            "typeScale": art_direction.get("type_scale") or None,
             "layout": art_direction.get("layout") or {},
         }
 
@@ -1261,11 +1624,14 @@ class RunOrchestrator:
         campaign_state: StateCampaign,
         revision_id: str,
         run_id: str,
+        lang: str = "es",
     ) -> dict[str, Any]:
         """Readable, deterministic plan block stored on the revision concept.
 
         Surfaces WHAT will be generated (typography, color classes, product/theme
         intent) + a wireframe spec, so the user can iterate before the costly build.
+        Every user-facing string here is in the campaign language — image prompts
+        stay English internally and are never shown verbatim.
         """
         copy = getattr(concept, "copy", None) or {}
         fonts = art_direction.get("fonts") or {}
@@ -1292,7 +1658,22 @@ class RunOrchestrator:
                     "has_hero_planned": False,
                 }
             ]
-        theme = _short(getattr(concept, "image_prompt", "") or getattr(concept, "hierarchy_notes", ""), 280)
+        # Theme shown to the user: the model writes `theme_note` in the campaign
+        # language; the raw image_prompt is an internal English artifact and only
+        # acceptable as a fallback when the campaign itself is in English.
+        theme = _short(str(copy.get("theme_note") or ""), 280)
+        if not theme:
+            if lang == "en":
+                theme = _short(getattr(concept, "image_prompt", "") or getattr(concept, "hierarchy_notes", ""), 280)
+            else:
+                theme = i18n_t(lang, "plan.theme_fallback", goal=_short(campaign_state.goal, 160))
+        source_refs = list(getattr(concept, "source_refs", None) or [])
+        selected_ref = next((r for r in source_refs if r.get("selected")), None)
+        layout_note = (
+            i18n_t(lang, "plan.layout_kg", title=str(selected_ref.get("title") or "").split(" — ")[0].strip())
+            if selected_ref
+            else _short(getattr(concept, "layout", ""), 160)
+        )
         return {
             "revision_id": revision_id,
             "generation_run_id": run_id,
@@ -1307,7 +1688,7 @@ class RunOrchestrator:
                 "background_name": (background or {}).get("name"),
                 "background_description": (background or {}).get("description"),
                 "palette_usage": dict(getattr(concept, "palette_usage", None) or {}),
-                "text_ink": _bg_text_ink(background),
+                "text_ink": art_direction.get("ink") or _bg_text_ink(background),
             },
             "product_intent": product_intent,
             "copy_preview": {
@@ -1316,10 +1697,10 @@ class RunOrchestrator:
                 "subheadline": copy.get("subheadline"),
                 "cta": copy.get("cta"),
             },
-            "layout_note": _short(getattr(concept, "layout", ""), 160),
+            "layout_note": layout_note,
             "hierarchy_notes": _short(getattr(concept, "hierarchy_notes", ""), 400),
             "wireframe": self._plan_wireframe_spec(concept, background, art_direction),
-            "estimated_image_cost_note": "La imagen del producto y el render final se generan al aprobar el plan.",
+            "estimated_image_cost_note": i18n_t(lang, "plan.cost_note"),
         }
 
     async def _style_headline(self, headline: str, brand: Any, *, ink: str | None = None) -> list[dict[str, Any]]:
@@ -1353,7 +1734,7 @@ class RunOrchestrator:
             return []
         return coerce_runs(getattr(result, "runs", []) or [], text, ink=ink)
 
-    async def _propose_art_direction(self, concept: Any, brand: Any) -> dict[str, Any]:
+    async def _propose_art_direction(self, concept: Any, brand: Any, *, lang: str = "es") -> dict[str, Any]:
         """Propose typography + banner composition (positions in %, never px).
 
         The agent picks a display/body font pairing (NOT locked to brand fonts) and
@@ -1394,7 +1775,8 @@ class RunOrchestrator:
             "You MAY be bolder: grow the hero (hero_w up to ~80) and set hero_behind=true so the product sits "
             "BEHIND the copy as a large backdrop element (then keep the copy legible over it) — do this only when it "
             "strengthens the concept, otherwise keep them side by side without bad collision. "
-            "Return JSON for all fields with a one-line rationale."
+            "Return JSON for all fields with a one-line rationale "
+            f"(write the rationale in {i18n_lang_name(lang)} — it is shown to the user)."
         )
         try:
             from app.agents.tools import gemini_text
@@ -1413,16 +1795,84 @@ class RunOrchestrator:
             "layout": layout,
         }
 
-    async def _refine_background(self, concept: Any, brand: Any) -> dict[str, Any] | None:
+    async def _refine_background(
+        self,
+        concept: Any,
+        brand: Any,
+        *,
+        instruction: str = "",
+        base_background: dict[str, Any] | None = None,
+        lang: str = "es",
+    ) -> tuple[dict[str, Any] | None, str]:
+        """Generate (or directed-edit, W0.1) a background. Returns (background, source).
+
+        ``source`` is 'gemini' | 'deterministic' | 'none' — callers doing directed
+        decor edits must keep the previous background when the LLM didn't run.
+        """
         skill = _load_runtime_skill("background-options-generate")
         try:
-            options, _source = await skill.run(concept, brand, count=1, settings=self.settings, cost_guard=self.cost_guard)
+            options, source = await skill.run(
+                concept, brand, count=1, settings=self.settings, cost_guard=self.cost_guard,
+                instruction=instruction, base_background=base_background, lang=lang,
+            )
         except Exception:  # noqa: BLE001 — background is best-effort in refine
-            return None
+            return None, "none"
         if not options:
-            return None
+            return None, "none"
         top = options[0]
-        return {"name": top.name, "description": top.description, "css": top.css, "html": top.html}
+        return {"name": top.name, "description": top.description, "css": top.css, "html": top.html}, source
+
+    async def _resolve_creative_mode(
+        self,
+        *,
+        campaign_id: str,
+        campaign_state: StateCampaign,
+        brand: Any,
+        prev_art: dict[str, Any] | None = None,
+        lang: str = "es",
+    ) -> dict[str, Any]:
+        """C0 — resolve creative_mode/include_humans for this plan."""
+        stored = None
+        if self.art_directions is not None:
+            try:
+                stored = self.art_directions.get_by_campaign_id(campaign_id=campaign_id)
+            except Exception:  # noqa: BLE001 — mode resolution must never sink a plan
+                stored = None
+        if stored and str(stored.get("mode_source") or "") == "user":
+            return {
+                "creative_mode": str(stored.get("creative_mode") or "composite"),
+                "include_humans": bool(stored.get("include_humans")),
+                "mode_rationale": i18n_t(lang, "mode.user"),
+                "mode_source": "user",
+            }
+        prev = dict(prev_art or {})
+        if prev.get("creative_mode"):
+            return {
+                "creative_mode": str(prev.get("creative_mode")),
+                "include_humans": bool(prev.get("include_humans")),
+                "mode_rationale": str(prev.get("mode_rationale") or ""),
+                "mode_source": str(prev.get("mode_source") or "agent"),
+            }
+        skill = _load_runtime_skill("creative-mode-recommend")
+        rec = await skill.recommend(
+            campaign_state, brand, placement=getattr(campaign_state, "placement", "") or "",
+            settings=self.settings, cost_guard=self.cost_guard, lang=lang,
+        )
+        return {
+            "creative_mode": rec.creative_mode,
+            "include_humans": rec.include_humans,
+            "mode_rationale": rec.rationale,
+            "mode_source": "agent",
+        }
+
+    async def _interpret_refinement(
+        self, prompt: str, targets: list[str] | None, prev_concept: dict[str, Any] | None
+    ) -> Any:
+        """Interpret a refinement prompt into directed ops (refinement-interpret, W0.1)."""
+        skill = _load_runtime_skill("refinement-interpret")
+        return await skill.interpret(
+            prompt, targets=targets, concept=prev_concept, settings=self.settings, cost_guard=self.cost_guard
+        )
 
     def _create_layout_variants(self, revision_id: str, concept: Any) -> list[dict[str, Any]]:
         layout_label = _short(concept.layout, 80)
@@ -1476,27 +1926,73 @@ class RunOrchestrator:
         catalog_context: dict[str, Any] | None,
         best_practices: list[dict[str, Any]],
         text_ink: str | None = None,
+        compose_report: dict[str, Any] | None = None,
+        compose_heroes: bool = True,
     ) -> list[dict[str, Any]]:
-        """One banner_variant per personalization variant, each with its own copy."""
+        """One banner_variant per personalization variant, each with its own copy.
+
+        W0.2: the base variant features ALL brief products (up to 3) — each gets its
+        own chroma-keyed hero cut-out — instead of collapsing to a single product.
+        Compose failures are collected into ``compose_report`` (never silent).
+        """
+
+        def _warn(product_title: Any, status: str) -> None:
+            if compose_report is None:
+                return
+            if status in ("chroma_failed", "error", "upload_failed", "ref_fetch_failed"):
+                compose_report.setdefault("hero_compose_warnings", []).append(
+                    {"product": _short(str(product_title or "?"), 60), "status": status}
+                )
+
         specs = self._variant_specs(campaign_row, campaign_state)
         concept_skill = _load_runtime_skill("banner-concept-draft")
         base_copy = concept.copy or {}
         cta_url = self._destination_url(campaign_row)
+        brief_products = [p for p in _brief_product_items(campaign_row) if p.get("image_url")][:3]
         rows: list[dict[str, Any]] = []
         for index, spec in enumerate(specs):
             # Each variant features its own product (when chosen): ground the copy on a
             # catalog context filtered to that product, so men→Mandarin Sky, women→My Way.
             variant_catalog = _variant_catalog_context(catalog_context, spec)
             has_own_product = bool(spec.get("product_gid") or spec.get("product_title"))
+            featured_products: list[dict[str, Any]] = []
             # Compose a campaign-styled, background-removed hero from the variant's
             # real product photo (transparent PNG). None → Canvas uses the raw photo.
-            if has_own_product and spec.get("product_image_url"):
-                hero_url = await self._compose_variant_hero(
+            if compose_heroes and has_own_product and spec.get("product_image_url"):
+                hero_url, hero_status = await self._compose_variant_hero(
                     spec=spec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id,
                     campaign_state=campaign_state, brand=brand,
                 )
                 if hero_url:
                     spec = {**spec, "product_hero_url": hero_url}
+                _warn(spec.get("product_title"), hero_status)
+            elif compose_heroes and index == 0 and brief_products:
+                # Base variant + multi-product brief: one cut-out PER brief product.
+                for p_index, product in enumerate(brief_products):
+                    pspec = {
+                        "key": f"{spec['key']}-p{p_index + 1}",
+                        "product_title": product.get("title"),
+                        "product_image_url": product.get("image_url"),
+                        "product_gid": product.get("shopify_product_gid"),
+                    }
+                    hero_url, hero_status = await self._compose_variant_hero(
+                        spec=pspec, concept=concept, campaign_id=campaign_row["id"], revision_id=revision_id,
+                        campaign_state=campaign_state, brand=brand,
+                    )
+                    if hero_url:
+                        pspec["product_hero_url"] = hero_url
+                    _warn(pspec.get("product_title"), hero_status)
+                    ref = _variant_product_ref(pspec)
+                    ref["hero_status"] = hero_status
+                    featured_products.append(ref)
+                if featured_products:
+                    spec = {
+                        **spec,
+                        "product_title": featured_products[0].get("product_title"),
+                        "product_image_url": featured_products[0].get("product_image_url"),
+                        **({"product_hero_url": featured_products[0]["product_hero_url"]}
+                           if featured_products[0].get("product_hero_url") else {}),
+                    }
             if index == 0 and spec["audience"] == campaign_state.audience and not has_own_product:
                 # Reuse the already-generated primary concept copy for the base variant.
                 copy = {k: base_copy.get(k) for k in ("eyebrow", "headline", "subheadline", "cta")}
@@ -1522,7 +2018,8 @@ class RunOrchestrator:
                     "audience_rule": {
                         "audience": spec["audience"],
                         "tag": spec.get("customer_tag"),
-                        **({"featured_product": _variant_product_ref(spec)} if has_own_product else {}),
+                        **({"featured_product": _variant_product_ref(spec)} if (has_own_product or featured_products) else {}),
+                        **({"featured_products": featured_products} if featured_products else {}),
                         **({"headline_runs": headline_runs} if headline_runs else {}),
                     },
                     "eyebrow": copy.get("eyebrow") or spec["label"],
@@ -1620,23 +2117,38 @@ class RunOrchestrator:
 
 
 class _EventRecorder:
-    """Builds ordered generation_events with unique, monotonic timestamps."""
+    """Builds ordered generation_events with REAL wall-clock timestamps/durations.
+
+    ``created_at`` is the actual time the event happened (nudged forward by 1µs
+    when two events land in the same microsecond, so ordering stays strict) and
+    ``duration_ms`` is measured from the node's matching start() — the 0/1 ms
+    placeholders the timeline used to show were synthetic.
+    """
 
     def __init__(self, *, run_id: str) -> None:
         self.run_id = run_id
         self.events: list[dict[str, Any]] = []
-        self._base = datetime.now(timezone.utc)
-        self._seq = 0
+        self._last_ts = datetime.now(timezone.utc)
+        self._node_started: dict[str, float] = {}
         self.last_frontend_step: str | None = None
 
     def _next_ts(self) -> str:
-        ts = (self._base + timedelta(microseconds=self._seq)).isoformat()
-        self._seq += 1
-        return ts
+        now = datetime.now(timezone.utc)
+        if now <= self._last_ts:
+            now = self._last_ts + timedelta(microseconds=1)
+        self._last_ts = now
+        return now.isoformat()
+
+    def _elapsed_ms(self, node_key: str) -> int:
+        started = self._node_started.pop(node_key, None)
+        if started is None:
+            return 0
+        return max(0, int((time.monotonic() - started) * 1000))
 
     def start(self, node_key: str) -> None:
         step = frontend_step_for_node(node_key)
         self.last_frontend_step = step
+        self._node_started[node_key] = time.monotonic()
         self.events.append(
             {
                 "generation_run_id": self.run_id,
@@ -1662,7 +2174,7 @@ class _EventRecorder:
                 "status": "succeeded",
                 "input_summary": {},
                 "output_summary": output,
-                "duration_ms": 1,
+                "duration_ms": self._elapsed_ms(node_key),
                 "cost_usd": round(float(cost_usd), 6),
                 "created_at": self._next_ts(),
             }
@@ -1679,7 +2191,7 @@ class _EventRecorder:
                 "status": "failed",
                 "input_summary": {},
                 "output_summary": output,
-                "duration_ms": 1,
+                "duration_ms": self._elapsed_ms(node_key),
                 "cost_usd": 0.0,
                 "created_at": self._next_ts(),
             }
@@ -1828,6 +2340,32 @@ def _coerce_price(value: Any) -> float | None:
         return None
 
 
+_CHROMA_RETRY_PREFIX = (
+    "STRICT RETRY — your previous output violated the background rule. The background MUST be "
+    "100% flat, solid, pure chroma green #00FF00 covering the ENTIRE frame edge-to-edge with "
+    "NOTHING else: no scene, no gradient, no floor, no environment, no shadows cast on surfaces. "
+    "Render ONLY the cut-out subject and floating props over flat #00FF00. "
+)
+
+
+def _kg_sources_payload(docs: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Compact KG citations for a generation event (F4 explicability)."""
+    out: list[dict[str, Any]] = []
+    for doc in (docs or [])[:5]:
+        title = str(doc.get("title") or "").strip()
+        if not title:
+            continue
+        out.append(
+            {
+                "id": str(doc.get("id")) if doc.get("id") else None,
+                "kind": str(doc.get("kind") or "kg_doc"),
+                "title": title,
+                "score": doc.get("score") if isinstance(doc.get("score"), (int, float)) else None,
+            }
+        )
+    return out
+
+
 def _brief_product_items(campaign_row: dict[str, Any] | None) -> list[dict[str, Any]]:
     """Catalog-shaped items from the campaign-level ``products`` picked in the brief."""
     if not campaign_row:
@@ -1847,6 +2385,7 @@ def _brief_product_items(campaign_row: dict[str, Any] | None) -> list[dict[str, 
             "title": title or "Featured product",
             "shopify_product_gid": gid,
             "image_url": product.get("product_image_url"),
+            "from_brief": True,
         }
         price = _coerce_price(product.get("price"))
         if price is not None:
@@ -1897,6 +2436,18 @@ def _hex_luminance(hexstr: str) -> float | None:
     except ValueError:
         return None
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _inverted_or_contrast_ink(current_ink: str | None, background: dict[str, Any] | None) -> str:
+    """Grounded auto-ink for a contrast complaint (W0.1).
+
+    The user said the CURRENT ink doesn't read — so flip it (dark↔light) when we
+    know it; otherwise fall back to contrast-from-background.
+    """
+    lum = _hex_luminance(current_ink or "")
+    if lum is not None:
+        return "#FFFFFF" if lum < 0.5 else "#111111"
+    return _bg_text_ink(background) or "#111111"
 
 
 def _bg_text_ink(background: dict[str, Any] | None) -> str | None:

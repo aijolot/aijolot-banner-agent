@@ -8,11 +8,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.agents.state import BannerAssets, Concept
+from app.services.brands.color_roles import resolve_color_token
+from app.services.brands.font_roles import resolve_font_stack
 
 _DEFAULT_BG = "#F4F1EA"
 _DEFAULT_TEXT = "#111827"
 _DEFAULT_ACCENT = "#2563EB"
 _DEFAULT_ACCENT_TEXT = "#FFFFFF"
+# Legacy hardcoded body stack, kept verbatim for brands without typography.
+_DEFAULT_BODY_FONT = "Inter,system-ui,-apple-system,Segoe UI,sans-serif"
 _HEX_RE = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
@@ -39,23 +43,9 @@ def _brand_name(brand: Any) -> str:
     return str(data.get("name") or getattr(brand, "name", "Brand") or "Brand")
 
 
-def _palette_lookup(brand: Any) -> dict[str, str]:
-    data = _dump_model(brand)
-    palette = data.get("palette") or getattr(brand, "palette", []) or []
-    out: dict[str, str] = {}
-    for color in palette:
-        item = _dump_model(color)
-        name = str(item.get("name") or "").strip()
-        hex_value = str(item.get("hex") or "").strip()
-        if name and _HEX_RE.match(hex_value):
-            out[name] = hex_value.upper()
-    return out
-
-
 def _color(concept: Concept, brand: Any, key: str, fallback: str) -> str:
-    palette = _palette_lookup(brand)
     token = (concept.palette_usage or {}).get(key, "")
-    value = palette.get(token, token)
+    value = resolve_color_token(brand, token) or token
     return value.upper() if isinstance(value, str) and _HEX_RE.match(value) else fallback
 
 
@@ -144,6 +134,12 @@ def render_banner_preview(concept: Concept, assets: BannerAssets, *, brand: Any 
     cta_bg = _color(concept, brand, "cta_background", _DEFAULT_ACCENT)
     cta_text = _color(concept, brand, "cta_text", _DEFAULT_ACCENT_TEXT)
 
+    # Approved/legacy brand fonts (whitelist-validated + quote-normalized upstream);
+    # empty resolution keeps today's hardcoded defaults byte-for-byte.
+    body_font = resolve_font_stack(brand, "body") or _DEFAULT_BODY_FONT
+    display_font = resolve_font_stack(brand, "display")
+    display_font_css = f"\n    h1,.aij-eyebrow {{font-family:{display_font}}}" if display_font else ""
+
     schema = {
         "@context": "https://schema.org",
         "@type": "Offer",
@@ -170,7 +166,7 @@ def render_banner_preview(concept: Concept, assets: BannerAssets, *, brand: Any 
   <meta property="og:image" content="{html.escape(image_url, quote=True)}">
   <style>
     :root {{--aij-bg:{bg};--aij-text:{text};--aij-cta-bg:{cta_bg};--aij-cta-text:{cta_text};}}
-    * {{box-sizing:border-box}} body {{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:#fff;color:var(--aij-text)}}
+    * {{box-sizing:border-box}} body {{margin:0;font-family:{body_font};background:#fff;color:var(--aij-text)}}{display_font_css}
     .aij-banner {{position:relative;min-height:clamp(360px,56vw,720px);display:grid;align-items:center;overflow:hidden;background:var(--aij-bg);{css_image}background-position:center;background-size:cover;}}
     .aij-banner__media {{position:absolute;inset:0;z-index:0;opacity:.01;pointer-events:none}} .aij-banner__media img {{width:100%;height:100%;object-fit:cover}}
     .aij-banner__content {{position:relative;z-index:1;width:min(1120px,92vw);padding:clamp(28px,6vw,80px);}}

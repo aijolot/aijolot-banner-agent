@@ -1,8 +1,40 @@
-"""Admin GraphQL query strings for live catalog reads (F3)."""
+"""Admin GraphQL query strings for live catalog reads (F3) and brand discovery."""
 
 from __future__ import annotations
 
 import re
+
+# Shop/brand metadata for brand discovery. ``shop.brand`` needs a recent Admin
+# API version + scope; callers retry with SHOP_BASIC_METADATA_QUERY when the
+# brand query errors so discovery degrades to partial instead of failing.
+SHOP_BRAND_METADATA_QUERY = """
+query ShopBrandMetadata {
+  shop {
+    name
+    primaryDomain { url host }
+    brand {
+      slogan
+      shortDescription
+      colors {
+        primary { background foreground }
+        secondary { background foreground }
+      }
+      logo { image { url } }
+      squareLogo { image { url } }
+      coverImage { image { url } }
+    }
+  }
+}
+"""
+
+SHOP_BASIC_METADATA_QUERY = """
+query ShopBasicMetadata {
+  shop {
+    name
+    primaryDomain { url host }
+  }
+}
+"""
 
 PRODUCTS_QUERY = """
 query Products($first: Int!, $after: String, $query: String) {

@@ -1,8 +1,7 @@
-/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, CATALOG, SEGMENTS, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign */
+/* global React, Icon, GlassCard, Button, Badge, Spinner, Kicker, Banner, PIPELINE, CODE_LINES, BRAND, SEGMENTS, GenerationApi, CatalogApi, AIJOLOT_DEMO_IDS, errorText, isApiCampaign, DecisionTraceCard, traceFromEvents */
 // Aijolot Banner Agent — Stage 2: backend event-driven generation pipeline.
 const { useState: useStateG, useEffect: useEffectG, useRef: useRefG } = React;
 
-const DUR = [1300, 1250, 1650, 1700, 1750]; // prototype fallback timing only
 const BACKEND_STEP_KEYS = ["intake_context", "concept", "image", "render_audit", "review_publish"];
 const STEP_TO_PIPELINE = { intake_context: 0, concept: 1, image: 2, render_audit: 3, review_publish: 4 };
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "escalated"];
@@ -98,19 +97,23 @@ function progressPct(run, steps, phase, status) {
 }
 
 function StepRail({ steps, phase, status }) {
+  // F4 — per-step expandable "¿Por qué?" panel with the agent's decision trace.
+  const [openTrace, setOpenTrace] = useStateG({});
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {steps.map((s, i) => {
         const failed = FAILED_STATUSES.includes(s.status);
         const done = !failed && (s.status === "succeeded" || phase > i);
         const running = !failed && phase === i && status !== "succeeded";
+        const trace = typeof traceFromEvents === "function" ? traceFromEvents(s.events) : null;
         return (
           <div key={s.key || s.id} style={{
-            display: "flex", alignItems: "center", gap: 13, padding: "13px 15px", borderRadius: 13,
+            display: "flex", flexDirection: "column", gap: 0, padding: "13px 15px", borderRadius: 13,
             background: failed ? "rgba(239,68,68,0.08)" : running ? "rgba(34,211,238,0.1)" : done ? "rgba(16,185,129,0.06)" : "rgba(248,250,252,0.7)",
             border: `1px solid ${failed ? "rgba(239,68,68,0.28)" : running ? "rgba(34,211,238,0.35)" : done ? "rgba(16,185,129,0.2)" : "#EEF2F6"}`,
             transition: "background .3s, border .3s", opacity: phase < i && !failed ? 0.55 : 1,
           }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 13 }}>
             <div style={{ width: 36, height: 36, borderRadius: 10, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center",
               background: failed ? "rgba(239,68,68,0.12)" : done ? "rgba(16,185,129,0.14)" : running ? "rgba(34,211,238,0.16)" : "#fff",
               color: failed ? "#EF4444" : done ? "#10B981" : running ? "#0891B2" : "#CBD5E1", border: running ? "none" : "1px solid #EEF2F6" }}>
@@ -125,8 +128,20 @@ function StepRail({ steps, phase, status }) {
                 Backend: {s.backendLabel}{s.events && s.events.length ? ` · ${s.events.length} eventos` : ""}
               </div>
             </div>
+            {trace ? (
+              <button onClick={() => setOpenTrace((m) => ({ ...m, [s.key]: !m[s.key] }))} style={{
+                display: "inline-flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 9999,
+                border: "1px solid rgba(8,145,178,0.3)", background: openTrace[s.key] ? "rgba(8,145,178,0.12)" : "#fff",
+                color: "#0891B2", fontFamily: "Inter", fontSize: 10.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+                <Icon name="lightbulb" size={11} /> ¿Por qué?
+              </button>
+            ) : null}
             {failed ? <Badge tone="red" icon="circle-alert">Error</Badge> : done && <Badge tone="green" icon="check">OK</Badge>}
             <span style={{ fontFamily: "Space Grotesk", fontSize: 10.5, color: "#CBD5E1" }}>{i + 1}/5</span>
+            </div>
+            {trace && openTrace[s.key] ? (
+              <div style={{ marginTop: 9 }}><DecisionTraceCard trace={trace} compact /></div>
+            ) : null}
           </div>
         );
       })}
@@ -173,14 +188,9 @@ function Viewport({ phase, typed, shieldOn, generationStatus, backendError }) {
     return (
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
         <div style={{ fontFamily: "Space Grotesk", fontSize: 12, color: "#94A3B8", letterSpacing: ".04em" }}>QUERY · catálogo Shopify</div>
-        {CATALOG.map((c, i) => (
-          <div key={c.sku} className="fade-up" style={{ animationDelay: `${i * 0.18}s`, display: "flex", alignItems: "center", gap: 10, fontFamily: "Space Grotesk", fontSize: 12.5, color: "#002B57", padding: "8px 12px", borderRadius: 9, background: "rgba(248,250,252,0.8)", border: "1px solid #EEF2F6" }}>
-            <Icon name="check" size={13} color="#10B981" />
-            <span style={{ flex: 1 }}>{c.sku}</span>
-            <span style={{ color: "#94A3B8" }}>stock {c.stock}</span>
-            <span style={{ color: "#0891B2", fontWeight: 600 }}>${c.sale.toFixed(2)}</span>
-          </div>
-        ))}
+        <div style={{ display: "flex", alignItems: "center", gap: 9, fontFamily: "Inter", fontSize: 12.5, color: "#475569", padding: "10px 12px", borderRadius: 9, background: "rgba(248,250,252,0.8)", border: "1px solid #EEF2F6" }}>
+          <Spinner size={13} /> Sincronizando el catálogo real de la tienda…
+        </div>
       </div>
     );
   }
@@ -257,7 +267,6 @@ function Viewport({ phase, typed, shieldOn, generationStatus, backendError }) {
 }
 
 function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun }) {
-  const [prototypePhase, setPrototypePhase] = useStateG(0);
   const [typed, setTyped] = useStateG(0);
   const [shieldOn, setShieldOn] = useStateG(false);
   const [backendRun, setBackendRun] = useStateG(null);
@@ -298,8 +307,10 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun 
           const r = await GenerationApi.start(campaign, { placement, art, source: "frontend-generate-stage" });
           if (!alive) return;
           if (r.fallback) {
-            setGenerationStatus("prototype");
-            onNotice && onNotice({ tone: "amber", text: r.reason || "Generación en modo prototipo local." });
+            // Producción: si el backend no puede iniciar el run, es un error —
+            // nunca una simulación local de la generación.
+            setGenerationStatus("failed");
+            onNotice && onNotice({ tone: "red", text: r.reason || "No se pudo iniciar la generación en backend." });
             return;
           }
           run = r.data;
@@ -405,21 +416,9 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun 
     return () => { alive = false; };
   }, []);
 
-  useEffectG(() => {
-    if (generationStatus !== "prototype") return undefined;
-    if (prototypePhase >= 5) {
-      const t = setTimeout(() => { if (!completed.current) { completed.current = true; onDone(); } }, 1500);
-      return () => clearTimeout(t);
-    }
-    let dur = DUR[prototypePhase];
-    if (prototypePhase === 3) dur = CODE_LINES.length * 95 + 500;
-    const t = setTimeout(() => setPrototypePhase((p) => p + 1), dur);
-    return () => clearTimeout(t);
-  }, [generationStatus, prototypePhase]);
-
   const backendSteps = stepsFromBackend(backendRun, backendEvents);
   const backendPhase = phaseFromBackend(backendRun, backendEvents, backendSteps, generationStatus);
-  const phase = generationStatus === "prototype" ? prototypePhase : backendPhase;
+  const phase = backendPhase;
 
   useEffectG(() => {
     if (phase === 4) { const s = setTimeout(() => setShieldOn(true), 120); return () => clearTimeout(s); }
@@ -441,14 +440,14 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun 
   }, [phase]);
 
   function continueIfReady() {
-    if (generationStatus === "succeeded" || generationStatus === "prototype") {
+    if (generationStatus === "succeeded") {
       completed.current = true;
       onDone();
     }
   }
 
   const pct = progressPct(backendRun, backendSteps, phase, generationStatus);
-  const canContinue = generationStatus === "succeeded" || generationStatus === "prototype";
+  const canContinue = generationStatus === "succeeded";
   const isUuid = typeof isApiCampaign !== "undefined" ? isApiCampaign(campaign) : !!(campaign && campaign.id);
 
   return (
@@ -469,7 +468,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun 
 
       <GlassCard style={{ padding: 14, display: "flex", flexDirection: "column", gap: 9, border: generationStatus === "failed" ? "1px solid rgba(239,68,68,.25)" : "1px solid rgba(34,211,238,.25)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {generationStatus === "failed" ? <Badge tone="red" icon="circle-alert">Backend error</Badge> : generationStatus === "prototype" ? <Badge tone="amber" icon="flask-conical">Prototipo local</Badge> : <Badge tone="green" icon="wifi">Backend conectado</Badge>}
+          {generationStatus === "failed" || generationStatus === "prototype" ? <Badge tone="red" icon="circle-alert">{t("Backend error")}</Badge> : <Badge tone="green" icon="wifi">{t("Backend conectado")}</Badge>}
           {backendRun ? <Badge tone="cyan" icon="git-branch">Run {backendRun.id.slice(0, 8)} · {backendRun.status}</Badge> : null}
           {backendEvents.length ? <Badge tone="purple" icon="activity">{backendEvents.length} eventos</Badge> : null}
           {artifactStatus ? <Badge tone="slate" icon="file-check">Preview {artifactStatus.preview ? "OK" : "—"} · Audit {artifactStatus.audit ? "OK" : "—"} · Revs {artifactStatus.revisions == null ? "—" : artifactStatus.revisions}</Badge> : null}
@@ -496,7 +495,7 @@ function GenerateStage({ campaign, placement, art, onNotice, onDone, initialRun 
       </GlassCard>
 
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.1fr)", gap: 16, alignItems: "stretch" }}>
-        <GlassCard style={{ padding: 18 }}><StepRail steps={generationStatus === "prototype" ? PIPELINE.map((step, i) => ({ ...step, key: step.id, backendLabel: "Fallback local", status: prototypePhase > i ? "succeeded" : prototypePhase === i ? "running" : "queued", events: [] })) : backendSteps} phase={phase} status={generationStatus} /></GlassCard>
+        <GlassCard style={{ padding: 18 }}><StepRail steps={backendSteps} phase={phase} status={generationStatus} /></GlassCard>
         <GlassCard style={{ padding: 20, minHeight: 360, display: "flex", flexDirection: "column" }}>
           <Viewport phase={phase} typed={typed} shieldOn={shieldOn} generationStatus={generationStatus} backendError={backendError} />
         </GlassCard>

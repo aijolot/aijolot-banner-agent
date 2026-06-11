@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.agents.state import BannerAssets, Concept, Variant
+from app.services.brands.color_roles import color_system_config, resolve_color_token
+from app.services.brands.font_roles import typography_config
 
 _HANDLE_RE = re.compile(r"[^a-z0-9_-]+")
 _LIQUID_ESCAPE = {"\n": " ", "\r": " "}
@@ -55,6 +57,27 @@ def _escape_liquid_string(value: Any) -> str:
     for src, dst in _LIQUID_ESCAPE.items():
         text = text.replace(src, dst)
     text = html.escape(text, quote=True).replace("'", "&#39;")
+    text = text.replace("{{", "&#123;&#123;").replace("}}", "&#125;&#125;")
+    text = text.replace("{%", "&#123;%").replace("%}", "%&#125;")
+    return text[:500]
+
+
+def _css_var_value(value: Any) -> str:
+    """Escape a CSS custom-property value for the double-quoted ``style`` attribute.
+
+    Font stacks legitimately contain double quotes (``"Space Grotesk", sans-serif``),
+    which would terminate the ``style="..."`` attribute. Swap them to single quotes —
+    valid CSS string delimiters that cannot break a double-quoted attribute — then
+    apply the same HTML/Liquid escaping as ``_escape_liquid_string`` minus the
+    single-quote entity (these values never land inside single-quoted Liquid args).
+    """
+
+    text = str(value or "").replace('"', "'")
+    for src, dst in _LIQUID_ESCAPE.items():
+        text = text.replace(src, dst)
+    # quote=False keeps the single quotes raw (they cannot terminate a double-quoted
+    # attribute); every double quote was already swapped away above.
+    text = html.escape(text, quote=False)
     text = text.replace("{{", "&#123;&#123;").replace("}}", "&#125;&#125;")
     text = text.replace("{%", "&#123;%").replace("%}", "%&#125;")
     return text[:500]
@@ -116,11 +139,23 @@ def build_liquid_payload(
         variant_rows.insert(0, {**variant_rows[0], "tag": "default"})
 
     image_url = _asset_url(assets)
+    color_system = color_system_config(brand)
+    role_css = {
+        "background": resolve_color_token(brand, (concept.palette_usage or {}).get("background", "")),
+        "text": resolve_color_token(brand, (concept.palette_usage or {}).get("text", "")),
+        "cta_background": resolve_color_token(brand, (concept.palette_usage or {}).get("cta_background", "")),
+        "cta_text": resolve_color_token(brand, (concept.palette_usage or {}).get("cta_text", "")),
+    }
+    role_css = {key: value for key, value in role_css.items() if value}
+    typography = typography_config(brand)
     config = {
         "slug": slug,
         "brand_name": brand_name,
         "placement": placement or (brand_data.get("shopify") or {}).get("default_placement") or "hero",
         "palette_usage": dict(concept.palette_usage or {}),
+        "color_system": color_system,
+        "role_css": role_css,
+        "typography": typography,
         "image": {"url": image_url, "alt": getattr(assets, "alt_text_suggestion", "") if assets else ""},
         "variants": variant_rows,
         "audit": {"human_review_required": True, "auto_publish": False},
@@ -132,6 +167,16 @@ def build_liquid_payload(
     # CTA destination from the brief (validated absolute URL or "/path"); the merchant
     # can still override it via the section setting. Default falls back to the catalog.
     cta_default = _escape_liquid_string(str(cta_url or "/collections/all"))
+    section_css_vars = "".join(
+        f"--aijolot-{_handle(key)}:{_escape_liquid_string(value)};" for key, value in role_css.items()
+    )
+    # Resolved brand font stacks as CSS vars (display/body always when resolved,
+    # headline/accent only when explicitly assigned). Double quotes inside stacks are
+    # swapped to single quotes so the style attribute below stays valid.
+    section_css_vars += "".join(
+        f"--aijolot-font-{_handle(role)}:{_css_var_value(stack)};"
+        for role, stack in (typography.get("stacks") or {}).items()
+    )
     snippet = """{% comment %} Aijolot controlled banner block. Do not inject raw Liquid from campaign inputs. {% endcomment %}
 <div class=\"aijolot-banner__copy\">
   {% if eyebrow != blank %}<p class=\"aijolot-banner__eyebrow\">{{ eyebrow }}</p>{% endif %}
@@ -158,7 +203,7 @@ def build_liquid_payload(
 Aijolot Banner Agent OS 2.0 section. Payload config hash: {digest}.
 {{% endcomment %}}
 {{% comment %}} Config JSON for app/metafield publishing: {_escape_liquid_string(config_json)} {{% endcomment %}}
-<section class=\"aijolot-banner aijolot-banner--{slug}\" aria-label=\"{_escape_liquid_string(brand_name)} promotion\">
+<section class=\"aijolot-banner aijolot-banner--{slug}\" aria-label=\"{_escape_liquid_string(brand_name)} promotion\" style=\"{section_css_vars}\">
   <div class=\"aijolot-banner__media\" style=\"background-image:url('{{{{ section.settings.image_url | default: '{safe_image_url}' | escape }}}}')\"></div>
   {{% assign matched_tag = 'default' %}}
   {{% for tag in customer.tags %}}

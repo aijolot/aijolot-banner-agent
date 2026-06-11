@@ -18,6 +18,8 @@ class Campaign(BaseModel):
     urgency: str
     placement: str
     deadline: datetime | None = None
+    # Idioma de todo lo que el cliente ve (copy, rationales) — viaja con la campaña.
+    language: str = "es"
 
 
 class Variant(BaseModel):

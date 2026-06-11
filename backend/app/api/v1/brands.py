@@ -1,14 +1,35 @@
 from __future__ import annotations
 
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Path, Request
 from pydantic import BaseModel, Field, ValidationError
 
 from app.core.auth import require_user_context
+from app.core.settings import MissingSettingsError
 from app.schemas.brand import BrandContext, BrandSummary
+from app.schemas.brand_recommendations import ApplyDiscoveryRecommendationsRequest
+from app.schemas.palette_suggestions import PaletteSuggestionResponse, PaletteSuggestionRouteRequest
 from app.services import brand_store
+from app.services.brands import brand_discovery_service
+from app.services.brands.brand_discovery_service import (
+    BrandDiscoveryRunPayload,
+    BrandDiscoveryService,
+    DiscoveryPersistenceUnavailable,
+    DiscoveryRunCreateRequest,
+    DiscoveryRunMissingSnapshot,
+    DiscoveryUnavailable,
+    StoreNotFound,
+)
+from app.services.brands.brand_recommendations import BrandRecommendationUnavailable
+from app.services.brands.font_suggestions import (
+    FontSuggestionResponse,
+    FontSuggestionRouteRequest,
+    FontSuggestionService,
+)
 from app.services.brands.markdown_importer import BrandMarkdownImportError
+from app.services.brands.palette_suggestions import PaletteSuggestionService, PaletteSuggestionUnavailable
 
 router = APIRouter(prefix="/brands", tags=["brands"])
 
@@ -21,6 +42,15 @@ class BrandImportRequest(BaseModel):
 def _service(request: Request):
     context = require_user_context(request)
     return brand_store.service_for_team(context.team_id)
+
+
+def _discovery_service(request: Request) -> BrandDiscoveryService:
+    """Request-scoped discovery service: team from auth context, Shopify Admin
+    client + Supabase repositories resolved from the environment (same pattern
+    as the other v1 Shopify routes)."""
+
+    context = require_user_context(request)
+    return brand_discovery_service.configured_discovery_service(team_id=context.team_id)
 
 
 @router.get("", response_model=list[BrandSummary])
@@ -55,3 +85,111 @@ def put_brand(request: Request, brand_id: BrandIdPath, brand: BrandContext) -> B
         return _service(request).save_brand(brand_id, brand)
     except (BrandMarkdownImportError, ValidationError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/{brand_id}/palette-suggestions", response_model=PaletteSuggestionResponse)
+async def suggest_palette(
+    request: Request,
+    brand_id: BrandIdPath,
+    payload: PaletteSuggestionRouteRequest,
+) -> PaletteSuggestionResponse:
+    try:
+        return await PaletteSuggestionService(_service(request)).suggest(brand_id, payload)
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except PaletteSuggestionUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.post("/{brand_id}/font-suggestions", response_model=FontSuggestionResponse)
+async def suggest_fonts(
+    request: Request,
+    brand_id: BrandIdPath,
+    payload: FontSuggestionRouteRequest | None = None,
+) -> FontSuggestionResponse:
+    """Font candidates for the request team's brand: Gemini-backed when available,
+    otherwise an explicitly labeled non-AI fallback (discovered + curated seeds)."""
+
+    service = FontSuggestionService(_service(request))  # require_user_context: 401 without auth
+    try:
+        return await service.suggest(brand_id, payload or FontSuggestionRouteRequest())
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except MissingSettingsError as exc:  # brand storage misconfigured (not Gemini-down)
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+RunIdPath = Annotated[UUID, Path(description="Discovery run UUID")]
+
+
+@router.post("/{brand_id}/discovery-runs", response_model=BrandDiscoveryRunPayload)
+def start_discovery_run(
+    request: Request,
+    brand_id: BrandIdPath,
+    payload: DiscoveryRunCreateRequest | None = None,
+) -> dict:
+    """Run Shopify brand discovery synchronously for the request team's brand."""
+
+    service = _discovery_service(request)
+    try:
+        return service.start_run(brand_id, store_id=payload.store_id if payload else None)
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except StoreNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except (DiscoveryUnavailable, DiscoveryPersistenceUnavailable, MissingSettingsError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.get("/{brand_id}/discovery-runs/{run_id}", response_model=BrandDiscoveryRunPayload)
+def get_discovery_run(request: Request, brand_id: BrandIdPath, run_id: RunIdPath) -> dict:
+    service = _discovery_service(request)
+    try:
+        run = service.get_run(str(run_id), brand_id=brand_id)
+    except (DiscoveryPersistenceUnavailable, MissingSettingsError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"discovery run '{run_id}' not found")
+    return run
+
+
+@router.post("/{brand_id}/apply-discovery-recommendations", response_model=BrandContext)
+def apply_discovery_recommendations(
+    request: Request, brand_id: BrandIdPath, payload: ApplyDiscoveryRecommendationsRequest
+) -> BrandContext:
+    """Explicitly merge user-accepted discovery recommendations into the request team's brand.
+
+    Only items listed in the request change; the saved BrandContext is returned
+    (same response shape as ``PUT /api/v1/brands/{id}``). An empty body is a valid no-op.
+    """
+
+    service = _service(request)  # require_user_context: 401 without auth
+    try:
+        return service.apply_discovery_recommendations(brand_id, payload)
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except (BrandMarkdownImportError, ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except MissingSettingsError as exc:  # brand storage misconfigured
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@router.post("/{brand_id}/discovery-runs/{run_id}/recommendations", response_model=BrandDiscoveryRunPayload)
+async def recommend_discovery_colors(request: Request, brand_id: BrandIdPath, run_id: RunIdPath) -> dict:
+    """Turn a run's discovery evidence into a Gemini-backed color role draft and persist it
+    (team-scoped: the run must belong to the request team and the path brand)."""
+
+    service = _discovery_service(request)
+    try:
+        run = await service.recommend_colors_for_run(brand_id, str(run_id))
+    except brand_store.BrandNotFound:
+        raise HTTPException(status_code=404, detail=f"brand '{brand_id}' not found")
+    except DiscoveryRunMissingSnapshot as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except BrandRecommendationUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except (DiscoveryPersistenceUnavailable, MissingSettingsError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"discovery run '{run_id}' not found")
+    return run

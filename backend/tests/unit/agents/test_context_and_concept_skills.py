@@ -110,7 +110,7 @@ def test_end_to_end_context_to_concept_to_image_prompt_is_deterministic():
     assert concept.copy["cta"] == "Shop the deal"
     forbidden_prompt_terms = ("text", "words", "letters", "signage", "caption", "captions", "headline", "headlines", "logo", "logos", "ui", "faces", "buttons", "modals", "screens")
     assert all(term not in concept.image_prompt.lower() for term in forbidden_prompt_terms)
-    assert "Blue" in concept.image_prompt
+    assert "Primary" in concept.image_prompt
     assert "#123456" not in concept.image_prompt
 
     prompt = asyncio.run(image_skill.run(concept, brand_context=brand, catalog_context=catalog, art_direction=art))
@@ -209,13 +209,118 @@ def test_concept_respects_prohibited_words_palette_tokens_and_required_phrase_tr
     assert "Move brighter" in concept.copy["headline"]
     assert len(concept.copy["headline"]) <= 58
     assert concept.palette_usage == {
-        "background": "Text White",
-        "text": "Logo Blue",
-        "cta_background": "Sun",
-        "cta_text": "Text White",
+        "background": "Secondary",
+        "text": "Primary",
+        "cta_background": "Tertiary / Accent",
+        "cta_text": "Secondary",
     }
     forbidden_prompt_terms = ("text", "words", "letters", "signage", "caption", "captions", "headline", "headlines", "logo", "logos", "ui", "faces", "buttons", "modals", "screens")
     assert all(term not in concept.image_prompt.lower() for term in forbidden_prompt_terms)
+
+
+def test_concept_and_image_prompt_use_color_system_variants() -> None:
+    brand_skill = _load_skill("brand-context-load")
+    concept_skill = _load_skill("banner-concept-draft")
+    image_skill = _load_skill("image-prompt-refine")
+    brand_data = _brand_dict()
+    brand_data["color_system"] = {
+        "primary": {
+            "key": "primary",
+            "label": "Trust Blue",
+            "hex": "#123456",
+            "usage_hint": "Main identity and visual anchor",
+            "agent_hint": "Use for primary anchor moments",
+            "variants": [{"name": "Readable Navy", "hex": "#0B1F33", "usage_hint": "approved text foreground"}],
+        },
+        "secondary": {
+            "key": "secondary",
+            "label": "Warm Cream",
+            "hex": "#F4F1EA",
+            "usage_hint": "Support background fields",
+            "agent_hint": "Use for background surfaces",
+            "variants": [{"name": "Soft Cream", "hex": "#FFF6E6", "usage_hint": "approved background surface"}],
+        },
+        "tertiary": {
+            "key": "tertiary",
+            "label": "Sun Accent",
+            "hex": "#FFAA00",
+            "usage_hint": "CTA and accent color",
+            "agent_hint": "Use for CTA buttons and highlights",
+            "variants": [{"name": "Action Amber", "hex": "#FF8800", "usage_hint": "approved CTA button accent"}],
+        },
+    }
+    brand = asyncio.run(brand_skill.run(brand_context=brand_data))
+
+    concept = asyncio.run(concept_skill.run(campaign=_campaign(), brand_context=brand))
+
+    assert concept.palette_usage["background"] == "Soft Cream"
+    assert concept.palette_usage["cta_background"] == "Action Amber"
+    assert concept.palette_usage["text"] == "Readable Navy"
+
+    prompt = asyncio.run(image_skill.run(concept, brand_context=brand))
+    assert "Trust Blue" in prompt
+    assert "#123456" in prompt
+    assert "Action Amber #FF8800" in prompt
+    assert "Use for CTA" in prompt
+
+
+def test_concept_includes_typography_guidance_for_approved_fonts() -> None:
+    brand_skill = _load_skill("brand-context-load")
+    concept_skill = _load_skill("banner-concept-draft")
+    image_skill = _load_skill("image-prompt-refine")
+    brand_data = _brand_dict()
+    brand_data["typography"] = {
+        "display": "Space Grotesk",
+        "body": "Inter",
+        "approved_fonts": [
+            {
+                "family": "Space Grotesk",
+                "css_stack": '"Space Grotesk", sans-serif',
+                "category": "sans",
+                "source": "gemini_suggested",
+                "status": "approved",
+                "recommended_roles": ["display"],
+            }
+        ],
+    }
+    brand = asyncio.run(brand_skill.run(brand_context=brand_data))
+
+    concept = asyncio.run(concept_skill.run(campaign=_campaign(), brand_context=brand))
+
+    assert "Typography: display: Space Grotesk (approved, sans), body: Inter (legacy)" in concept.hierarchy_notes
+    # Image pixels stay text-free: only the display CATEGORY vibe enters the prompt.
+    assert "geometric sans-serif aesthetic" in concept.image_prompt
+    assert "Space Grotesk" not in concept.image_prompt
+    assert "Inter" not in concept.image_prompt
+    forbidden_prompt_terms = ("text", "words", "letters", "signage", "caption", "captions", "headline", "headlines", "logo", "logos", "ui", "faces", "buttons", "modals", "screens")
+    assert all(term not in concept.image_prompt.lower() for term in forbidden_prompt_terms)
+
+    prompt = asyncio.run(image_skill.run(concept, brand_context=brand))
+    assert "Match a geometric sans-serif aesthetic in props and composition." in prompt
+    assert "Space Grotesk" not in prompt
+    assert all(term not in prompt.lower() for term in forbidden_prompt_terms)
+
+
+def test_concept_and_image_prompt_unchanged_without_typography() -> None:
+    brand_skill = _load_skill("brand-context-load")
+    concept_skill = _load_skill("banner-concept-draft")
+    image_skill = _load_skill("image-prompt-refine")
+    brand_data = _brand_dict()
+    # Legacy payloads may carry blank typography strings; no fonts must resolve.
+    brand_data["typography"] = {"display": "", "body": ""}
+    brand = asyncio.run(brand_skill.run(brand_context=brand_data))
+
+    concept = asyncio.run(concept_skill.run(campaign=_campaign(), brand_context=brand))
+
+    assert "Typography:" not in concept.hierarchy_notes
+    assert "aesthetic" not in concept.image_prompt
+
+    prompt = asyncio.run(image_skill.run(concept, brand_context=brand))
+    assert "Match a" not in prompt
+
+    # Dict-shaped brand without any typography keeps today's behavior too.
+    dict_prompt = asyncio.run(image_skill.run(concept, brand_context={"image_style_directives": ["natural light"]}))
+    assert "Match a" not in dict_prompt
 
 
 def test_personalization_always_includes_default_and_caps_at_four():

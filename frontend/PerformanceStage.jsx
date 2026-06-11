@@ -1,9 +1,16 @@
-/* global React, Icon, GlassCard, Button, Badge, Kicker, Spinner, Banner, SEGMENTS, METRICS, SEG_PERF, CTR_TREND, MEMORY,
-   PerformanceApi, GenerationApi, errorText */
+/* global React, Icon, GlassCard, Button, Badge, Kicker, Spinner, Banner, SEGMENTS,
+   PerformanceApi, GenerationApi, AijolotApi, errorText */
 // Aijolot Banner Agent — Stage 4: performance loop & self-optimization (Module 8).
 const { useState: useStateP, useEffect: useEffectP } = React;
 
 function Sparkline({ data, w = 320, h = 70, color = "#22D3EE" }) {
+  if (!Array.isArray(data) || data.length < 2) {
+    return (
+      <div style={{ height: h, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter", fontSize: 12, color: "#94A3B8" }}>
+        {t("Sin serie de CTR todavía — sincroniza snapshots de performance.")}
+      </div>
+    );
+  }
   const min = Math.min(...data), max = Math.max(...data);
   const pts = data.map((v, i) => {
     const x = (i / (data.length - 1)) * w;
@@ -90,7 +97,7 @@ function proposalLiftLabel(lift) {
 function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
   const [v2, setV2] = useStateP("idle"); // idle | building | ready
   const [backendPerf, setBackendPerf] = useStateP(null);
-  const [perfNotice, setPerfNotice] = useStateP("Datos demo etiquetados como manual/mock/seed/agent; no son analítica live de Shopify.");
+  const [perfNotice, setPerfNotice] = useStateP(t("Cargando métricas del backend…"));
   const [revisionId, setRevisionId] = useStateP(null);
   const [revision, setRevision] = useStateP(null);  // full latest revision (concept + variants) for the final-banner preview
   const [perfDevice, setPerfDevice] = useStateP("desktop");
@@ -157,21 +164,25 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
     });
   }, [revision && revision.id]);
 
-  // Record a manual (non-live) performance snapshot against the backend.
+  // F2 — trigger the agent's real performance sync (ingest + fatigue check),
+  // instead of registering a hardcoded fake snapshot.
   async function registerSnapshot() {
     if (snapBusy) return;
     setSnapBusy(true);
     try {
-      const r = await PerformanceApi.snapshot(campaign, { source: "manual", revision_id: revisionId, impressions: 12840, clicks: 591, conversions: 96 });
+      try {
+        await AijolotApi.post(AijolotApi.v1(`/campaigns/${campaign.id}/performance/sync`), {});
+      } catch (syncErr) { /* el GET de abajo reporta el estado real */ }
+      const r = await PerformanceApi.get(campaign);
       if (r.fallback) {
         setSnapState("error");
         onNotice && onNotice({ tone: "amber", text: r.reason });
       }
       else {
-        const label = compactSourceLabel(r.data);
+        const label = compactSourceLabel((r.data && r.data.latest_snapshot) || r.data);
         setSnapState("success");
-        setBackendPerf((prev) => prev ? { ...prev, latest_snapshot: r.data, snapshots: [r.data].concat(prev.snapshots || []) } : { latest_snapshot: r.data, snapshots: [r.data], insights: [], proposals: [], live_analytics: !!(r.data && r.data.live_analytics), data_source_label: label });
-        onNotice && onNotice({ tone: "green", text: `Snapshot registrado en backend · fuente: ${label}` });
+        setBackendPerf(r.data);
+        onNotice && onNotice({ tone: "green", text: `Sync de performance ejecutado · fuente: ${label}` });
         setPerfNotice(`Backend performance conectado · fuente: ${label}`);
       }
     } catch (e) {
@@ -244,20 +255,20 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
     { id: "ctr", icon: "mouse-pointer-click", label: "Clicks / CTR", value: `${fmtInt(latestSnapshot.clicks)} · ${fmtPercent(latestSnapshot.ctr)}`, delta: sourceLabel, up: true, backend: true },
     { id: "conv", icon: "shopping-bag", label: "Conversiones / CR", value: `${fmtInt(latestSnapshot.conversions)} · ${fmtPercent(latestSnapshot.conversion_rate)}`, delta: sourceLabel, up: true, backend: true },
     { id: "load", icon: "zap", label: "Carga / peso", value: latestSnapshot.load_p75_ms === null || typeof latestSnapshot.load_p75_ms === "undefined" ? "No informado" : fmtMs(latestSnapshot.load_p75_ms), delta: latestSnapshot.weight_saved_pct === null || typeof latestSnapshot.weight_saved_pct === "undefined" ? sourceLabel : `Peso ahorrado ${fmtPercent(latestSnapshot.weight_saved_pct)}`, up: true, backend: true },
-  ] : METRICS.map((m) => ({ ...m, label: `${m.label} (demo)`, delta: `Fallback demo · ${m.delta}`, backend: false }));
+  ] : [];
   const segmentRows = normalizeSegmentBreakdown(latestSnapshot && latestSnapshot.segment_breakdown);
-  const chartSegments = segmentRows.length ? segmentRows : SEG_PERF;
+  const chartSegments = segmentRows;
   // Lowest-CTR real segment (drives the V2 proposal copy); null when no real data.
   const lowCtrSeg = segmentRows.length ? segmentRows.slice().sort((a, b) => (Number(a.ctr) || 0) - (Number(b.ctr) || 0))[0].seg : null;
   const maxConv = Math.max(1, ...chartSegments.map((s) => Number(s.conv) || 0));
   const trendValues = extractTrendValues(latestSnapshot && latestSnapshot.trend);
-  const chartTrend = trendValues.length > 1 ? trendValues : CTR_TREND;
+  const chartTrend = trendValues.length > 1 ? trendValues : [];
   const chartFallback = !latestSnapshot || !segmentRows.length || trendValues.length <= 1;
   const insights = backendPerf && Array.isArray(backendPerf.insights) ? backendPerf.insights : [];
   const proposals = backendPerf && Array.isArray(backendPerf.proposals) ? backendPerf.proposals : [];
   const activeProposal = proposals[0];
   const v2Seg = (activeProposal && activeProposal.segment_key) || lowCtrSeg;
-  const memoryCards = insights.length || proposals.length ? insights.map((m) => ({ tag: m.tag || m.segment_key || "Insight backend", text: m.insight || "Insight backend", lift: m.lift_label || "backend", source: compactSourceLabel(m) })).concat(proposals.map((p) => ({ tag: `Propuesta · ${p.status || "draft"}`, text: p.rationale, lift: proposalLiftLabel(p.projected_lift) || p.segment_key || "backend", source: compactSourceLabel(p) }))) : MEMORY.map((m) => ({ ...m, tag: `${m.tag} · demo`, source: "Fallback demo no-live" }));
+  const memoryCards = insights.length || proposals.length ? insights.map((m) => ({ tag: m.tag || m.segment_key || "Insight backend", text: m.insight || "Insight backend", lift: m.lift_label || "backend", source: compactSourceLabel(m) })).concat(proposals.map((p) => ({ tag: `Propuesta · ${p.status || "draft"}`, text: p.rationale, lift: proposalLiftLabel(p.projected_lift) || p.segment_key || "backend", source: compactSourceLabel(p) }))) : [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
@@ -281,6 +292,12 @@ function PerformanceStage({ campaign, tweaks, onBack, onNotice }) {
       </div>
 
       {/* KPIs */}
+      {!kpis.length ? (
+        <GlassCard style={{ padding: 20, display: "flex", alignItems: "center", gap: 10, fontFamily: "Inter", fontSize: 13, color: "#475569" }}>
+          <Icon name="database-zap" size={16} color="#94A3B8" />
+          {t("Sin métricas registradas para esta campaña. Usa «Registrar snapshot» o espera el sync automático del agente.")}
+        </GlassCard>
+      ) : null}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 16 }}>
         {kpis.map((m) => (
           <GlassCard key={m.id} style={{ padding: 18 }}>

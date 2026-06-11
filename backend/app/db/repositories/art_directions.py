@@ -11,7 +11,8 @@ class ArtDirectionRepository:
     table_name = "art_directions"
     columns = (
         "id,campaign_id,background_mode,hero_style_key,model_key,custom_model,"
-        "fold_percentage,layout_hints,created_at,updated_at"
+        "fold_percentage,layout_hints,creative_mode,include_humans,mode_rationale,mode_source,"
+        "created_at,updated_at"
     )
     writable_columns = {
         "campaign_id",
@@ -21,6 +22,10 @@ class ArtDirectionRepository:
         "custom_model",
         "fold_percentage",
         "layout_hints",
+        "creative_mode",
+        "include_humans",
+        "mode_rationale",
+        "mode_source",
     }
 
     def __init__(self, client: SupabaseClient) -> None:

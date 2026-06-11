@@ -13,23 +13,6 @@ const SUGGEST = [
 ];
 
 // ---- offline fallback: a compact mirror of the backend extractor ----
-function localExtract(brief, text) {
-  const b = { ...brief };
-  const t = text.toLowerCase();
-  const promo = (text.match(/(\d{1,3})\s*%\s*(?:off|de\s+descuento|descuento|dto)/i) || [])[1];
-  if (/urgenc\w*\s*(alta|máxima)|black\s*friday|hoy|cuanto antes|urgent/.test(t)) b.urgency = "high";
-  else if (/urgenc\w*\s*media|pronto|esta semana|soon/.test(t)) b.urgency = "medium";
-  else if (/urgenc\w*\s*baja|sin prisa|no rush/.test(t)) b.urgency = "low";
-  const aud = text.match(/\b(?:a|para)\s+((?:mujeres|hombres|clientes|jóvenes|adultos|vip)[^.,;\n]*)/i);
-  if (aud) b.audience = aud[1].trim();
-  if (/\bhero\b|\b(home|inicio)\b/.test(t)) b.placement = "Home · Hero";
-  else if (/colecci[oó]n|collection/.test(t)) b.placement = "Colección · Cabecera";
-  else if (/producto|product|pdp/.test(t)) b.placement = "Producto · Franja";
-  const cta = text.match(/\bcta[:\s]+["“]?([^"”.\n]{2,40})/i) || text.match(/bot[oó]n[:\s]+["“]?([^"”.\n]{2,40})/i);
-  if (cta) b.cta = cta[1].trim();
-  if (!b.goal) b.goal = (promo ? `${text.trim()} (${promo}% OFF)` : text.trim()).slice(0, 160);
-  return b;
-}
 const REQUIRED = ["goal", "audience", "cta", "urgency", "placement"];
 const missingOf = (b) => REQUIRED.filter((f) => !(b[f] || "").trim());
 
@@ -88,24 +71,6 @@ function Chatbox({ campaign, onCampaign, onNotice }) {
     });
   }
 
-  function isOfflineFallbackError(e) {
-    const msg = (e && (e.message || String(e))) || "";
-    return /api client unavailable|failed to fetch|networkerror|load failed|could not connect|connection refused/i.test(msg);
-  }
-
-  async function fallbackLocal(text) {
-    const updated = localExtract(brief.current, text);
-    const missing = missingOf(updated);
-    const reply = missing.length
-      ? `Para cerrar el brief me falta: ${missing.join(", ")}. ¿Me lo confirmas? (modo offline)`
-      : "Listo — brief completo (modo offline). Revisa los campos y avanza a Arte.";
-    // simulate streaming
-    const words = reply.split(" ");
-    for (let i = 0; i < words.length; i++) { pushAgentToken((i ? " " : "") + words[i]); await new Promise((r) => setTimeout(r, 18)); }
-    const campaign = { id: campaignId.current || "local", title: updated.goal.slice(0, 40), raw_brief: text, structured_brief: updated, status: "draft", messages: [] };
-    finish(campaign, missing.length === 0, missing);
-  }
-
   async function send(text) {
     const t = (text != null ? text : val).trim();
     if (!t || streaming) return;
@@ -113,16 +78,12 @@ function Chatbox({ campaign, onCampaign, onNotice }) {
     setVal(""); setStreaming(true); setError("");
     try { await streamFromBridge(t); }
     catch (e) {
+      // Producción: el intake corre SIEMPRE contra el backend — un fallo es un
+      // error visible, nunca un extractor local simulado.
       const msg = e && (e.message || e.status) || "error";
-      if (!isOfflineFallbackError(e)) {
-        sealAgent();
-        setError("Intake backend falló: " + msg);
-        onNotice && onNotice({ tone: "amber", text: "No se pudo guardar intake en backend: " + msg });
-        return;
-      }
-      setError("Bridge no disponible — usando modo offline explícito.");
-      onNotice && onNotice({ tone: "amber", text: "Backend no disponible; usando extractor local solo como fallback offline." });
-      await fallbackLocal(t);
+      sealAgent();
+      setError("Intake backend falló: " + msg + ". Verifica el backend (:8000) y reintenta.");
+      onNotice && onNotice({ tone: "red", text: "No se pudo procesar el intake en backend: " + msg });
     }
     finally { setStreaming(false); }
   }

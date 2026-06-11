@@ -395,10 +395,13 @@ def install_theme_files(client: Any, *, theme_id: str) -> list[dict[str, Any]]:
     spots once via `{% render '<anchor>' %}`.
     """
 
+    # Controlled Liquid first (merchant-referenceable anchors), then the
+    # supplementary stylesheet asset. The banner itself renders from inline
+    # styles, so the CSS asset is a non-load-bearing extra and need not lead.
     results = [
-        client.put_theme_asset(theme_id=theme_id, key=CSS_KEY, value=BANNER_CSS),
         client.put_theme_asset(theme_id=theme_id, key=SECTION_KEY, value=CONTROLLED_SECTION),
         client.put_theme_asset(theme_id=theme_id, key=SNIPPET_KEY, value=CONTROLLED_SNIPPET),
+        client.put_theme_asset(theme_id=theme_id, key=CSS_KEY, value=BANNER_CSS),
     ]
     for anchor in dict.fromkeys(ANCHOR_BY_PLACEMENT_KEY.values()):
         results.append(
@@ -410,7 +413,7 @@ def install_theme_files(client: Any, *, theme_id: str) -> list[dict[str, Any]]:
 def installed_asset_keys() -> list[str]:
     """Asset keys install_theme_files writes — used for dry-run reporting."""
 
-    keys = [CSS_KEY, SECTION_KEY, SNIPPET_KEY]
+    keys = [SECTION_KEY, SNIPPET_KEY, CSS_KEY]
     keys.extend(anchor_snippet_key(a) for a in dict.fromkeys(ANCHOR_BY_PLACEMENT_KEY.values()))
     return keys
 
@@ -443,7 +446,7 @@ def inject_section_into_template(client: Any, *, theme_id: str, target_type: str
     except Exception:
         return False
 
-    value = asset.get("value") or ""
+    value = (asset or {}).get("value") or ""
     if not value:
         return False
 
