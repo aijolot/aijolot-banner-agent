@@ -483,7 +483,7 @@ class RunOrchestrator:
                     {
                         "html_preview": html_standalone,
                         "preview_storage_path": preview_path,
-                        "liquid_config": self._liquid_config(concept, liquid_section, campaign_state.placement),
+                        "liquid_config": self._liquid_config(concept, liquid_section, campaign_state.placement, image_url=image_url, cta_url=cta_url, brand=brand),
                         "concept": concept_dict,
                     }
                 ),
@@ -1058,8 +1058,9 @@ class RunOrchestrator:
             recorder.start(node)
             concept_model = _dict_to_concept(cdict)
             html_standalone = await self._render_html(concept_model, assets, brand)
-            liquid_section = await self._render_liquid(concept_model, _liquid_variants_from_rows(variant_rows), brand, assets, campaign_state.placement, cta_url=self._destination_url(campaign_row))
-            self.revisions.update(revision_id=revision_id, data=_json_safe({"html_preview": html_standalone, "preview_storage_path": preview_path, "liquid_config": self._liquid_config(concept_model, liquid_section, campaign_state.placement), "concept": cdict}))
+            _edit_cta_url = self._destination_url(campaign_row)
+            liquid_section = await self._render_liquid(concept_model, _liquid_variants_from_rows(variant_rows), brand, assets, campaign_state.placement, cta_url=_edit_cta_url)
+            self.revisions.update(revision_id=revision_id, data=_json_safe({"html_preview": html_standalone, "preview_storage_path": preview_path, "liquid_config": self._liquid_config(concept_model, liquid_section, campaign_state.placement, image_url=_first_asset_public_url(assets), cta_url=_edit_cta_url, brand=brand), "concept": cdict}))
             recorder.succeed(node, {"html_bytes": len(html_standalone)})
 
             node = "audit"
@@ -2031,11 +2032,44 @@ class RunOrchestrator:
             )
         return self.variants.create_many(variants=_json_safe(rows))
 
-    def _liquid_config(self, concept: Any, liquid_section: str, placement: str) -> dict[str, Any]:
+    def _liquid_config(self, concept: Any, liquid_section: str, placement: str, *, image_url: str | None = None, cta_url: str | None = None, brand: Any = None) -> dict[str, Any]:
+        copy = concept.copy if hasattr(concept.copy, "get") else {}
+        # Resolve brand palette tokens → hex so Shopify inline styles match the preview.
+        _hex_re = re.compile(r"^#[0-9A-Fa-f]{6}$")
+        palette: dict[str, str] = {}
+        if brand is not None:
+            brand_data: dict[str, Any] = (
+                brand if isinstance(brand, dict)
+                else (brand.model_dump() if hasattr(brand, "model_dump") else (brand.dict() if hasattr(brand, "dict") else {}))
+            )
+            for color in brand_data.get("palette") or []:
+                c: dict[str, Any] = color if isinstance(color, dict) else (color.model_dump() if hasattr(color, "model_dump") else {})
+                name = str(c.get("name") or "").strip()
+                hex_val = str(c.get("hex") or "").strip()
+                if name and _hex_re.match(hex_val):
+                    palette[name] = hex_val.upper()
+        pu = concept.palette_usage or {}
+
+        def _resolve(key: str, fallback: str) -> str:
+            token = str(pu.get(key) or "")
+            val = palette.get(token, token)
+            return val if _hex_re.match(val) else fallback
+
         return {
             "section": liquid_section,
             "placement": placement,
             "layout": _short(concept.layout, 120),
+            "headline": _short(copy.get("headline") or "", 200),
+            "subheadline": _short(copy.get("subheadline") or "", 300),
+            "eyebrow": _short(copy.get("eyebrow") or "", 100),
+            "cta_text": _short(copy.get("cta") or "", 80),
+            "cta_url": cta_url or "/collections/all",
+            "image_url": image_url or "",
+            "alt_text": _short(copy.get("headline") or "", 120),
+            "palette_bg": _resolve("background", "#F4F1EA"),
+            "palette_text": _resolve("text", "#111827"),
+            "palette_cta_bg": _resolve("cta_background", "#2563EB"),
+            "palette_cta_text": _resolve("cta_text", "#FFFFFF"),
         }
 
     def _persist_audit(self, *, campaign_id: str, revision_id: str, run_id: str, audit_report: Any) -> None:

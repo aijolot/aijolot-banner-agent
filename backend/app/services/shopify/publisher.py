@@ -130,11 +130,31 @@ class ShopifyPublisher:
             return PublishJobResponse.model_validate(row)
         try:
             if store.get("theme_id"):
-                theme_files.install_theme_files(self.client, theme_id=str(store["theme_id"]))
+                theme_id = str(store["theme_id"])
+                theme_files.install_theme_files(self.client, theme_id=theme_id)
+                target_type = (placement.get("target_type") if placement else None) or \
+                    (config.get("placement") or {}).get("target_type")
+                theme_files.inject_section_into_template(
+                    self.client, theme_id=theme_id, target_type=target_type
+                )
             # Re-host any locally-served banner image on Shopify Files so a live
             # storefront can actually load it (a localhost/private Supabase URL would
             # 404 for visitors). Best-effort: keeps the original URL on failure.
             config = self._rehost_assets(config)
+            # Install the canvas-exact banner as the active banner snippet so the
+            # storefront renders exactly what the user approved in the web app.
+            if store.get("theme_id"):
+                try:
+                    live_spec = _live_spec_from_revision(revision, config)
+                    theme_files.install_live_banner_as_snippet(
+                        self.client,
+                        theme_id=str(store["theme_id"]),
+                        live_spec=live_spec,
+                        image_url=str(config.get("image_url") or ""),
+                        cta_url=str(config.get("cta_url") or "/collections/all"),
+                    )
+                except Exception:  # noqa: BLE001 — never block publish over snippet install
+                    pass
             response = metafields.publish_campaign_config(
                 self.client,
                 namespace=str(store.get("banner_metafield_namespace") or "aijolot"),
@@ -300,6 +320,44 @@ class ShopifyPublisher:
             "idempotency_key": idempotency_key,
             "finished_at": _now(),
         }
+
+
+def _live_spec_from_revision(revision: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+    """Build the bannerLiveHTML 'live' spec from the stored revision concept + config.
+
+    Uses the same shape that banner_template.js / the web-app canvas expect so the
+    Shopify snippet renders pixel-for-pixel identically to the preview.
+    """
+    concept: dict[str, Any] = revision.get("concept") or {}
+    background: dict[str, Any] = concept.get("background") or {}
+    art_dir: dict[str, Any] = concept.get("art_direction") or {}
+    fonts: dict[str, Any] = art_dir.get("fonts") or {}
+    generated_art: list[dict[str, Any]] = concept.get("generated_art") or []
+    copy: dict[str, Any] = concept.get("copy") or {}
+
+    # Prefer config copy (already post-processed / truncated) but fall back to concept.
+    headline = config.get("headline") or copy.get("headline") or ""
+    subheadline = config.get("subheadline") or copy.get("subheadline") or ""
+    eyebrow = config.get("eyebrow") or copy.get("eyebrow") or ""
+    cta_text = config.get("cta_text") or copy.get("cta") or ""
+    cta_url = config.get("cta_url") or "/collections/all"
+    # Use the rehosted CDN image if available (already in config after _rehost_assets).
+    image_url = config.get("image_url") or (generated_art[0].get("public_url") if generated_art else "") or ""
+
+    return {
+        "eyebrow": eyebrow,
+        "headline": headline,
+        "headlineRuns": None,
+        "sub": subheadline,
+        "cta": cta_text,
+        "ctaUrl": cta_url,
+        "imageUrl": image_url,
+        "bgCss": background.get("css") or "",
+        "displayFont": fonts.get("display") or "Space Grotesk",
+        "bodyFont": fonts.get("body") or "Inter",
+        "textColor": art_dir.get("ink") or "#111111",
+        "layout": art_dir.get("layout") or {},
+    }
 
 
 def _now() -> str:
