@@ -4,11 +4,15 @@
     {
       "name": "frontend",
       "runtimeExecutable": "python3",
-      "runtimeArgs": [
-        "scripts/dev-frontend.py",
-        "5511"
-      ],
-      "port": 5511
+      "runtimeArgs": ["scripts/dev-frontend.py", "5500"],
+      "port": 5500
+    },
+    {
+      "name": "frontend-preview",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["scripts/dev-frontend.py", "5510"],
+      "port": 5510,
+      "autoPort": false
     }
   ]
 }

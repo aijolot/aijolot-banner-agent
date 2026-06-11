@@ -187,6 +187,62 @@ const BrandAPI = {
     try { const d = await AijolotApi.put(AijolotApi.v1("/brands/" + id), brand); this.online = true; return d; }
     catch (e) { this.online = e.status ? this.online : false; throw e; }
   },
+  async paletteSuggestions(id, payload) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/palette-suggestions`), payload || {});
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e; // backend validation/Gemini errors should be shown as-is
+      this.online = false;
+      const err = new Error("AI Palette Suggestions unavailable: backend/Gemini service is not reachable.");
+      err.body = err.message;
+      throw err;
+    }
+  },
+  // Shopify brand discovery (synchronous run). NEVER faked offline: discovery is
+  // real store evidence, so a network failure surfaces an explicit error instead
+  // of seeds. Backend errors (404/409/422/503 with detail) are rethrown as-is.
+  async startDiscovery(id, payload) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/discovery-runs`), payload || {});
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e;
+      this.online = false;
+      const err = new Error("El descubrimiento requiere el backend y Shopify conectados. No se puede simular.");
+      err.body = err.message;
+      throw err;
+    }
+  },
+  // Gemini color-role recommendation for a finished discovery run. Real AI only:
+  // never simulated offline (backend already answers 503 when Gemini is down).
+  async discoveryRecommendations(id, runId) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/discovery-runs/${runId}/recommendations`));
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e;
+      this.online = false;
+      const err = new Error("Las recomendaciones IA requieren el backend y Gemini conectados. No se pueden simular.");
+      err.body = err.message;
+      throw err;
+    }
+  },
+  // Font candidates (Gemini-backed when available; labeled non-AI fallback otherwise).
+  // The endpoint answers 200 with ai_available=false when Gemini is down, so the
+  // only offline path here is the backend itself being unreachable — never faked.
+  async fontSuggestions(id, payload) {
+    try {
+      const d = await AijolotApi.post(AijolotApi.v1(`/brands/${id}/font-suggestions`), payload || {});
+      this.online = true; return d;
+    } catch (e) {
+      if (e.status) throw e;
+      this.online = false;
+      const err = new Error("Las sugerencias de fuentes requieren el backend conectado. No se pueden simular.");
+      err.body = err.message;
+      throw err;
+    }
+  },
 };
 
 Object.assign(window, {

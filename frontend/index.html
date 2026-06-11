@@ -33,7 +33,7 @@
       var stored = localStorage.getItem("AIJOLOT_API_BASE");
       if (stored) return stored;
     } catch (e) { /* storage no disponible */ }
-    var devPorts = { "5500": 1, "5173": 1, "8080": 1, "3000": 1 };
+    var devPorts = { "5500": 1, "5510": 1, "5173": 1, "8080": 1, "3000": 1 };
     if (devPorts[loc.port]) return loc.protocol + "//" + loc.hostname + ":8000";
     return loc.origin;
   })();
@@ -44,14 +44,14 @@
 <script type="text/babel" src="browser-window.jsx?v=3"></script>
 <script type="text/babel" src="i18n.jsx?v=1"></script>
 <script type="text/babel" src="lib.jsx?v=5"></script>
-<script type="text/babel" src="data.jsx?v=3"></script>
+<script type="text/babel" src="data.jsx?v=4"></script>
 <script src="banner_template.js?v=5"></script>
 <script type="text/babel" src="Banner.jsx?v=3"></script>
 <script type="text/babel" src="SuggestionsPanel.jsx?v=1"></script>
 <script type="text/babel" src="CalendarPanel.jsx?v=1"></script>
 <script type="text/babel" src="Shell.jsx?v=3"></script>
 <script type="text/babel" src="ConfirmDialog.jsx?v=3"></script>
-<script type="text/babel" src="BrandContextView.jsx?v=3"></script>
+<script type="text/babel" src="BrandContextView.jsx?v=4"></script>
 <script type="text/babel" src="StoreMocks.jsx?v=3"></script>
 <script type="text/babel" src="layout.jsx?v=3"></script>
 <script type="text/babel" src="PlacementStage.jsx?v=3"></script>

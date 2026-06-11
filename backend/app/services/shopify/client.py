@@ -6,6 +6,11 @@ from typing import Any, Protocol
 
 import httpx
 
+from app.services.shopify.graphql_queries import (
+    SHOP_BASIC_METADATA_QUERY,
+    SHOP_BRAND_METADATA_QUERY,
+)
+
 
 class ShopifyApiError(Exception):
     pass
@@ -42,6 +47,33 @@ class ShopifyAdminClient:
     def put_theme_asset(self, *, theme_id: str, key: str, value: str) -> dict[str, Any]:
         payload = {"asset": {"key": key, "value": value}}
         return self._request("PUT", f"/themes/{theme_id}/assets.json", json=payload).get("asset", {})
+
+    def list_themes(self) -> list[dict[str, Any]]:
+        """List installed themes (``id``, ``name``, ``role``, ...)."""
+
+        themes = self._request("GET", "/themes.json").get("themes") or []
+        return [dict(theme) for theme in themes if isinstance(theme, dict)]
+
+    def get_main_theme(self) -> dict[str, Any] | None:
+        """Return the active (``role == "main"``) theme, or ``None`` when absent."""
+
+        for theme in self.list_themes():
+            if str(theme.get("role") or "").lower() == "main":
+                return theme
+        return None
+
+    def list_theme_assets(self, *, theme_id: str) -> list[dict[str, Any]]:
+        """List a theme's asset index entries (``key``/``size``/``content_type``)."""
+
+        assets = self._request("GET", f"/themes/{theme_id}/assets.json").get("assets") or []
+        return [dict(asset) for asset in assets if isinstance(asset, dict)]
+
+    def get_theme_asset(self, *, theme_id: str, key: str) -> dict[str, Any] | None:
+        """Fetch one theme asset by exact key. Text assets carry a ``value`` field."""
+
+        response = self._request("GET", f"/themes/{theme_id}/assets.json", params={"asset[key]": key})
+        asset = response.get("asset")
+        return dict(asset) if isinstance(asset, dict) else None
 
     def get_shop_metafield(self, *, namespace: str, key: str) -> dict[str, Any] | None:
         response = self._request("GET", "/metafields.json", params={"namespace": namespace, "key": key, "owner_resource": "shop"})
@@ -88,6 +120,18 @@ class ShopifyAdminClient:
             count = len(errors) if isinstance(errors, list) else 1
             raise ShopifyApiError(f"Shopify GraphQL error: {count} error(s)")
         return payload.get("data") or {}
+
+    def get_shop_metadata(self, *, include_brand: bool = True) -> dict[str, Any]:
+        """Fetch shop name/primary domain (plus brand colors/logo when available).
+
+        ``shop.brand`` is not available on every API version/scope set, so the
+        query can raise :class:`ShopifyApiError`; callers should retry with
+        ``include_brand=False`` to degrade gracefully.
+        """
+
+        query = SHOP_BRAND_METADATA_QUERY if include_brand else SHOP_BASIC_METADATA_QUERY
+        shop = self.graphql(query).get("shop")
+        return dict(shop) if isinstance(shop, dict) else {}
 
     def _request(self, method: str, path: str, *, json: dict[str, Any] | None = None, params: dict[str, Any] | None = None) -> dict[str, Any]:
         headers = {"X-Shopify-Access-Token": self.access_token, "Content-Type": "application/json"}

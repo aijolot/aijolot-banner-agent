@@ -61,3 +61,85 @@ def test_html_renderer_is_deterministic_and_reports_avif_skip() -> None:
     assert first.metadata["avif_skipped"] is True
     assert first.metadata["breakpoints"] == [320, 1280]
     assert "application/ld+json" in first.html
+
+
+def test_html_renderer_resolves_color_system_variants_before_palette() -> None:
+    concept = _concept().model_copy(update={"palette_usage": {"background": "Soft Cream", "text": "primary", "cta_background": "Action Amber", "cta_text": "White"}})
+    brand = {
+        **_brand(),
+        "color_system": {
+            "primary": {"key": "primary", "label": "Trust Blue", "hex": "#123456", "variants": []},
+            "secondary": {"key": "secondary", "label": "Warm Cream", "hex": "#F4F1EA", "variants": [{"name": "Soft Cream", "hex": "#FFF6E6"}]},
+            "tertiary": {"key": "tertiary", "label": "Sun Accent", "hex": "#FFAA00", "variants": [{"name": "Action Amber", "hex": "#FF8800"}]},
+        },
+    }
+
+    rendered = render_banner_preview(concept, _assets(), brand=brand)
+
+    assert "--aij-bg:#FFF6E6" in rendered.html
+    assert "--aij-text:#123456" in rendered.html
+    assert "--aij-cta-bg:#FF8800" in rendered.html
+
+
+def test_html_renderer_keeps_legacy_palette_only_lookup() -> None:
+    rendered = render_banner_preview(_concept(), _assets(), brand=_brand())
+
+    assert "--aij-bg:#F4F1EA" in rendered.html
+    assert "--aij-text:#111111" in rendered.html
+
+
+_DEFAULT_BODY_FONT_CSS = "font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;background:#fff"
+
+
+def test_html_renderer_uses_approved_font_stacks_with_quoted_multiword_family() -> None:
+    brand = {
+        **_brand(),
+        "typography": {
+            "display": "Space Grotesk",
+            "body": "Inter",
+            "approved_fonts": [
+                {
+                    "family": "Space Grotesk",
+                    # Unquoted multi-word parts on purpose: output must be quoted.
+                    "css_stack": "Space Grotesk, Helvetica Neue, sans-serif",
+                    "category": "sans",
+                    "source": "gemini_suggested",
+                    "status": "approved",
+                    "recommended_roles": ["display"],
+                }
+            ],
+        },
+    }
+
+    rendered = render_banner_preview(_concept(), _assets(), brand=brand)
+
+    assert 'h1,.aij-eyebrow {font-family:"Space Grotesk", "Helvetica Neue", sans-serif}' in rendered.html
+    assert "font-family:Inter, sans-serif;background:#fff" in rendered.html
+    assert _DEFAULT_BODY_FONT_CSS not in rendered.html
+
+
+def test_html_renderer_falls_back_to_legacy_typography_strings() -> None:
+    brand = {**_brand(), "typography": {"display": "Archivo Black", "body": "Helvetica Neue, Arial, sans-serif"}}
+
+    rendered = render_banner_preview(_concept(), _assets(), brand=brand)
+
+    assert 'h1,.aij-eyebrow {font-family:"Archivo Black", sans-serif}' in rendered.html
+    assert 'font-family:"Helvetica Neue", Arial, sans-serif;background:#fff' in rendered.html
+
+
+def test_html_renderer_without_typography_keeps_default_fonts_unchanged() -> None:
+    rendered = render_banner_preview(_concept(), _assets(), brand=_brand())
+
+    assert _DEFAULT_BODY_FONT_CSS in rendered.html
+    assert "h1,.aij-eyebrow {font-family" not in rendered.html
+
+
+def test_html_renderer_ignores_unsafe_dict_typography_values() -> None:
+    brand = {**_brand(), "typography": {"display": "Evil;}body{background:url(x)", "body": "Inter</style><script>"}}
+
+    rendered = render_banner_preview(_concept(), _assets(), brand=brand)
+
+    assert "url(x)" not in rendered.html
+    assert "</style><script>" not in rendered.html
+    assert _DEFAULT_BODY_FONT_CSS in rendered.html
+    assert "h1,.aij-eyebrow {font-family" not in rendered.html

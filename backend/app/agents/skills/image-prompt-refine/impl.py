@@ -6,6 +6,8 @@ import re
 from typing import Any
 
 from app.agents.state import Concept
+from app.services.brands.color_roles import color_system_prompt_lines
+from app.services.brands.font_roles import font_aesthetic_hint
 
 # Replacements that ALWAYS apply (text/logos/UI never belong inside the image).
 _FORBIDDEN_REPLACEMENTS = {
@@ -122,6 +124,11 @@ def _word_count(text: str) -> int:
     return len(re.findall(r"\b\w+\b", text))
 
 
+def _truncate_words(text: str, limit: int) -> str:
+    words = str(text or "").split()
+    return " ".join(words[:limit]) if len(words) > limit else " ".join(words)
+
+
 def _single_paragraph(parts: list[str]) -> str:
     return " ".join(" ".join(part.split()) for part in parts if str(part).strip())
 
@@ -151,8 +158,14 @@ async def run(
     full_picture = creative_mode in ("full_picture", "video")
 
     brand_styles = _sanitize_list(_as_list(image_style_directives), include_humans=include_humans)
+    color_role_lines: list[str] = []
+    font_hint = ""
     if brand_context is not None:
         brand_styles.extend(_sanitize_list(_as_list(_get(brand_context, "image_style_directives", [])), include_humans=include_humans))
+        color_role_lines = color_system_prompt_lines(brand_context)
+        # Display-font CATEGORY vibe only; font names stay out of image prompts and
+        # the no-text rules below remain untouched.
+        font_hint = font_aesthetic_hint(brand_context)
         palette = _get(brand_context, "palette", []) or []
         colors = [getattr(color, "hex", None) or (color.get("hex") if isinstance(color, dict) else None) for color in palette]
         colors = [color for color in colors if color]
@@ -174,23 +187,37 @@ async def run(
             "The image IS the finished banner background: a complete, art-directed scene with real environment, "
             "natural depth and editorial lighting — not an isolated product on a plain backdrop.",
             _copy_zone_instruction(layout_spec),
-            "Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "premium editorial commercial photography") + ".",
         ]
+        style_default = "premium editorial commercial photography"
     else:
+        # Composite mode: keep the body terse when approved color roles are present
+        # so the role directive below survives the word budget.
+        base_fragment = _sanitize(base or product or "a product lifestyle scene", include_humans=include_humans)
+        layout_fragment = _sanitize(layout, include_humans=include_humans)
+        if color_role_lines:
+            base_fragment = _truncate_words(base_fragment, 12)
+            layout_fragment = _truncate_words(layout_fragment, 12)
         prompt_parts = [
-            "Create a 16:9 ecommerce banner background featuring " + _sanitize(base or product or "a product lifestyle scene", include_humans=include_humans) + ".",
-            "Use a responsive composition with generous blank copy space for later HTML-rendered messaging" + (f", informed by {_sanitize(layout, include_humans=include_humans)}" if layout else "") + ".",
-            "Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "clean commercial ecommerce photography") + ".",
+            "Create a 16:9 ecommerce banner background featuring " + base_fragment + ".",
+            "Use a responsive composition with generous blank copy space for later HTML-rendered messaging" + (f", informed by {layout_fragment}" if layout_fragment else "") + ".",
         ]
-    if colors:
-        prompt_parts.append("Use palette accents: " + ", ".join(colors[:4]) + ".")
+        style_default = "clean commercial ecommerce photography"
+    prompt_parts.append("Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else style_default) + ".")
     if product:
         prompt_parts.append("Keep the catalog focus on " + _sanitize(product, include_humans=include_humans) + ".")
     if background_mode and not full_picture:
         prompt_parts.append(f"Follow {_sanitize(str(background_mode), include_humans=include_humans)} art direction" + (f" and preserve the focal area inside the {fold}% fold" if fold is not None else "") + ".")
-    # Safety suffixes are appended AFTER the word-budget truncation so they can
-    # never be cut off (the body is what shrinks, not the constraints).
+    # Brand + safety constraints are appended AFTER the word-budget truncation so
+    # they can never be cut off (the body is what shrinks, not the constraints):
+    # approved color roles and the display-font vibe are as load-bearing as the
+    # mark-free/people-free safety rules.
     suffix_parts = []
+    if color_role_lines:
+        suffix_parts.append("Respect approved color roles: " + " | ".join(_sanitize(line) for line in color_role_lines) + ".")
+    elif colors:
+        suffix_parts.append("Use palette accents: " + ", ".join(colors[:4]) + ".")
+    if font_hint:
+        suffix_parts.append("Match a " + _sanitize(font_hint) + " in props and composition.")
     if include_humans:
         suffix_parts.append("People may appear naturally in the scene: " + _HUMANS_DIRECTIVE + ".")
     suffix_parts.append(

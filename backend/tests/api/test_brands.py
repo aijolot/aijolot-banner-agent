@@ -6,10 +6,86 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.schemas.brand import BrandContext
 from app.services.brands.brand_service import BrandService
 
 client = TestClient(app)
 AUTH_HEADERS = {"X-Aijolot-User-Id": "test-user", "X-Aijolot-Team-Id": "team-1"}
+
+
+def _color_system(primary_hex: str = "#111111", primary_label: str = "Hero Ink") -> dict:
+    return {
+        "primary": {
+            "key": "primary",
+            "label": primary_label,
+            "hex": primary_hex,
+            "usage_hint": "Use for hero headlines.",
+            "agent_hint": "Dominant brand anchor.",
+        },
+        "secondary": {
+            "key": "secondary",
+            "label": "Warm Paper",
+            "hex": "#F5E8D0",
+            "usage_hint": "Use for backgrounds.",
+            "agent_hint": "Support primary.",
+        },
+        "tertiary": {
+            "key": "tertiary",
+            "label": "Coral CTA",
+            "hex": "#FF6655",
+            "usage_hint": "Use for CTAs.",
+            "agent_hint": "Apply sparingly.",
+        },
+    }
+
+
+def _extended_typography() -> dict:
+    return {
+        "display": "Archivo Black",
+        "body": "Inter",
+        "headline": "Archivo Black",
+        "accent": "Caveat",
+        "approved_fonts": [
+            {
+                "family": "Archivo Black",
+                "css_stack": "'Archivo Black', 'Arial Black', sans-serif",
+                "category": "display",
+                "source": "shopify_theme",
+                "status": "approved",
+                "recommended_roles": ["display", "headline"],
+                "rationale": "Storefront hero already uses it.",
+                "evidence_refs": ["theme:config/settings_data.json"],
+            }
+        ],
+        "discarded_fonts": [
+            {
+                "family": "Papyrus",
+                "css_stack": "Papyrus, fantasy",
+                "category": "handwritten",
+                "source": "gemini_suggested",
+                "status": "discarded",
+                "recommended_roles": [],
+                "rationale": "Off-brand.",
+                "evidence_refs": [],
+            }
+        ],
+    }
+
+
+def _brand_payload_without_color_system() -> dict:
+    return {
+        "id": "roles_brand",
+        "name": "Roles Brand",
+        "palette": [
+            {"name": "Ink", "hex": "#111111"},
+            {"name": "Paper", "hex": "#F5E8D0"},
+            {"name": "Coral", "hex": "#FF6655"},
+        ],
+        "typography": {"display": "Inter", "body": "Inter"},
+        "voice": {"tone": ["Clear"], "required_phrases": [], "prohibited_words": []},
+        "shopify": {"store_domain": "roles.myshopify.com"},
+        "notes": "Role notes.",
+    }
 
 
 def _clear_supabase_env(monkeypatch):
@@ -152,6 +228,194 @@ def test_list_and_get_can_use_supabase_backed_service(monkeypatch):
     assert loaded.json()["shopify"]["store_domain"] == "runtime.myshopify.com"
 
 
+def test_brand_service_record_payload_writes_top_level_color_system() -> None:
+    payload = _brand_payload_without_color_system()
+    payload["color_system"] = _color_system(primary_label="Canonical Hero Ink")
+    brand = BrandContext(**payload)
+
+    record = BrandService._record_payload_from_brand(brand)
+
+    assert record["color_system"]["primary"]["label"] == "Canonical Hero Ink"
+    assert "color_system" not in record["source_metadata"]
+
+
+def test_brand_service_restores_top_level_color_system_before_legacy_metadata() -> None:
+    row = {
+        "id": "uuid-roles",
+        "slug": "roles_brand",
+        "name": "Roles Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "color_system": _color_system(primary_hex="#222222", primary_label="Top Level Hero"),
+        "source_metadata": {
+            "shopify": {"store_domain": "roles.myshopify.com"},
+            "color_system": _color_system(primary_hex="#333333", primary_label="Legacy Hero"),
+        },
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.color_system is not None
+    assert brand.color_system.primary.label == "Top Level Hero"
+    assert brand.color_system.primary.hex == "#222222"
+
+
+def test_brand_service_restores_legacy_metadata_color_system_when_top_level_missing() -> None:
+    row = {
+        "id": "uuid-roles",
+        "slug": "roles_brand",
+        "name": "Roles Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "source_metadata": {
+            "shopify": {"store_domain": "roles.myshopify.com"},
+            "color_system": _color_system(primary_hex="#333333", primary_label="Legacy Hero"),
+        },
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.color_system is not None
+    assert brand.color_system.primary.label == "Legacy Hero"
+    assert brand.color_system.primary.hex == "#333333"
+
+
+def test_brand_service_normalizes_old_records_without_color_system_from_palette() -> None:
+    row = {
+        "id": "uuid-legacy",
+        "slug": "legacy_brand",
+        "name": "Legacy Brand",
+        "palette": [
+            {"name": "Ink", "hex": "#111111"},
+            {"name": "Paper", "hex": "#F5E8D0"},
+            {"name": "Coral", "hex": "#FF6655"},
+        ],
+        "source_metadata": {"shopify": {"store_domain": "legacy.myshopify.com"}},
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.color_system is not None
+    assert brand.color_system.primary.hex == "#111111"
+    assert brand.color_system.secondary.hex == "#F5E8D0"
+    assert brand.color_system.tertiary.hex == "#FF6655"
+
+
+def test_brand_service_record_payload_keeps_legacy_typography_and_full_typography_system() -> None:
+    payload = _brand_payload_without_color_system()
+    payload["typography"] = _extended_typography()
+    brand = BrandContext(**payload)
+
+    record = BrandService._record_payload_from_brand(brand)
+
+    # Old readers of the typography column keep seeing the two-key shape only.
+    assert record["typography"] == {"display": "Archivo Black", "body": "Inter"}
+    # The full extended dump goes to the dedicated typography_system column.
+    assert record["typography_system"]["headline"] == "Archivo Black"
+    assert record["typography_system"]["accent"] == "Caveat"
+    assert record["typography_system"]["approved_fonts"][0]["family"] == "Archivo Black"
+    assert record["typography_system"]["discarded_fonts"][0]["status"] == "discarded"
+    # Discovery evidence never rides along with brand saves.
+    assert "discovery_snapshot" not in record
+
+
+def test_brand_service_restores_typography_system_before_legacy_typography() -> None:
+    row = {
+        "id": "uuid-fonts",
+        "slug": "fonts_brand",
+        "name": "Fonts Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "typography": {"display": "Legacy Display", "body": "Legacy Body"},
+        "typography_system": _extended_typography(),
+        "source_metadata": {"shopify": {"store_domain": "fonts.myshopify.com"}},
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.typography.display == "Archivo Black"
+    assert brand.typography.headline == "Archivo Black"
+    assert [font.family for font in brand.typography.approved_fonts] == ["Archivo Black"]
+    assert [font.family for font in brand.typography.discarded_fonts] == ["Papyrus"]
+
+
+def test_brand_service_legacy_rows_without_typography_system_load_with_defaults() -> None:
+    row = {
+        "id": "uuid-legacy-fonts",
+        "slug": "legacy_fonts_brand",
+        "name": "Legacy Fonts Brand",
+        "palette": [{"name": "Ink", "hex": "#111111"}],
+        "typography": {"display": "Space Grotesk", "body": "Inter"},
+        "typography_system": None,
+        "discovery_snapshot": None,
+        "source_metadata": {"shopify": {"store_domain": "legacy.myshopify.com"}},
+    }
+
+    brand = BrandService._brand_from_record(row)
+
+    assert brand.typography.display == "Space Grotesk"
+    assert brand.typography.body == "Inter"
+    assert brand.typography.headline is None
+    assert brand.typography.accent is None
+    assert brand.typography.approved_fonts == []
+    assert brand.typography.discarded_fonts == []
+
+
+def test_put_and_get_brand_round_trips_extended_typography_root_and_v1(monkeypatch):
+    import app.services.brand_store as store
+
+    repository = FakeBrandRepository()
+    service = BrandService(repository=repository, team_id="team-1")
+    monkeypatch.setattr(store, "_default_service", lambda: service)
+    monkeypatch.setattr(store, "service_for_team", lambda team_id: service)
+
+    payload = _brand_payload_without_color_system()
+    payload["id"] = "fonts_brand"
+    payload["typography"] = _extended_typography()
+
+    saved = client.put("/brands/fonts_brand", json=payload)
+    assert saved.status_code == 200
+    assert saved.json()["typography"]["approved_fonts"][0]["family"] == "Archivo Black"
+
+    # Stored row keeps the legacy column stable and the full dump separate.
+    stored = repository.rows["fonts_brand"]
+    assert stored["typography"] == {"display": "Archivo Black", "body": "Inter"}
+    assert stored["typography_system"]["discarded_fonts"][0]["family"] == "Papyrus"
+
+    for response in (
+        client.get("/brands/fonts_brand"),
+        client.get("/api/v1/brands/fonts_brand", headers=AUTH_HEADERS),
+    ):
+        assert response.status_code == 200
+        typography = response.json()["typography"]
+        assert typography["display"] == "Archivo Black"
+        assert typography["headline"] == "Archivo Black"
+        assert typography["accent"] == "Caveat"
+        assert [font["family"] for font in typography["approved_fonts"]] == ["Archivo Black"]
+        assert [font["status"] for font in typography["discarded_fonts"]] == ["discarded"]
+
+    v1_saved = client.put("/api/v1/brands/fonts_brand", headers=AUTH_HEADERS, json=payload)
+    assert v1_saved.status_code == 200
+    assert v1_saved.json()["typography"]["discarded_fonts"][0]["family"] == "Papyrus"
+
+
+def test_put_brand_with_extended_typography_round_trips_markdown_fallback(tmp_path, monkeypatch):
+    import app.services.brand_store as store
+
+    _clear_supabase_env(monkeypatch)
+    seed = store.get_brand("maison").model_dump()
+    monkeypatch.setattr(store, "BRANDS_DIR", tmp_path)
+    seed["typography"] = _extended_typography()
+
+    saved = client.put("/brands/maison", json=seed)
+    assert saved.status_code == 200
+    assert (tmp_path / "maison.md").exists()
+
+    loaded = client.get("/brands/maison")
+    assert loaded.status_code == 200
+    typography = loaded.json()["typography"]
+    assert typography["headline"] == "Archivo Black"
+    assert [font["family"] for font in typography["approved_fonts"]] == ["Archivo Black"]
+    assert [font["family"] for font in typography["discarded_fonts"]] == ["Papyrus"]
+
+
 def test_import_markdown_endpoint_upserts_into_supabase_service(tmp_path, monkeypatch):
     import app.services.brand_store as store
     from app.services.brands.markdown_importer import BrandMarkdownImporter
@@ -184,3 +448,268 @@ Imported notes.
     body = response.json()
     assert body["id"] == "seed_brand"
     assert service.get_brand("seed_brand").notes == "Imported notes.\n"
+
+
+def test_root_palette_suggestions_returns_gemini_suggestions(monkeypatch):
+    import app.services.brand_store as store
+    from app.services.brands import palette_suggestions as palette_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        return {
+            "suggestions": [
+                {"name": "Avocado Glow", "hex": "#7AC943", "usage_hint": "Use behind hero product cards", "rationale": "Fresh and branded."}
+            ]
+        }
+
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/palette-suggestions", json={"role_key": "primary", "count": 3})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "gemini"
+    assert body["role_key"] == "primary"
+    assert body["suggestions"] == [
+        {"name": "Avocado Glow", "hex": "#7AC943", "usage_hint": "Use behind hero product cards", "rationale": "Fresh and branded."}
+    ]
+
+
+def test_palette_suggestions_missing_brand_returns_404(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    response = client.post("/brands/nope/palette-suggestions", json={"role_key": "primary", "count": 3})
+    assert response.status_code == 404
+
+
+def test_palette_suggestions_gemini_unavailable_maps_to_503(monkeypatch):
+    from app.agents.tools import gemini_text
+    from app.services.brands import palette_suggestions as palette_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        raise gemini_text.GeminiUnavailable("Gemini is unavailable: set GOOGLE_API_KEY")
+
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/palette-suggestions", json={"role_key": "primary", "count": 3})
+
+    assert response.status_code == 503
+    assert "Gemini is unavailable" in response.json()["detail"]
+    assert "suggestions" not in response.json()
+
+
+def test_palette_suggestions_invalid_role_key_returns_validation_error(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    response = client.post("/brands/avocado_store/palette-suggestions", json={"role_key": "accent", "count": 3})
+    assert response.status_code == 422
+
+
+def test_palette_suggestions_draft_context_overrides_persisted_brand(monkeypatch):
+    from app.services.brands import palette_suggestions as palette_module
+
+    _clear_supabase_env(monkeypatch)
+    captured: dict[str, str] = {}
+    persisted = client.get("/brands/avocado_store").json()
+    draft = {**persisted, "name": "Unsaved Palette Draft"}
+    draft["color_system"]["primary"]["hex"] = "#123ABC"
+    draft["palette"][0]["hex"] = "#123ABC"
+
+    async def fake_generate(prompt, *, model, structured=None):
+        captured["prompt"] = prompt
+        return {"suggestions": [{"name": "Draft Violet", "hex": "#7654D8", "usage_hint": "Draft accent", "rationale": "Matches unsaved colors."}]}
+
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+    response = client.post(
+        "/brands/avocado_store/palette-suggestions",
+        json={"role_key": "primary", "count": 3, "draft_brand_context": draft},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["base_hex"] == "#123ABC"
+    assert "Unsaved Palette Draft" in captured["prompt"]
+    assert "#123ABC" in captured["prompt"]
+
+
+def test_api_v1_palette_suggestions_uses_auth_scoped_service(monkeypatch):
+    import app.services.brand_store as store
+    from app.services.brands import palette_suggestions as palette_module
+
+    service = BrandService(repository=FakeBrandRepository(), team_id="team-1")
+    called: dict[str, str] = {}
+
+    def fake_service_for_team(team_id: str):
+        called["team_id"] = team_id
+        return service
+
+    async def fake_generate(prompt, *, model, structured=None):
+        return {"suggestions": [{"name": "Runtime Blue", "hex": "#3366FF", "usage_hint": "Use on banners", "rationale": "Runtime fit."}]}
+
+    monkeypatch.setattr(store, "service_for_team", fake_service_for_team)
+    monkeypatch.setattr(palette_module.gemini_text, "generate", fake_generate)
+
+    unauthenticated = client.post("/api/v1/brands/supabase_brand/palette-suggestions", json={"role_key": "primary", "count": 3})
+    assert unauthenticated.status_code in {401, 403}
+
+    response = client.post(
+        "/api/v1/brands/supabase_brand/palette-suggestions",
+        headers=AUTH_HEADERS,
+        json={"role_key": "primary", "count": 3},
+    )
+
+    assert response.status_code == 200
+    assert called["team_id"] == "team-1"
+    assert response.json()["suggestions"][0]["hex"] == "#3366FF"
+
+
+# ---------------------------------------------------------------------------
+# POST /brands/{brand_id}/font-suggestions (Task 6)
+# ---------------------------------------------------------------------------
+
+
+def _gemini_font_payload() -> dict:
+    return {
+        "suggestions": [
+            {
+                "family": "Space Grotesk",
+                "css_stack": "",
+                "category": "sans",
+                "recommended_roles": ["display", "headline"],
+                "rationale": "Techy grotesk that pairs with Inter body copy.",
+            },
+            {
+                "family": "Lora",
+                "css_stack": "Lora, Georgia, serif",
+                "category": "serif",
+                "recommended_roles": ["body"],
+                "rationale": "Editorial serif counterpart.",
+            },
+        ]
+    }
+
+
+def test_root_font_suggestions_returns_gemini_suggestions_with_labeled_buckets(monkeypatch):
+    from app.services.brands import font_suggestions as fonts_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        return _gemini_font_payload()
+
+    monkeypatch.setattr(fonts_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/font-suggestions", json={"count": 4, "intent": "summer hero"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "gemini"
+    assert body["ai_available"] is True
+    assert body["message"]
+    assert [font["family"] for font in body["suggestions"]] == ["Space Grotesk", "Lora"]
+    assert all(font["source"] == "gemini_suggested" for font in body["suggestions"])
+    assert all(font["status"] == "candidate" for font in body["suggestions"])
+    assert body["suggestions"][0]["css_stack"] == '"Space Grotesk", sans-serif'  # built when missing
+    assert body["discovered"] == []  # markdown/demo mode has no discovery snapshot
+    seed_families = {font["family"] for font in body["seeds"]}
+    assert "Inter" in seed_families
+    assert seed_families.isdisjoint({"Space Grotesk", "Lora"})  # seeds trimmed against suggestions
+    assert all(font["source"] == "system_seed" for font in body["seeds"])
+
+
+def test_root_font_suggestions_gemini_unavailable_returns_labeled_fallback_not_503(monkeypatch):
+    from app.agents.tools import gemini_text
+    from app.services.brands import font_suggestions as fonts_module
+
+    _clear_supabase_env(monkeypatch)
+
+    async def fake_generate(prompt, *, model, structured=None):
+        raise gemini_text.GeminiUnavailable("Gemini is unavailable: set GOOGLE_API_KEY")
+
+    monkeypatch.setattr(fonts_module.gemini_text, "generate", fake_generate)
+    response = client.post("/brands/avocado_store/font-suggestions", json={})
+
+    assert response.status_code == 200  # unlike colors: fonts fall back, they do not 503
+    body = response.json()
+    assert body["source"] == "deterministic_fallback"
+    assert body["ai_available"] is False
+    assert body["suggestions"] == []  # seeds are never relabeled as AI output
+    assert "Gemini is unavailable" in body["message"]
+    assert "non-AI" in body["message"]
+    assert body["seeds"]
+    assert all(font["source"] == "system_seed" for font in body["seeds"])
+
+
+def test_font_suggestions_missing_brand_returns_404(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    response = client.post("/brands/nope/font-suggestions", json={})
+    assert response.status_code == 404
+
+
+def test_font_suggestions_invalid_count_returns_422(monkeypatch):
+    _clear_supabase_env(monkeypatch)
+    assert client.post("/brands/avocado_store/font-suggestions", json={"count": 2}).status_code == 422
+    assert client.post("/brands/avocado_store/font-suggestions", json={"count": 99}).status_code == 422
+
+
+def test_api_v1_font_suggestions_uses_auth_scoped_service_and_discovery_snapshot(monkeypatch):
+    import app.services.brand_store as store
+    from app.services.brands import font_suggestions as fonts_module
+
+    repository = FakeBrandRepository()
+    repository.rows["supabase_brand"]["discovery_snapshot"] = {
+        "id": "disc_abc123def456",
+        "brand_id": "supabase_brand",
+        "shop_domain": "runtime.myshopify.com",
+        "status": "succeeded",
+        "discovered_at": "2026-06-10T12:00:00+00:00",
+        "fonts": [
+            {"family": "Assistant", "source": "theme_settings:config/settings_data.json", "confidence": 0.9},
+            {"family": "Archivo Black", "source": "css:assets/base.css", "css_stack": "'Archivo Black', sans-serif", "confidence": 0.5},
+        ],
+    }
+    service = BrandService(repository=repository, team_id="team-1")
+    called: dict[str, str] = {}
+
+    def fake_service_for_team(team_id: str):
+        called["team_id"] = team_id
+        return service
+
+    async def fake_generate(prompt, *, model, structured=None):
+        called["prompt"] = prompt
+        return _gemini_font_payload()
+
+    monkeypatch.setattr(store, "service_for_team", fake_service_for_team)
+    monkeypatch.setattr(fonts_module.gemini_text, "generate", fake_generate)
+
+    unauthenticated = client.post("/api/v1/brands/supabase_brand/font-suggestions", json={})
+    assert unauthenticated.status_code == 401  # fail closed without request context
+
+    response = client.post("/api/v1/brands/supabase_brand/font-suggestions", headers=AUTH_HEADERS, json={"count": 5})
+
+    assert response.status_code == 200
+    assert called["team_id"] == "team-1"
+    body = response.json()
+    assert body["source"] == "gemini"
+    assert body["ai_available"] is True
+    # Discovered candidates mapped deterministically from the persisted snapshot.
+    assert [font["family"] for font in body["discovered"]] == ["Assistant", "Archivo Black"]
+    assert body["discovered"][0]["source"] == "shopify_theme"
+    assert body["discovered"][1]["source"] == "storefront_css"
+    assert body["discovered"][0]["evidence_refs"] == ["theme_settings:config/settings_data.json"]
+    # The prompt carried the discovered evidence to Gemini.
+    assert "Assistant" in str(called["prompt"])
+
+
+def test_v1_font_suggestions_unknown_brand_returns_404(monkeypatch):
+    import app.services.brand_store as store
+
+    service = BrandService(repository=FakeBrandRepository(), team_id="team-1")
+    monkeypatch.setattr(store, "service_for_team", lambda team_id: service)
+
+    response = client.post("/api/v1/brands/missing_brand/font-suggestions", headers=AUTH_HEADERS, json={})
+
+    assert response.status_code == 404
+
+
+def test_font_suggestion_routes_are_present_in_openapi_contract():
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/brands/{brand_id}/font-suggestions" in paths
+    assert "/api/v1/brands/{brand_id}/font-suggestions" in paths
