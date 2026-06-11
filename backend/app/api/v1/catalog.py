@@ -70,3 +70,20 @@ def get_catalog_snapshot(campaign_id: CampaignIdPath, request: Request) -> Catal
         raise HTTPException(status_code=404, detail=str(exc))
     except MissingSettingsError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from None
+
+
+@router.get("/catalog/signals")
+def list_catalog_signals(request: Request) -> dict:
+    """F3 — materialized catalog signals for the team (read-only)."""
+    from app.core.settings import Settings
+    from app.services.banners.catalog_signal_service import InMemoryCatalogSignals, SupabaseCatalogSignals
+    from app.services.supabase.client import SupabaseClientFactory
+
+    context = require_user_context(request)
+    settings = Settings.from_env()
+    if settings.supabase_url and settings.supabase_service_role_key:
+        client = SupabaseClientFactory(settings).service_role_client()
+        signals = SupabaseCatalogSignals(client).list(team_id=context.team_id)
+    else:
+        signals = InMemoryCatalogSignals().list(team_id=context.team_id)
+    return {"signals": signals}

@@ -67,6 +67,8 @@ class Settings(BaseModel):
         "aijolot_background_provider": "AIJOLOT_BACKGROUND_PROVIDER",
         "aijolot_refine_provider": "AIJOLOT_REFINE_PROVIDER",
         "kg_embeddings_enabled": "KG_EMBEDDINGS_ENABLED",
+        "video_generation_enabled": "VIDEO_GENERATION_ENABLED",
+        "video_generation_provider": "VIDEO_GENERATION_PROVIDER",
     }
 
     app_env: str = "local"
@@ -111,6 +113,9 @@ class Settings(BaseModel):
     aijolot_background_provider: str = ""
     aijolot_refine_provider: str = ""
     kg_embeddings_enabled: bool = False
+    # C2 — video banners: hard gate (Veo is expensive). Unset provider → fake.
+    video_generation_enabled: bool = False
+    video_generation_provider: str | None = None
 
     @field_validator(
         "supabase_db_url",

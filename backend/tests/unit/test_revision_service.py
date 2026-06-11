@@ -332,3 +332,34 @@ def test_regenerate_from_non_selected_source_supersedes_previous_selected_revisi
     assert revisions.rows[selected["id"]]["status"] == "superseded"
     assert revisions.rows[response.revision.id]["status"] == "selected"
     assert campaigns.rows[CAMPAIGN_ID]["selected_revision_id"] == response.revision.id
+
+
+# --- W0.3: per-section ink + type scale (direct edits) ---------------------
+
+
+def test_apply_edits_per_section_ink_dict(stack) -> None:
+    service, _campaigns, revisions, *_ = stack
+    req = ApplyEditsRequest(structured_changes=StructuredEdit(ink={"headline": "#FF0000", "cta": "#00FF00", "bogus": "#0000FF", "eyebrow": "no-hex"}))
+    resp = service.apply_edits(CAMPAIGN_ID, req)
+    art = revisions.rows[resp.revision.id]["concept"]["art_direction"]
+    assert art["ink_sections"] == {"headline": "#FF0000", "cta": "#00FF00"}  # invalid key/hex dropped
+
+
+def test_apply_edits_global_ink_resets_sections(stack) -> None:
+    service, _campaigns, revisions, *_ = stack
+    service.apply_edits(CAMPAIGN_ID, ApplyEditsRequest(structured_changes=StructuredEdit(ink={"headline": "#FF0000"})))
+    resp = service.apply_edits(CAMPAIGN_ID, ApplyEditsRequest(structured_changes=StructuredEdit(ink="#222222")))
+    art = revisions.rows[resp.revision.id]["concept"]["art_direction"]
+    assert art["ink"] == "#222222"
+    assert "ink_sections" not in art
+
+
+def test_apply_edits_type_scale_clamped_and_above_100(stack) -> None:
+    service, _campaigns, revisions, *_ = stack
+    req = ApplyEditsRequest(structured_changes=StructuredEdit(type_scale={"headline": 1.8, "subheadline": 9.0, "cta": 0.1, "bogus": 1.2}))
+    resp = service.apply_edits(CAMPAIGN_ID, req)
+    art = revisions.rows[resp.revision.id]["concept"]["art_direction"]
+    assert art["type_scale"]["headline"] == 1.8   # >100% allowed
+    assert art["type_scale"]["subheadline"] == 2.5  # clamped max
+    assert art["type_scale"]["cta"] == 0.5          # clamped min
+    assert "bogus" not in art["type_scale"]

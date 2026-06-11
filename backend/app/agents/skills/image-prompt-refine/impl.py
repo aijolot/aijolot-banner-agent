@@ -7,6 +7,7 @@ from typing import Any
 
 from app.agents.state import Concept
 
+# Replacements that ALWAYS apply (text/logos/UI never belong inside the image).
 _FORBIDDEN_REPLACEMENTS = {
     "no text": "blank copy space",
     "no words": "abstract details only",
@@ -20,8 +21,6 @@ _FORBIDDEN_REPLACEMENTS = {
     "no logo": "mark-free brand-safe styling",
     "no ui chrome": "clean composition",
     "no ui": "clean composition",
-    "no faces": "people-free scene",
-    "no face": "people-free scene",
     "text overlay": "blank copy space",
     "with text": "with blank copy space",
     "typography": "visual rhythm",
@@ -42,10 +41,30 @@ _FORBIDDEN_REPLACEMENTS = {
     "logo": "mark-free brand-safe styling",
     "ui chrome": "clean composition",
     "ui": "clean composition",
-    "faces": "people-free scene",
-    "face": "people-free scene",
     "text": "blank copy space",
 }
+
+# People-related replacements: applied ONLY when humans are NOT allowed (C3).
+_PEOPLE_REPLACEMENTS = {
+    "no faces": "people-free scene",
+    "no face": "people-free scene",
+    "faces": "people-free scene",
+    "face": "people-free scene",
+}
+
+# Responsible-representation directive used when include_humans=True (C3):
+# never celebrities, never minors, diverse and non-sexualized casting.
+_HUMANS_DIRECTIVE = (
+    "adult models only (clearly 21+), no celebrity or public-figure likeness, no minors, "
+    "natural diverse casting across skin tones and body types, respectful non-sexualized "
+    "styling, photorealistic with honest skin texture"
+)
+
+
+def _forbidden_replacements(include_humans: bool) -> dict[str, str]:
+    if include_humans:
+        return _FORBIDDEN_REPLACEMENTS
+    return {**_FORBIDDEN_REPLACEMENTS, **_PEOPLE_REPLACEMENTS}
 
 
 def _get(obj: Any, key: str, default: Any = "") -> Any:
@@ -64,15 +83,39 @@ def _as_list(value: Any) -> list[str]:
     return [str(item) for item in value if str(item).strip()]
 
 
-def _sanitize_list(values: list[str]) -> list[str]:
-    return [sanitized for value in values if (sanitized := _sanitize(value))]
+def _sanitize_list(values: list[str], *, include_humans: bool = False) -> list[str]:
+    return [sanitized for value in values if (sanitized := _sanitize(value, include_humans=include_humans))]
 
 
-def _sanitize(prompt: str) -> str:
+def _sanitize(prompt: str, *, include_humans: bool = False) -> str:
     prompt = " ".join(str(prompt or "").split())
-    for old, new in sorted(_FORBIDDEN_REPLACEMENTS.items(), key=lambda item: len(item[0]), reverse=True):
+    replacements = _forbidden_replacements(include_humans)
+    for old, new in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
         prompt = re.sub(rf"\b{re.escape(old)}\b", new, prompt, flags=re.IGNORECASE)
     return prompt.strip(" ,")
+
+
+def _copy_zone_instruction(layout: Any) -> str:
+    """C1 — tell the model WHERE the HTML copy will sit so the generated scene
+    keeps that zone visually calm (derived from the percent layout, not a vague
+    'blank copy space')."""
+    text_x = _get(layout, "textX", 6)
+    text_w = _get(layout, "textW", 48)
+    try:
+        center = float(text_x) + float(text_w) / 2.0
+    except (TypeError, ValueError):
+        center = 30.0
+    if center < 38:
+        zone = "the LEFT third of the frame"
+    elif center > 62:
+        zone = "the RIGHT third of the frame"
+    else:
+        zone = "the CENTER band of the frame"
+    return (
+        f"Keep {zone} visually calm and uncluttered — low detail, soft even contrast, no focal elements there — "
+        "because the headline and CTA will be overlaid in HTML on that area; place the subject and visual interest "
+        "in the remaining space."
+    )
 
 
 def _word_count(text: str) -> int:
@@ -103,9 +146,13 @@ async def run(
         base = str(_get(concept_or_prompt, "image_prompt", ""))
         layout = str(_get(concept_or_prompt, "layout", ""))
 
-    brand_styles = _sanitize_list(_as_list(image_style_directives))
+    creative_mode = str(_get(art_direction, "creative_mode", "") or "composite")
+    include_humans = bool(_get(art_direction, "include_humans", False))
+    full_picture = creative_mode in ("full_picture", "video")
+
+    brand_styles = _sanitize_list(_as_list(image_style_directives), include_humans=include_humans)
     if brand_context is not None:
-        brand_styles.extend(_sanitize_list(_as_list(_get(brand_context, "image_style_directives", []))))
+        brand_styles.extend(_sanitize_list(_as_list(_get(brand_context, "image_style_directives", [])), include_humans=include_humans))
         palette = _get(brand_context, "palette", []) or []
         colors = [getattr(color, "hex", None) or (color.get("hex") if isinstance(color, dict) else None) for color in palette]
         colors = [color for color in colors if color]
@@ -117,25 +164,49 @@ async def run(
     background_mode = _get(art_direction, "background_mode", "")
     fold = _get(art_direction, "fold_percentage", None)
 
-    prompt_parts = [
-        "Create a 16:9 ecommerce banner background featuring " + _sanitize(base or product or "a product lifestyle scene") + ".",
-        "Use a responsive composition with generous blank copy space for later HTML-rendered messaging" + (f", informed by {_sanitize(layout)}" if layout else "") + ".",
-        "Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "clean commercial ecommerce photography") + ".",
-    ]
+    if full_picture:
+        # C1 — the model generates the ENTIRE scene (no chroma, no compositing);
+        # only text + CTA are overlaid in HTML, on the zone we keep calm.
+        layout_spec = _get(art_direction, "layout", {}) or {}
+        prompt_parts = [
+            "Create a 16:9 FULL-BLEED, edge-to-edge cinematic ecommerce hero scene featuring "
+            + _sanitize(base or product or "a premium lifestyle moment", include_humans=include_humans) + ".",
+            "The image IS the finished banner background: a complete, art-directed scene with real environment, "
+            "natural depth and editorial lighting — not an isolated product on a plain backdrop.",
+            _copy_zone_instruction(layout_spec),
+            "Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "premium editorial commercial photography") + ".",
+        ]
+    else:
+        prompt_parts = [
+            "Create a 16:9 ecommerce banner background featuring " + _sanitize(base or product or "a product lifestyle scene", include_humans=include_humans) + ".",
+            "Use a responsive composition with generous blank copy space for later HTML-rendered messaging" + (f", informed by {_sanitize(layout, include_humans=include_humans)}" if layout else "") + ".",
+            "Style it as " + (", ".join(dict.fromkeys(brand_styles)) if brand_styles else "clean commercial ecommerce photography") + ".",
+        ]
     if colors:
         prompt_parts.append("Use palette accents: " + ", ".join(colors[:4]) + ".")
     if product:
-        prompt_parts.append("Keep the catalog focus on " + _sanitize(product) + ".")
-    if background_mode:
-        prompt_parts.append(f"Follow {_sanitize(str(background_mode))} art direction" + (f" and preserve the focal area inside the {fold}% fold" if fold is not None else "") + ".")
-    prompt_parts.append("Keep the composition mark-free, symbol-free, interface-free, people-free, product-accurate, and brand-safe while avoiding distorted merchandise or unsafe content.")
+        prompt_parts.append("Keep the catalog focus on " + _sanitize(product, include_humans=include_humans) + ".")
+    if background_mode and not full_picture:
+        prompt_parts.append(f"Follow {_sanitize(str(background_mode), include_humans=include_humans)} art direction" + (f" and preserve the focal area inside the {fold}% fold" if fold is not None else "") + ".")
+    # Safety suffixes are appended AFTER the word-budget truncation so they can
+    # never be cut off (the body is what shrinks, not the constraints).
+    suffix_parts = []
+    if include_humans:
+        suffix_parts.append("People may appear naturally in the scene: " + _HUMANS_DIRECTIVE + ".")
+    suffix_parts.append(
+        "Keep the composition mark-free, symbol-free, interface-free, "
+        + ("" if include_humans else "people-free, ")
+        + "product-accurate, and brand-safe while avoiding distorted merchandise or unsafe content."
+    )
+    suffix = _single_paragraph(suffix_parts)
+    body_budget = max(30, (160 if full_picture else 120) - _word_count(suffix))
 
     refined = _single_paragraph(prompt_parts)
-    if _word_count(refined) < 60:
+    if _word_count(refined) < 40:
         refined += " Keep lighting polished, depth natural, product edges crisp, and negative space uncluttered so the final banner remains accessible and conversion-focused."
     words = refined.split()
-    while _word_count(" ".join(words)) > 120 and words:
+    while _word_count(" ".join(words)) > body_budget and words:
         words.pop()
-    if _word_count(refined) > 120:
-        refined = " ".join(words[:120]).rstrip(" ,;:") + "."
-    return refined
+    if _word_count(refined) > body_budget:
+        refined = " ".join(words).rstrip(" ,;:") + "."
+    return _single_paragraph([refined, suffix])

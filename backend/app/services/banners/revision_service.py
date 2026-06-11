@@ -54,10 +54,16 @@ def _clamp_layout_dict(layout: dict[str, Any]) -> dict[str, Any]:
     return clamp_layout(ad)
 
 
+# Copy sections that accept per-section ink / type-scale edits (W0.3).
+_TEXT_SECTIONS = ("headline", "subheadline", "eyebrow", "cta")
+_TYPE_SCALE_MIN, _TYPE_SCALE_MAX = 0.5, 2.5
+
+
 def _apply_structured_edits(concept: dict[str, Any], edit: StructuredEdit) -> dict[str, Any]:
     """Pure, server-clamped patch of a revision concept — NO agent, NO Gemini.
 
-    Layout → clamp_layout; fonts → allow-list; ink → hex; copy → verbatim text.
+    Layout → clamp_layout; fonts → allow-list; ink → hex (global or per-section);
+    type_scale → clamped multiplier per section; copy → verbatim text.
     Only present keys are patched (true structured patch, not a full replace).
     """
     out = dict(concept or {})
@@ -70,9 +76,32 @@ def _apply_structured_edits(concept: dict[str, Any], edit: StructuredEdit) -> di
         display, body = coerce_pairing(edit.fonts.display or cur.get("display") or "", edit.fonts.body or cur.get("body") or "")
         art["fonts"] = {**cur, "display": display, "body": body, "source": "manual-edit"}
     if edit.ink is not None:
-        ink = _valid_hex(edit.ink)
-        if ink:
-            art["ink"] = ink
+        if isinstance(edit.ink, dict):
+            sections = dict(art.get("ink_sections") or {})
+            for key, value in edit.ink.items():
+                hexv = _valid_hex(value)
+                if key in _TEXT_SECTIONS and hexv:
+                    sections[key] = hexv
+            if sections:
+                art["ink_sections"] = sections
+        else:
+            ink = _valid_hex(edit.ink)
+            if ink:
+                art["ink"] = ink
+                # A global ink resets stale per-section overrides.
+                art.pop("ink_sections", None)
+    if edit.type_scale is not None:
+        scales = dict(art.get("type_scale") or {})
+        for key, value in edit.type_scale.items():
+            if key not in _TEXT_SECTIONS:
+                continue
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                continue
+            scales[key] = round(min(_TYPE_SCALE_MAX, max(_TYPE_SCALE_MIN, num)), 2)
+        if scales:
+            art["type_scale"] = scales
     if art:
         out["art_direction"] = art
     if edit.copy is not None:
@@ -233,13 +262,20 @@ class RevisionService:
         if getattr(self.generation_runs, "orchestrator", None) is None:
             raise MissingSettingsError(("orchestrator",))
         prompt = _normalize_prompt(request.prompt or "Refina el plan")
-        from app.workflows.banner_creation import _load_runtime_skill
+        # W0.1 — only EXPLICIT targets (a scoped UI control) are routed here; a
+        # free-text prompt is interpreted inside the plan phase (refinement-interpret)
+        # grounded in the previous concept, so "la fuente no contrasta" lands on the
+        # ink — not on a background regen.
+        targets: list[str] | None = None
+        if request.target_nodes:
+            from app.workflows.banner_creation import _load_runtime_skill
 
-        normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
-        # Plan iteration must NEVER touch image generation — strip it from targets.
-        targets = [t for t in normalize_targets(request.target_nodes, prompt) if t != "image"]
+            normalize_targets = _load_runtime_skill("refinement-route").normalize_targets
+            # "image" here means EDIT THE PLANNED IMAGE PROMPT (op set_image_prompt) —
+            # the plan phase structurally never runs image generation, so no cost risk.
+            targets = normalize_targets(request.target_nodes, prompt) or None
         run, _revision_id = self.generation_runs.start_plan_run(
-            campaign_id, prompt=prompt, targets=targets or None, started_by=request.requested_by
+            campaign_id, prompt=prompt, targets=targets, started_by=request.requested_by
         )
         return run
 
@@ -286,6 +322,13 @@ class RevisionService:
             layout_note=str(plan.get("layout_note") or ""),
             hierarchy_notes=str(plan.get("hierarchy_notes") or ""),
             wireframe=dict(plan.get("wireframe") or {}),
+            decision_trace=dict(plan.get("decision_trace") or {}),
+            placement_plan=dict(plan.get("placement_plan") or {}),
+            creative_mode=str(plan.get("creative_mode") or "composite"),
+            include_humans=bool(plan.get("include_humans")),
+            mode_rationale=str(plan.get("mode_rationale") or ""),
+            mode_source=str(plan.get("mode_source") or "agent"),
+            image_plan=dict(plan.get("image_plan") or {}),
             estimated_image_cost_note=str(plan.get("estimated_image_cost_note") or ""),
         )
 

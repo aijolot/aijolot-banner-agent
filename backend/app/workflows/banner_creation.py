@@ -29,7 +29,7 @@ FRONTEND_PROGRESS_STEPS: tuple[dict[str, object], ...] = (
         ),
     },
     {"key": "concept", "label": "Banner concept", "node_keys": ("draft_banner_concept",)},
-    {"key": "image", "label": "Image & assets", "node_keys": ("generate_image", "optimize_assets")},
+    {"key": "image", "label": "Image & assets", "node_keys": ("generate_image", "generate_video", "optimize_assets")},
     {"key": "render_audit", "label": "Render & audit", "node_keys": ("render_html", "audit")},
     {
         "key": "review_publish",

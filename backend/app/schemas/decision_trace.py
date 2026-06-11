@@ -1,0 +1,101 @@
+"""DecisionTrace (F4 — explicability): WHY the agent made each creative choice.
+
+Attached to generation events (``output_summary.decision_trace``), to the plan
+response, and to the revision concept so the UI can show "Decisión / Razones /
+Fuentes" with KG citations instead of a black box.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class DecisionSource(BaseModel):
+    """One source the agent grounded a decision on."""
+
+    type: str = Field(description="kg_doc | brand | catalog | performance")
+    id: str | None = None
+    title: str = ""
+    score: float | None = None
+
+
+class DecisionTrace(BaseModel):
+    """A creative decision, its reasons, and the sources that grounded it."""
+
+    decision: str = ""
+    reasons: list[str] = Field(default_factory=list)
+    sources: list[DecisionSource] = Field(default_factory=list)
+
+
+def build_concept_trace(
+    *,
+    concept: Any,
+    best_practices: list[dict[str, Any]] | None,
+    brand: Any,
+    lang: str = "es",
+) -> DecisionTrace:
+    """Trace for the draft_banner_concept decision (layout + copy + paleta).
+
+    Fully localized (es/en) so the "¿Por qué?" panel never mixes languages.
+    KG titles inside reasons/sources stay verbatim — they are citations.
+    """
+    from app.core.i18n import t
+
+    layout = str(getattr(concept, "layout", "") or "")
+    copy = getattr(concept, "copy", None) or {}
+    source_refs = list(getattr(concept, "source_refs", None) or [])
+    selected = next((r for r in source_refs if r.get("selected")), source_refs[0] if source_refs else None)
+
+    reasons: list[str] = []
+    if selected:
+        # applicable_when is raw English KG prose — embedding it in a Spanish
+        # sentence reads as language mixing, so it only ships when lang == "en".
+        # The pattern title stays verbatim in both languages (it's a citation).
+        when = str(selected.get("applicable_when") or "").strip() if lang == "en" else ""
+        # KG titles embed their own English description after " — "; cite only
+        # the short pattern name so the localized sentence stays readable.
+        short_title = str(selected.get("title") or "").split(" — ")[0].strip()
+        reasons.append(t(lang, "trace.layout_kg", title=short_title,
+                         when=(t(lang, "trace.layout_kg_when", when=when) if when else "")))
+    else:
+        reasons.append(t(lang, "trace.layout_deterministic"))
+    if str(copy.get("copy_source") or "") == "gemini":
+        reasons.append(t(lang, "trace.copy_gemini"))
+    else:
+        reasons.append(t(lang, "trace.copy_deterministic"))
+    top_bp = [d for d in (best_practices or []) if d.get("title")][:3]
+    if top_bp:
+        reasons.append(t(lang, "trace.best_practices", titles="; ".join(str(d["title"]) for d in top_bp)))
+    brand_name = str(getattr(brand, "name", "") or "")
+    if brand_name:
+        reasons.append(t(lang, "trace.brand", brand=brand_name))
+
+    sources: list[DecisionSource] = []
+    for ref in source_refs[:3]:
+        sources.append(
+            DecisionSource(
+                type="kg_doc",
+                id=str(ref.get("id")) if ref.get("id") else None,
+                title=str(ref.get("title") or ""),
+                score=ref.get("score") if isinstance(ref.get("score"), (int, float)) else None,
+            )
+        )
+    for doc in top_bp:
+        sources.append(
+            DecisionSource(
+                type="kg_doc",
+                id=str(doc.get("id")) if doc.get("id") else None,
+                title=str(doc.get("title") or ""),
+                score=doc.get("score") if isinstance(doc.get("score"), (int, float)) else None,
+            )
+        )
+    if brand_name:
+        sources.append(DecisionSource(type="brand", id=str(getattr(brand, "id", "") or "") or None, title=brand_name))
+
+    # The layout string may be "KG Title — applicable_when…" (English KG text);
+    # for the user-facing decision line keep only the pattern title (a citation).
+    layout_title = layout.split(" — ")[0].strip()
+    decision = t(lang, "trace.decision.layout", layout=layout_title) if layout_title else t(lang, "trace.decision.concept")
+    return DecisionTrace(decision=decision, reasons=reasons, sources=sources)

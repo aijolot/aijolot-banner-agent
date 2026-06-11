@@ -121,7 +121,12 @@ class StructuredEdit(BaseModel):
 
     layout: StructuredLayoutEdit | None = None
     fonts: StructuredFontsEdit | None = None
-    ink: str | None = None
+    # Global text color (hex string) — or a per-section dict keyed by
+    # headline|subheadline|eyebrow|cta (W0.3).
+    ink: str | dict[str, str] | None = None
+    # Per-section font-size multiplier (0.5–2.5 = 50%–250%), keyed by
+    # headline|subheadline|eyebrow|cta (W0.3). Values are server-clamped.
+    type_scale: dict[str, float] | None = None
     copy: StructuredCopyEdit | None = None
     # Per-variant headline emphasis runs, keyed by banner_variant_id.
     headline_runs: dict[str, list[dict[str, Any]]] | None = None
@@ -205,6 +210,17 @@ class CampaignPlanResponse(BaseModel):
     layout_note: str = ""
     hierarchy_notes: str = ""
     wireframe: dict[str, Any] = Field(default_factory=dict)
+    decision_trace: dict[str, Any] = Field(default_factory=dict)
+    # Piezas propuestas por el agente (placement-plan-recommend): dónde, cuántas
+    # y en qué formato — la pieza priority=1 es la que genera el build.
+    placement_plan: dict[str, Any] = Field(default_factory=dict)
+    creative_mode: str = "composite"
+    include_humans: bool = False
+    mode_rationale: str = ""
+    mode_source: str = "agent"
+    # The EXACT image prompt the build will use + the user-correctable scene seed
+    # (op set_image_prompt) and honest video availability.
+    image_plan: dict[str, Any] = Field(default_factory=dict)
     estimated_image_cost_note: str = ""
 
 

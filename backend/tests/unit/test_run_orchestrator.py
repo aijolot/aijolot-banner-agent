@@ -380,6 +380,58 @@ def test_iterate_redrafts_plan_without_image_cost() -> None:
     assert revisions.rows[rev2]["revision_number"] == revisions.rows[rev1]["revision_number"] + 1
 
 
+def test_plan_exposes_image_plan_with_prompt_and_scene() -> None:
+    """The plan must show the EXACT prompt the build will use (user-correctable)."""
+    service, _campaigns, revisions, *_ = _build_service()
+    _run, rev = service.start_plan_run(CAMPAIGN_ID)
+
+    image_plan = revisions.rows[rev]["concept"]["plan"]["image_plan"]
+    assert image_plan["scene"]
+    assert image_plan["prompt"] and "16:9" in image_plan["prompt"]
+    assert image_plan["source"] == "agent"
+    assert image_plan["video_requested"] is False
+    assert isinstance(image_plan["video_enabled"], bool)
+
+
+def test_image_scene_correction_is_directed_and_used_by_build() -> None:
+    """User corrects the image scene in the plan → only the image prompt changes
+    (copy/background intact) and the BUILD generates with the corrected scene."""
+    service, _campaigns, revisions, *_ = _build_service()
+    _run1, rev1 = service.start_plan_run(CAMPAIGN_ID)
+    before = revisions.rows[rev1]["concept"]
+
+    scene = "estadio de futbol lleno, ambiente de mundial, confeti verde y dorado"
+    run2, rev2 = service.start_plan_run(CAMPAIGN_ID, prompt=scene, targets=["image"])
+    assert run2.status == "succeeded"
+    after = revisions.rows[rev2]["concept"]
+
+    # Directed: scene overridden, everything else untouched.
+    assert after["art_direction"]["image_prompt_override"] == scene
+    image_plan = after["plan"]["image_plan"]
+    assert image_plan["scene"] == scene
+    assert image_plan["source"] == "user"
+    assert scene in image_plan["prompt"]
+    assert after["copy"]["headline"] == before["copy"]["headline"]
+    assert (after.get("background") or {}).get("css") == (before.get("background") or {}).get("css")
+    assert run2.metadata["interpreted_ops"] == ["set_image_prompt"]
+
+    # Build uses the override as the prompt seed.
+    captured: dict = {}
+    orchestrator = service.orchestrator
+    real_generate = orchestrator._generate_image
+
+    async def _spy(**kwargs):
+        result = await real_generate(**kwargs)
+        captured.update(result[1])
+        return result
+
+    orchestrator._generate_image = _spy  # type: ignore[attr-defined]
+    run3, _rev3 = service.start_build_run(CAMPAIGN_ID, plan_revision=revisions.rows[rev2])
+    assert run3.status == "succeeded"
+    assert captured.get("prompt_source") == "user"
+    assert scene in str(captured.get("refined_prompt") or "")
+
+
 def test_orchestrator_failure_is_recorded_honestly() -> None:
     service, *_ = _build_service()
 
@@ -394,3 +446,284 @@ def test_orchestrator_failure_is_recorded_honestly() -> None:
 
     assert run.status == "failed"
     assert "pipeline blew up" in (run.error_message or "")
+
+
+# --- W0.2: multi-product brief + guaranteed chroma -------------------------
+
+
+def test_multi_product_brief_features_all_products_on_base_variant() -> None:
+    """3 products in the brief → the base variant features ALL 3 (not just one)."""
+    service, campaigns, revisions, variants, _layouts, _audits = _build_service()
+    campaigns.rows[CAMPAIGN_ID]["structured_brief"]["products"] = [
+        {"product_title": "Perfume Uno", "product_gid": "gid://shopify/Product/1", "product_image_url": "https://cdn/p1.jpg"},
+        {"product_title": "Perfume Dos", "product_gid": "gid://shopify/Product/2", "product_image_url": "https://cdn/p2.jpg"},
+        {"product_title": "Perfume Tres", "product_gid": "gid://shopify/Product/3", "product_image_url": "https://cdn/p3.jpg"},
+    ]
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+
+    assert run.status == "succeeded"
+    revision = next(iter(revisions.rows.values()))
+    rows = variants.list_by_revision_id(revision_id=revision["id"])
+    rule = rows[0]["audience_rule"]
+    featured = rule.get("featured_products") or []
+    assert [r["product_title"] for r in featured] == ["Perfume Uno", "Perfume Dos", "Perfume Tres"]
+    # Every ref carries its image and an explicit (non-silent) compose status.
+    assert all(r.get("product_image_url") for r in featured)
+    assert all(r.get("hero_status") for r in featured)
+    # Backward-compat single ref points at the primary product.
+    assert rule["featured_product"]["product_title"] == "Perfume Uno"
+
+
+def test_compose_variant_hero_retries_chroma_once_and_reports(monkeypatch) -> None:
+    """First gen ignores chroma → ONE reinforced retry; success on retry → ok_retry."""
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    from app.services.banners import image_gen as image_gen_module
+    from app.services.banners.run_orchestrator import _CHROMA_RETRY_PREFIX
+
+    def _png(color) -> bytes:
+        img = Image.new("RGB", (64, 64), color)
+        # subject: small red square so the keyed PNG keeps some opaque pixels
+        for x in range(24, 40):
+            for y in range(24, 40):
+                img.putpixel((x, y), (200, 30, 30))
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    calls: list[str] = []
+
+    async def fake_gen(prompt, **_kwargs):
+        calls.append(prompt)
+        if len(calls) == 1:
+            return _png((250, 250, 250)), {"is_real_provider": True}, 0.01  # no chroma field
+        return _png((0, 255, 0)), {"is_real_provider": True}, 0.01  # proper chroma green
+
+    monkeypatch.setattr(image_gen_module, "generate_image", fake_gen)
+
+    class _FakeResp:
+        status_code = 200
+        content = b"jpegbytes"
+        headers = {"content-type": "image/jpeg"}
+
+    class _FakeHttp:
+        def __init__(self, *a, **k): ...
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def get(self, _url):
+            return _FakeResp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _FakeHttp)
+
+    class _Assets:
+        def upload_png(self, **kwargs):
+            return {"public_url": "https://cdn/hero.png"}
+
+    service, campaigns, revisions, variants, layouts, audits = _build_service()
+    orchestrator = service.orchestrator
+    orchestrator.asset_service = _Assets()
+
+    class _Concept:
+        copy = {"headline": "Promo"}
+        layout = "Hero split layout"
+
+    url, status = asyncio.run(
+        orchestrator._compose_variant_hero(
+            spec={"key": "v1", "product_title": "Perfume", "product_image_url": "https://cdn/p.jpg"},
+            concept=_Concept(),
+            campaign_id=CAMPAIGN_ID,
+            revision_id="rev-1",
+        )
+    )
+
+    assert url == "https://cdn/hero.png"
+    assert status == "ok_retry"
+    assert len(calls) == 2
+    assert calls[1].startswith(_CHROMA_RETRY_PREFIX)
+
+
+def test_compose_variant_hero_double_chroma_failure_is_not_silent(monkeypatch) -> None:
+    """Both attempts un-keyable → (None, 'chroma_failed'), surfaced in run metadata."""
+    import asyncio
+    import io
+
+    from PIL import Image
+
+    from app.services.banners import image_gen as image_gen_module
+
+    def _white_png() -> bytes:
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (250, 250, 250)).save(buf, format="PNG")
+        return buf.getvalue()
+
+    async def fake_gen(prompt, **_kwargs):
+        return _white_png(), {"is_real_provider": True}, 0.01
+
+    monkeypatch.setattr(image_gen_module, "generate_image", fake_gen)
+
+    class _FakeResp:
+        status_code = 200
+        content = b"jpegbytes"
+        headers = {"content-type": "image/jpeg"}
+
+    class _FakeHttp:
+        def __init__(self, *a, **k): ...
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def get(self, _url):
+            return _FakeResp()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "Client", _FakeHttp)
+
+    class _Assets:
+        def upload_png(self, **kwargs):
+            return {"public_url": "https://cdn/hero.png"}
+
+    service, *_rest = _build_service()
+    orchestrator = service.orchestrator
+    orchestrator.asset_service = _Assets()
+
+    class _Concept:
+        copy = {"headline": "Promo"}
+        layout = "Hero split layout"
+
+    url, status = asyncio.run(
+        orchestrator._compose_variant_hero(
+            spec={"key": "v1", "product_title": "Perfume", "product_image_url": "https://cdn/p.jpg"},
+            concept=_Concept(),
+            campaign_id=CAMPAIGN_ID,
+            revision_id="rev-1",
+        )
+    )
+    assert url is None
+    assert status == "chroma_failed"
+
+
+# --- F4: explicability (decision trace) -------------------------------------
+
+
+def test_events_and_revision_carry_decision_trace() -> None:
+    service, _campaigns, revisions, _variants, _layouts, _audits = _build_service()
+
+    run = service.start_generation_run(CAMPAIGN_ID)
+
+    assert run.status == "succeeded"
+    events = service.list_events(run.id)
+    draft = next(e for e in events if e.node_key == "draft_banner_concept" and e.status == "succeeded")
+    trace = (draft.output_summary or {}).get("decision_trace")
+    assert trace and trace.get("decision")
+    assert trace.get("reasons"), "reasons must explain layout/copy/brand choices"
+    # Deterministic mode is marked honestly (no fabricated LLM provenance).
+    assert any("[DETERMINISTIC]" in r for r in trace["reasons"])
+    research = next(e for e in events if e.node_key == "research_best_practices" and e.status == "succeeded")
+    assert isinstance((research.output_summary or {}).get("sources"), list)
+    # The trace is persisted on the revision concept for the canvas.
+    revision = next(iter(revisions.rows.values()))
+    assert revision["concept"].get("decision_trace", {}).get("decision")
+
+
+def test_plan_response_exposes_decision_trace() -> None:
+    from app.services.banners.revision_service import RevisionService
+
+    service, campaigns, revisions, variants, layouts, _audits = _build_service()
+
+    class _NoRefinements:
+        def create(self, *, data):
+            return {**data, "id": "rr-1"}
+        def get(self, *, refinement_request_id):
+            return None
+        def update(self, *, refinement_request_id, data):
+            return None
+
+    # The shared in-memory repo lacks list_by_campaign_id (only the orchestrator
+    # needs it elsewhere) — add it for the plan lookup.
+    revisions.list_by_campaign_id = lambda *, campaign_id: [  # type: ignore[attr-defined]
+        r for r in revisions.rows.values() if str(r.get("campaign_id")) == campaign_id
+    ]
+    rev_service = RevisionService(
+        campaigns=campaigns, revisions=revisions, variants=variants, layout_variants=layouts,
+        refinement_requests=_NoRefinements(), generation_runs=service, team_id="team-1",
+    )
+    rev_service.start_plan_run(CAMPAIGN_ID)
+    plan = rev_service.get_plan(CAMPAIGN_ID)
+    assert plan.decision_trace.get("decision")
+    assert plan.decision_trace.get("reasons")
+
+
+# --- Session bugfixes: real durations + plan-iterate node skipping ------------
+
+
+def test_event_durations_are_real_not_placeholders() -> None:
+    import time as _time
+
+    from app.services.banners.run_orchestrator import _EventRecorder
+
+    recorder = _EventRecorder(run_id="run-x")
+    recorder.start("draft_banner_concept")
+    _time.sleep(0.03)
+    recorder.succeed("draft_banner_concept", {"ok": True})
+    succeeded = recorder.events[-1]
+    assert succeeded["duration_ms"] >= 25  # measured, not the old hardcoded 1
+    # Timestamps are real wall-clock and strictly increasing.
+    assert recorder.events[0]["created_at"] < succeeded["created_at"]
+
+
+def test_plan_iterate_reuses_research_instead_of_requerying() -> None:
+    from app.schemas.generation import RegenerateRequest
+    from app.services.banners.revision_service import RevisionService
+
+    service, campaigns, revisions, variants, layouts, _audits = _build_service()
+
+    class _NoRefinements:
+        def create(self, *, data):
+            return {**data, "id": "rr-1"}
+        def get(self, *, refinement_request_id):
+            return None
+        def update(self, *, refinement_request_id, data):
+            return None
+
+    revisions.list_by_campaign_id = lambda *, campaign_id: [  # type: ignore[attr-defined]
+        r for r in revisions.rows.values() if str(r.get("campaign_id")) == campaign_id
+    ]
+    rev_service = RevisionService(
+        campaigns=campaigns, revisions=revisions, variants=variants, layout_variants=layouts,
+        refinement_requests=_NoRefinements(), generation_runs=service, team_id="team-1",
+    )
+
+    rev_service.start_plan_run(CAMPAIGN_ID)
+    plan_rev = max(
+        (r for r in revisions.rows.values() if r.get("status") == "plan"),
+        key=lambda r: int(r.get("revision_number") or 0),
+    )
+    # The plan revision caches the research so iterations can skip the KG query.
+    assert plan_rev["concept"]["research_cache"]["best_practices"] is not None
+
+    # Count actual retrieval-skill invocations during the iterate.
+    orchestrator = service.orchestrator
+    calls: list[str] = []
+    original = orchestrator._run_skill
+
+    async def counting_run_skill(skill_id, *args, **kwargs):
+        calls.append(skill_id)
+        return await original(skill_id, *args, **kwargs)
+
+    orchestrator._run_skill = counting_run_skill  # type: ignore[assignment]
+    run = rev_service.iterate_plan(CAMPAIGN_ID, RegenerateRequest(prompt="haz el headline más corto y urgente"))
+    assert run.status == "succeeded"
+    assert "best-practices-retrieve" not in calls, "iterate must reuse cached research"
+
+    events = service.list_events(run.id)
+    research = next(e for e in events if e.node_key == "research_best_practices" and e.status == "succeeded")
+    assert (research.output_summary or {}).get("reused_from_previous_plan") is True
