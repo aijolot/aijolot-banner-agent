@@ -6,13 +6,15 @@ License: MIT.
 
 Goal: help marketing teams create, review, edit, schedule, position, and publish store banners. MVP scope targets Shopify stores.
 
-See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full system design (diagrams, the 9-node ADK generation pipeline, provider boundaries, and skill contracts).
+See **[ARCHITECTURE.md](ARCHITECTURE.md)** for the full system design (diagrams, the two-phase plan→build ADK pipeline, provider boundaries, and skill contracts).
 
 ## Current status
 
-The backend MVP is implemented on the feature branch. The documented demo path is deterministic/offline by default and uses seeded fixtures; real Gemini (text + image), Supabase, Shopify, and Lighthouse are opt-in/manual via provider flags and credentials.
+The backend MVP is merged to `main` (PRs #21 grounded iterate/canvas, #22 brand discovery + font system, #23 Shopify connection). The documented demo path is deterministic/offline by default and uses seeded fixtures; real Gemini (text + image + video), Supabase, Shopify, and Lighthouse are opt-in/manual via provider flags and credentials.
 
-The frontend is a static React 18 UMD/Babel prototype (not a Next.js app), but its API layer (`frontend/lib.jsx`) now sends demo auth headers on every `/api/v1` call and drives the real agentic backend: SSE-streamed brief intake, per-variant (product-grounded) art concepts, AI backgrounds, Nano Banana Pro art generation, generation runs, agentic refine, scoped banner-edit, approval, schedule, and publish/unpublish. Generation and editing run as **async background jobs** the frontend polls, and a shared `frontend/banner_template.js` renders the live banner identically in the browser and in the backend's headless visual self-review. Each AI node degrades to a deterministic fallback when provider env/credentials are absent. Backend tests: 357 passed, 3 skipped (clean env).
+The flow now starts upstream of generation: a **commercial calendar** surfaces date-driven **proactive suggestions** that prefill a brief, the agent proposes a **placement plan** (the set of banner pieces to design — placement is a *consequence* of the brief, not a manual pre-step), and generation itself is split into a cheap, iterable **PLAN phase** (brief → concept → placement plan + creative mode + image prompt) and a costly **BUILD phase** (image/video → optimize → render → audit) that runs only on plan approval. Each banner picks a **creative mode** — `composite` (product cut-out over an AI background), `full_picture` (fully generated scene), or `video` (a short Veo 3.1 loop, env-gated).
+
+The frontend is a static React 18 UMD/Babel prototype (not a Next.js app), but its API layer (`frontend/lib.jsx`) sends demo auth headers on every `/api/v1` call and drives the real agentic backend: SSE-streamed brief intake, per-variant (product-grounded) art concepts, AI backgrounds, Nano Banana Pro art generation, plan-runs + iterate + approve, generation runs, agentic refine, scoped banner-edit, brand discovery + typography review, approval, schedule, and publish/unpublish. It ships an **ES/EN language switcher** that flips both the UI and the agent's output language. Generation and editing run as **async background jobs** the frontend polls, and a shared `frontend/banner_template.js` renders the live banner identically in the browser and in the backend's headless visual self-review. Each AI node degrades to a deterministic fallback when provider env/credentials are absent. Backend tests: **750 passed, 13 skipped** (clean env).
 
 Important constraints:
 
@@ -90,7 +92,7 @@ The static adapters use backend base:
 window.AIJOLOT_API_BASE || "http://localhost:8000"
 ```
 
-New API calls target `/api/v1`. The `lib.jsx` adapters now bake in demo auth headers (`AIJOLOT_DEMO_AUTH_HEADERS`) and a demo identity/team/store, so canonical routes resolve without manual header wiring. The studio flows through six stages — placement → brief → art → generate → canvas → performance — each triggering its agentic backend action (intake is SSE-streamed; art/concepts/backgrounds/generate-art/refine/banner-edit hit the live LLM-backed endpoints when provider env is present, otherwise deterministic fallbacks). Adapters still show visible fallback notices for prototype-only states. See `docs/architecture/frontend-backend-contract.md` for exact adapter behavior.
+New API calls target `/api/v1`. The `lib.jsx` adapters bake in demo auth headers (`AIJOLOT_DEMO_AUTH_HEADERS`) and a demo identity/team/store, so canonical routes resolve without manual header wiring. The studio flows through six stages — **placement → brief → plan → generate → canvas → performance** — each triggering its agentic backend action (intake is SSE-streamed; plan/iterate/approve, concepts/backgrounds/generate-art/refine/banner-edit hit the live LLM-backed endpoints when provider env is present, otherwise deterministic fallbacks). A commercial-calendar panel + proactive-suggestions panel sit alongside the studio, and a separate Brand Context view drives discovery + typography review. An ES/EN switcher flips UI and agent language. Adapters still show visible fallback notices for prototype-only states. See `docs/architecture/frontend-backend-contract.md` for exact adapter behavior.
 
 ## Deterministic demo smoke path
 
@@ -194,14 +196,20 @@ supabase stop
 Implemented capability groups:
 
 - Brand context CRUD/import with Supabase-first storage and Markdown fallback.
+- **Shopify brand discovery + font system**: synchronous, read-only discovery runs (shop metadata, theme settings, CSS, allowlisted sections) producing raw evidence, Gemini color-role recommendation drafts, and font candidates — nothing applies until the user accepts it into the approved `BrandContext`. See `docs/architecture/brand-discovery-and-font-system.md`.
+- **Commercial calendar → proactive suggestions**: a global + per-team calendar with lead-time/auto-concept settings, LLM niche-date inference, and an agent-jobs poller that turns date/catalog/performance signals into accept-to-create-campaign suggestions.
 - Campaign create/list/intake/get/patch with Supabase-first persistence and team-isolated no-Supabase fallback.
 - SSE-streamed conversational brief intake producing the Campaign Brief (v0.3.0): goal/audience/CTA/tone/urgency plus personalization variants and promo, Gemini-backed with deterministic fallback.
+- **Agent-proposed placement plan**: from the brief the agent recommends the *set* of pieces to design (hero, collection header, announcement bar, PDP cross-sell…) with real catalog dimensions and a per-piece creative mode — placement is a consequence of the brief.
+- **Two-phase generation (PLAN → BUILD)**: a cheap, iterable plan run (concept + placement plan + creative mode + image prompt) that the user can tune via `plan/iterate`, then a costly `plan/approve` that runs image/video → optimize → render → audit.
+- **Creative-mode selection**: `composite` (product cut-out over an AI background), `full_picture` (fully generated scene), or `video` (short Veo 3.1 loop, env-gated `VIDEO_GENERATION_ENABLED`); user override always wins.
 - Per-variant art direction: art concepts, art/model prompts, sanitized AI background options (incl. SVG-pattern backgrounds), agent-chosen typography, and art generation.
 - Variant-aware, product-grounded generation: one `banner_variant` per personalization variant, each grounded on its own featured Shopify product, with variant-specific copy and a shared palette.
-- Nano Banana Pro image generation with chroma-key background removal for transparent, composited product heroes.
+- Nano Banana Pro image generation with chroma-key background removal for transparent, composited product heroes; Veo 3.1 video heroes with a deterministic `FakeVideoProvider` fallback.
 - Percentage-first, breakpoint-aware composition via a shared `banner_template.js` (browser + backend headless parity).
 - Autonomous visual self-review loop: headless screenshots at 3 breakpoints critiqued by a Gemini vision model, with deterministic contrast/layout/overflow corrections.
 - Async generation/edit as background jobs with run + event polling.
+- **Shopify store connection**: connect a store, sync resources (`/stores/{id}/shopify/sync`), browse cached resources, live product search, install theme files, and push a campaign to the store — fail-closed without real credentials.
 - Live on-demand Shopify product resolution (search + persist) and banner-image rehosting to Shopify Files for real publish.
 - Multivariant publish: Liquid served by `customer.tags` (one audience-specific variant per tag).
 - Store/resource cache APIs using seeded/cached Shopify resources.
