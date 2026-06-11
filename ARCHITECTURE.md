@@ -7,11 +7,15 @@ frontend that drives the agentic pipeline through real, LLM-backed API calls.
 
 > **Honest-MVP note.** Every AI node has a **deterministic fallback**, so the full
 > pipeline (and the deterministic smoke path) runs with **no external network
-> calls**. Real Gemini text/image, live Shopify product resolution + publishing,
+> calls**. Real Gemini text/image/video, live Shopify product resolution + publishing,
 > Supabase, and Lighthouse are **opt-in** via env flags and credentials.
 > Performance/Lighthouse metrics are labeled mock/manual unless a live path is wired.
 
-_Status: branch `feat/demo-functional-e2e`. Backend tests: **357 passed, 3 skipped** (clean env)._
+_Status: merged to `main` (PRs #21 grounded iterate/canvas, #22 brand discovery + font system, #23 Shopify connection). Backend tests: **750 passed, 13 skipped** (clean env)._
+
+> Companion docs: brand discovery + approved-font typography is specified in
+> [`docs/architecture/brand-discovery-and-font-system.md`](docs/architecture/brand-discovery-and-font-system.md);
+> the full HTTP surface in [`docs/architecture/api-contract.md`](docs/architecture/api-contract.md).
 
 ---
 
@@ -19,18 +23,25 @@ _Status: branch `feat/demo-functional-e2e`. Backend tests: **357 passed, 3 skipp
 
 | Subsystem | Responsibility | Core tech |
 |-----------|----------------|-----------|
-| **A — Studio frontend** | Placement → brief → art → generate → canvas → performance; triggers agentic actions, polls async runs, renders live banner | React 18 (static prototype) + shared `banner_template.js` |
-| **B — Backend / Agent** | `/api/v1` routers, ADK generation orchestrator, async jobs, visual self-review, provider boundaries, persistence | FastAPI (Python 3.11), Google ADK |
-| **C — AI providers** | Text, image (Nano Banana Pro), vision critique, embeddings — opt-in with deterministic/cost-guarded fallbacks | Gemini (`3.1-pro`, `3.5-flash`, `3.1-pro-image`), `gemini-embedding-001` |
-| **D — Data & commerce** | Brand context, knowledge graph, live Shopify products + publishing | Supabase (pgvector), Shopify Admin API |
+| **A — Studio frontend** | Placement → brief → plan → generate → canvas → performance; commercial-calendar + suggestions panels; brand-discovery/typography view; ES/EN switcher; triggers agentic actions, polls async runs, renders live banner | React 18 (static prototype) + shared `banner_template.js` |
+| **B — Backend / Agent** | `/api/v1` routers, ADK generation orchestrator (two-phase plan→build), async jobs, visual self-review, provider boundaries, persistence | FastAPI (Python 3.11), Google ADK |
+| **C — AI providers** | Text, image (Nano Banana Pro), video (Veo 3.1), vision critique, embeddings — opt-in with deterministic/cost-guarded fallbacks | Gemini (`3.1-pro`, `3.5-flash`, `3.1-pro-image`), `veo-3.1-generate-preview`, `gemini-embedding-001` |
+| **D — Data & commerce** | Brand context + Shopify brand discovery, knowledge graph, store connection, live Shopify products + publishing | Supabase (pgvector), Shopify Admin API |
 
-The unit of work is a **9-node ADK generation graph** wrapped in a **12-stage
-campaign lifecycle**: the orchestrator assembles a banner revision (per audience
-variant), runs an **autonomous visual self-review loop**, then a **human-in-the-loop
-(HITL) gate** (approval) precedes **schedule** and **publish**. Generation and
-editing run as **async background jobs** the frontend polls. Designers iterate via
-**agentic refine** (re-run classified nodes) or **banner-edit** (scoped,
-non-destructive single-layer edit).
+The unit of work is a **9-node ADK generation graph** split into a **two-phase
+plan→build** flow and wrapped in a **calendar → suggestion → brief → plan →
+generate → review → publish lifecycle**. Upstream, a **commercial calendar**
+emits **proactive suggestions** that prefill a brief; from the brief the agent
+proposes a **placement plan** (the set of pieces to design) and a **creative mode**
+per piece. Generation runs as a cheap, iterable **PLAN phase** (nodes 1–5:
+concept + placement plan + creative mode + image prompt) and, on approval, a costly
+**BUILD phase** (nodes 6–9: image/video → optimize → render → audit). The
+orchestrator assembles a banner revision (per audience variant), runs an
+**autonomous visual self-review loop**, then a **human-in-the-loop (HITL) gate**
+(approval) precedes **schedule** and **publish**. Generation and editing run as
+**async background jobs** the frontend polls. Designers iterate via **plan/iterate**
+(retune before build), **agentic refine** (re-run classified nodes), or
+**banner-edit** (scoped, non-destructive single-layer edit).
 
 ---
 
@@ -49,7 +60,8 @@ Provider flags (each independently togglable; absence ⇒ deterministic):
 | `AIJOLOT_CONCEPT_PROVIDER` | Concept, copy, typography, headline styling, visual critique | `gemini` |
 | `AIJOLOT_REFINE_PROVIDER` | Refine / edit copy | `gemini` |
 | `IMAGE_GENERATION_PROVIDER` | Hero/product image (Nano Banana Pro) | `gemini` |
-| `GOOGLE_API_KEY` | Required for any real Gemini call | — |
+| `VIDEO_GENERATION_ENABLED` | Gates the `video` creative mode (Veo 3.1); absent ⇒ video never recommended/run | `true` |
+| `GOOGLE_API_KEY` | Required for any real Gemini/Veo call | — |
 
 Image generation is guarded by a **cost guard**
 (`backend/app/services/gemini/cost_guard.py`): a daily cap (`DAILY_COST_CAP_USD`,
@@ -147,7 +159,28 @@ headless screenshot review.
 
 ---
 
-## 5. The generation pipeline (9 ADK nodes)
+## 5. The generation pipeline (upstream signals + 9 ADK nodes)
+
+### 5.0 Upstream: commercial calendar → suggestions → placement plan
+
+Before any generation, two upstream layers decide *what to make*:
+
+- **Commercial calendar** (`/api/v1/calendar/*`, `CalendarService`): a global seed
+  of niche commercial dates plus per-team events, with lead-time / auto-concept /
+  enabled settings and optional LLM niche-date inference. An **agent-jobs poller**
+  (`/api/v1/agent-jobs/process`, the backend side of a `pg_cron` scan queue) turns
+  calendar, catalog, and performance signals into **proactive suggestions**.
+- **Suggestions** (`/api/v1/suggestions`): pending suggestions the user can
+  `accept` (calendar/catalog → create a campaign with a prefilled brief;
+  performance → a refinement run) or `dismiss`.
+- **Placement plan** (`placement-plan-recommend`, run inside the PLAN phase): from
+  the brief the agent proposes the **set of pieces** to design (hero, collection
+  header, announcement bar, PDP cross-sell…), each with real catalog dimensions and
+  a creative mode. Piece 1 (`hero_main`) is built on approve; the rest are the
+  campaign roadmap. **Placement is a consequence of the brief**, not a manual
+  pre-step (deterministic brief-driven floor, Gemini-refined).
+
+### 5.1 The 9-node graph
 
 `RunOrchestrator` (`backend/app/services/banners/run_orchestrator.py`) executes
 each node, emits per-node progress events, and persists `campaign_revision`,
@@ -156,18 +189,41 @@ Supabase Storage.
 
 ```mermaid
 graph LR
-    N1["1. load_brand_context"] --> N2["2. intake_campaign_idea"]
-    N2 --> N3["3. capture_user_personalization"]
-    N3 --> N4["4. research_best_practices (KG)"]
-    N4 --> N5["5. draft_banner_concept (copy + layout + typography, per variant)"]
-    N5 --> N6["6. generate_image (Nano Banana Pro + chroma-key)"]
-    N6 --> N7["7. optimize_assets (WebP/AVIF)"]
-    N7 --> N8["8. render_html + liquid (+ visual self-review)"]
-    N8 --> N9["9. audit (a11y / SEO / perf)"]
+    subgraph PLAN["PLAN phase (cheap, iterable — plan-runs / plan/iterate)"]
+        N1["1. load_brand_context"] --> N2["2. intake_campaign_idea"]
+        N2 --> N3["3. capture_user_personalization"]
+        N3 --> N4["4. research_best_practices (KG)"]
+        N4 --> N5["5. draft_banner_concept + placement plan + creative mode + image prompt"]
+    end
+    N5 --> APPROVE{{"plan/approve"}}
+    subgraph BUILD["BUILD phase (costly — runs on approve)"]
+        APPROVE --> N6["6. generate_image (Nano Banana Pro + chroma-key) / generate_video (Veo 3.1)"]
+        N6 --> N7["7. optimize_assets (WebP/AVIF)"]
+        N7 --> N8["8. render_html + liquid (+ visual self-review)"]
+        N8 --> N9["9. audit (a11y / SEO / perf)"]
+    end
     N9 --> GATE["HITL approval → schedule → publish"]
 
+    style APPROVE fill:#ccf,stroke:#333,stroke-width:2px
     style GATE fill:#FFE0B2,stroke:#E65100,stroke-width:2px
 ```
+
+**Two-phase plan→build.** `POST /campaigns/{id}/plan-runs` runs only nodes 1–5
+(brand → intake → personalization → KG → concept) plus the placement plan and
+creative-mode decision — no image/video spend. The user inspects and retunes via
+`POST /campaigns/{id}/plan/iterate` (the visible image prompt is editable), then
+`POST /campaigns/{id}/plan/approve` runs the costly nodes 6–9. `GET
+/campaigns/{id}/plan` returns the current plan. This keeps exploration free and
+spends real model budget only on an approved direction.
+
+**Creative modes** (`creative-mode-recommend`, advisory; a user override
+`mode_source='user'` always wins): `composite` (product cut-out over an AI
+background — today's default), `full_picture` (Nano Banana generates the full
+scene, full-bleed; only text + CTA are HTML), and `video` (a short Veo 3.1 loop as
+the hero, gated on `VIDEO_GENERATION_ENABLED` and main-hero placement). In `video`
+mode node 6 becomes `generate_video` (`backend/app/services/banners/video_gen.py`,
+Veo 3.1 with a deterministic `FakeVideoProvider` fallback) and still produces a
+poster image.
 
 **Variant-aware, product-grounded generation.** The Campaign Brief carries
 `personalization_variants` (e.g. `gender → {male, female}`), each able to reference
@@ -286,15 +342,23 @@ Skills live under `backend/app/agents/skills/<name>/SKILL.md` (+ `impl.py`).
 | Skill | Version | Role | Type |
 |-------|---------|------|------|
 | `campaign-intake` | 0.3.0 | Conversational brief → **Campaign Brief v0.3.0** (goal/audience/CTA/tone + personalization variants + promo) | LLM (Gemini flash) + deterministic |
+| `placement-plan-recommend` | 0.1.0 | Brief → the **set of pieces** to design (placement + format + creative mode + rationale), capped at 4; placement is a consequence of the brief | LLM (Gemini flash) + deterministic floor |
+| `creative-mode-recommend` | 0.1.0 | Brief + brand + placement → `composite` / `full_picture` / `video` + `include_humans`; advisory, user override wins; video env-gated | LLM (Gemini flash) + keyword fallback |
 | `art-direction` | 0.1.0 | Orchestrates nodes 4–7 per variant: layout → copy → background → product/model | Orchestration (LLM + KG) |
 | `banner-edit` | 0.1.0 | Classify feedback → edit only target layer → re-render + re-audit → superseding revision | Orchestration (classifier + edit) |
 | `shopify-theme-publish` | 0.3.0 | Node 12 write action: rehost to Files + `themeFilesUpsert` + metafield, dry-run default | Deterministic (no LLM) |
 
 Other implemented skills: `brand-context-load`, `user-personalization`,
-`best-practices-retrieve`, `banner-concept-draft`, `image-prompt-refine`,
+`best-practices-retrieve`, `layout-retrieve`, `banner-concept-draft`,
+`art-prompt-propose`, `background-options-generate`, `image-prompt-refine`,
 `nano-banana-image-generate`, `image-asset-optimize`, `banner-html-seo-render`,
-`liquid-section-build`, `performance-audit`, `refinement-route`,
-`schedule-or-publish-route`.
+`liquid-section-build`, `performance-audit`, `refinement-interpret`,
+`refinement-route`, `hitl-review-handoff`, `schedule-or-publish-route`.
+
+Brand discovery + the approved-font typography system (Shopify-evidence discovery
+runs, Gemini color-role drafts, font candidates, explicit user-accept gate) are
+specified in their own contract:
+[`docs/architecture/brand-discovery-and-font-system.md`](docs/architecture/brand-discovery-and-font-system.md).
 
 ---
 
@@ -409,11 +473,11 @@ memory or lower concurrency if OOMs appear.
 |-------|--------------|-----------|
 | **Reasoning / text** | Gemini `3.5-flash` (intake/copy/typography/refine), `3.1-pro` (heavy concept) | Deterministic fallback |
 | **Vision QA** | Gemini `3.5-flash` (screenshot critique) | Headless Chromium, 3 breakpoints |
-| **Media generation** | Gemini `3.1-pro-image` (Nano Banana Pro) + chroma-key compositing | Cost guard → `FakeImageProvider`; WebP/JPG, optional AVIF |
+| **Media generation** | Gemini `3.1-pro-image` (Nano Banana Pro) + chroma-key compositing; Veo `3.1` video heroes | Cost guard → `FakeImageProvider` / `FakeVideoProvider`; WebP/JPG, optional AVIF |
 | **Retrieval** | Supabase pgvector + `gemini-embedding-001` | Static KG floor |
-| **Orchestration** | Google ADK — 9-node graph, async jobs | Per-node events, agentic refine + banner-edit |
-| **Backend** | FastAPI (Python 3.11) | Pytest (357 passed / 3 skipped) |
-| **Data / Auth / Storage** | Supabase (Postgres) | Markdown/YAML brand fallback |
+| **Orchestration** | Google ADK — 9-node graph, two-phase plan→build, async jobs | Per-node events, plan/iterate, agentic refine + banner-edit |
+| **Backend** | FastAPI (Python 3.11) | Pytest (750 passed / 13 skipped) |
+| **Data / Auth / Storage** | Supabase (Postgres) | Markdown/YAML brand fallback; Shopify brand discovery |
 | **Commerce** | Shopify Admin API — live products, Files rehost, multivariant `themeFilesUpsert` + metafield | Dry-run gated publish/unpublish |
 | **Frontend** | React 18 studio + shared `banner_template.js` | SSE intake, async polling, live banner render |
 | **Deploy** | Google Cloud Run (single container) | GitHub Actions + WIF (keyless), Artifact Registry, Secret Manager |
