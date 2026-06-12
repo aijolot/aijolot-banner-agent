@@ -18,13 +18,16 @@ else
     echo "entrypoint: no runtime env file at $ENV_FILE (using process env only)"
 fi
 
-# Forward-migrate the persistent (self-hosted) Supabase DB to match
-# supabase/migrations/ before serving. Idempotent + advisory-locked, so it's
-# safe across concurrent cold starts. Set RUN_DB_MIGRATIONS=0 to skip, or
-# DB_MIGRATIONS_BASELINE=<version> on the first run against an existing,
-# untracked DB (see scripts/apply-migrations.sh). Non-fatal: a migration
-# failure is logged but still lets the app boot so the service stays up.
-if [ "${RUN_DB_MIGRATIONS:-1}" != "0" ]; then
+# Optional: forward-migrate the DB on boot to match supabase/migrations/.
+# OPT-IN (default off). This only works when SUPABASE_DB_URL is a reachable
+# raw-Postgres DDL endpoint. In the current self-hosted topology it is NOT:
+# SUPABASE_DB_URL points at the Supavisor pooler (needs a tenant-id user) and
+# the raw Postgres (supabase-db) lives only on the VM's docker network, which
+# Cloud Run cannot reach — so migrations are applied on the VM instead (see
+# scripts/migrate-supabase-vm.sh). Enable here only if you repoint
+# SUPABASE_DB_URL at a reachable raw Postgres. Idempotent + advisory-locked;
+# non-fatal so a failure never loops the service.
+if [ "${RUN_DB_MIGRATIONS:-0}" != "0" ]; then
     if [ -n "${SUPABASE_DB_URL:-}" ]; then
         echo "entrypoint: applying DB migrations"
         bash /app/scripts/apply-migrations.sh || \
