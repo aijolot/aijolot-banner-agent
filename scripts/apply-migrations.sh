@@ -17,21 +17,23 @@
 #     starts can't double-apply
 #
 # First run against an EXISTING, untracked DB (e.g. the current demo):
-#   the tracking table is empty, so without a baseline this would try to
-#   re-run 20260528…_initial_schema and fail ("relation already exists").
-#   Pass DB_MIGRATIONS_BASELINE=<version> to mark everything up to and
-#   including that version as already-applied. For the demo, the last
-#   migration known to be applied before the breakage is 20260603210000:
+#   the tracking table is empty but the schema already exists, so re-running the
+#   early non-idempotent migrations (20260528…_initial_schema) would fail with
+#   "relation already exists". This is auto-detected (empty tracking + a present
+#   public.campaigns) and auto-baselined to 20260603210000 — the last migration
+#   before the idempotent batch — so only 20260608+ get applied. No manual step:
 #
-#       DB_MIGRATIONS_BASELINE=20260603210000 \
-#       SUPABASE_DB_URL=postgresql://... \
-#       scripts/apply-migrations.sh
+#       SUPABASE_DB_URL=postgresql://... scripts/apply-migrations.sh
 #
-#   Subsequent runs need no baseline — tracking is now populated.
+#   Override the auto-cutover with AUTO_BASELINE_VERSION, or force an explicit
+#   baseline with DB_MIGRATIONS_BASELINE (disables auto-detection).
 #
 # Env:
 #   SUPABASE_DB_URL         required — postgres connection string (DDL-capable)
-#   DB_MIGRATIONS_BASELINE  optional — version (YYYYMMDDHHMMSS) to baseline
+#   DB_MIGRATIONS_BASELINE  optional — explicit baseline version (YYYYMMDDHHMMSS);
+#                                      set to disable auto-baseline detection
+#   AUTO_BASELINE_VERSION   optional — cutover used by auto-baseline (default
+#                                      20260603210000)
 #   MIGRATIONS_DIR          optional — defaults to ../supabase/migrations
 set -euo pipefail
 
@@ -69,7 +71,24 @@ create table if not exists supabase_migrations.schema_migrations (
 );
 SQL
 
-# 2) Optional baseline: record (without running) every migration <= baseline.
+# 2) Auto-baseline: a pre-existing DB whose tracking table is empty was migrated
+#    out-of-band (psql -f without tracking — how the demo/local DBs were seeded).
+#    Re-running the early, non-idempotent migrations (initial_schema…) would fail
+#    with "relation already exists". So if the core schema is already present but
+#    nothing is tracked, baseline to the last pre-idempotent migration; only the
+#    idempotent batch (>= that version) gets (re-)applied. Override the cutover
+#    with AUTO_BASELINE_VERSION, or skip auto-detection by passing an explicit
+#    DB_MIGRATIONS_BASELINE.
+if [[ -z "$BASELINE" ]]; then
+  tracked_count="$(psql_q -c 'select count(*) from supabase_migrations.schema_migrations;')"
+  has_core="$(psql_q -c "select (to_regclass('public.campaigns') is not null);")"
+  if [[ "$tracked_count" == "0" && "$has_core" == "t" ]]; then
+    BASELINE="${AUTO_BASELINE_VERSION:-20260603210000}"
+    log "untracked existing schema detected — auto-baseline to $BASELINE"
+  fi
+fi
+
+# 3) Baseline: record (without running) every migration <= baseline.
 if [[ -n "$BASELINE" ]]; then
   for f in "$MIGRATIONS_DIR"/*.sql; do
     [[ -e "$f" ]] || continue
@@ -85,7 +104,7 @@ if [[ -n "$BASELINE" ]]; then
   log "baseline applied up to $BASELINE"
 fi
 
-# 3) Apply each not-yet-recorded migration, in order.
+# 4) Apply each not-yet-recorded migration, in order.
 applied="$(psql_q -c 'select version from supabase_migrations.schema_migrations;')"
 pending=0
 for f in "$MIGRATIONS_DIR"/*.sql; do
